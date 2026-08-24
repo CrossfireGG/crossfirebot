@@ -82,13 +82,13 @@ https://discord.com/oauth2/authorize?client_id=1523887433047867423&permissions=2
 
 Then run these in Discord:
 
-- `/sync_matches` creates/updates group categories and match channels.
-- `/sync_team_roles` assigns members to team roles from the Google Sheet.
-- `/update_team_roles` safely updates team roles, participant roles, captain roles, and nicknames from the Google Sheet.
-- After roster changes or team-name changes in the Google Sheet, run `/update_team_roles`; the bot fetches the latest sheet and removes stale team roles it previously managed.
-- `/missing_captains` shows which team captains from the Google Sheet are missing from the Discord server.
-- `/missing_players` shows which roster players from the Google Sheet are missing from the Discord server, grouped by team.
-- `/match_status` checks how many matches the bot knows about.
+- `/matches sync` creates/updates round categories and private match channels from FACEIT.
+- `/matches status` checks how many matches the bot knows about.
+- `/teams sync` updates team roles, participant roles, captain roles, and nicknames from the Google Sheet.
+- `/teams sync notify_captains:true` also DMs captains about missing players.
+- After roster changes or team-name changes in the Google Sheet, run `/teams sync`; the bot fetches the latest sheet and removes stale team roles it previously managed.
+- `/teams missing-players` shows which sheet players are missing from this Discord server, grouped by team.
+- `/teams missing-captains` shows which sheet team captains are missing from this Discord server.
 
 These slash commands are restricted to Discord admins, users with Manage Server, or configured match staff roles.
 

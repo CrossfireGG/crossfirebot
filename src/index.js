@@ -85,26 +85,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
-      if (interaction.commandName === 'sync_matches') {
-        await handleSyncMatches(interaction);
-      }
-
-      if (interaction.commandName === 'match_status') {
-        const matches = await listStoredMatches();
-        await interaction.reply({ content: `I know about ${matches.length} match(es).`, ephemeral: true });
-      }
-
-      if (interaction.commandName === 'sync_team_roles' || interaction.commandName === 'update_team_roles') {
-        await handleSyncTeamRoles(interaction);
-      }
-
-      if (interaction.commandName === 'missing_captains') {
-        await handleMissingCaptains(interaction);
-      }
-
-      if (interaction.commandName === 'missing_players') {
-        await handleMissingPlayers(interaction);
-      }
+      await handleAdminCommand(interaction);
 
     }
 
@@ -137,6 +118,44 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await safelyRespondToInteraction(interaction, message);
   }
 });
+
+async function handleAdminCommand(interaction) {
+  if (interaction.commandName === 'matches') {
+    const subcommand = interaction.options.getSubcommand();
+
+    if (subcommand === 'sync') {
+      await handleSyncMatches(interaction);
+      return;
+    }
+
+    if (subcommand === 'status') {
+      const matches = await listStoredMatches();
+      await interaction.reply({ content: `I know about ${matches.length} match(es).`, ephemeral: true });
+      return;
+    }
+  }
+
+  if (interaction.commandName === 'teams') {
+    const subcommand = interaction.options.getSubcommand();
+
+    if (subcommand === 'sync') {
+      await handleSyncTeamRoles(interaction);
+      return;
+    }
+
+    if (subcommand === 'missing-captains') {
+      await handleMissingCaptains(interaction);
+      return;
+    }
+
+    if (subcommand === 'missing-players') {
+      await handleMissingPlayers(interaction);
+      return;
+    }
+  }
+
+  await interaction.reply({ content: 'Unknown command.', ephemeral: true });
+}
 
 client.on(Events.MessageCreate, async (message) => {
   try {
@@ -311,7 +330,7 @@ async function handleTextScheduleProposal(message, content, kind) {
       kind === 'reschedule'
         ? 'Use `!reschedule` inside a match channel created by the bot.'
         : 'Use `!schedule` or `!propose` inside a match channel created by the bot.',
-      'If this should be a match room, run `/sync_matches` first so I can link the channel to the FACEIT match.'
+      'If this should be a match room, run `/matches sync` first so I can link the channel to the FACEIT match.'
     ].join('\n'));
     return;
   }
@@ -476,7 +495,7 @@ async function showScheduleDatePicker(interaction) {
   const matchId = interaction.customId.split(':')[1];
   const stored = await getStoredMatch(matchId);
   if (!stored) {
-    await interaction.reply({ content: 'I could not find that stored match. Run `/sync_matches` again.', ephemeral: true });
+    await interaction.reply({ content: 'I could not find that stored match. Run `/matches sync` again.', ephemeral: true });
     return;
   }
 
@@ -520,7 +539,7 @@ async function handleScheduleTimeSelected(interaction) {
   const [, matchId, proposerTeam, selectedDate] = interaction.customId.split(':');
   const stored = await getStoredMatch(matchId);
   if (!stored) {
-    await interaction.update({ content: 'I could not find that stored match. Run `/sync_matches` again.', components: [] });
+    await interaction.update({ content: 'I could not find that stored match. Run `/matches sync` again.', components: [] });
     return;
   }
 
