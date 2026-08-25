@@ -299,16 +299,19 @@ async function handleAuditMatches(interaction) {
   const roundText = requestedRound
     ? `Group Stage - Round ${requestedRound}`
     : 'all detected rounds';
-  const problemLines = result.problems.slice(0, 12).map((problem) => `- ${problem}`);
+  const maxProblemLines = 6;
+  const problemLines = result.problems
+    .slice(0, maxProblemLines)
+    .map((problem) => `- ${truncateText(problem, 180)}`);
   const hiddenCount = Math.max(0, result.problems.length - problemLines.length);
 
-  await interaction.editReply([
+  await interaction.editReply(truncateDiscordMessage([
     `${shouldFix ? 'Audited/fixed' : 'Audited'} ${result.checked} match(es) for ${roundText}.`,
     `OK: ${result.ok}. Missing channels: ${result.missingChannel}. Missing mapped roles: ${result.missingRoles}. Bad permissions: ${result.badPermissions}. Fixed: ${result.fixed}.`,
     problemLines.length ? ['Problems:', ...problemLines].join('\n') : null,
     hiddenCount ? `...and ${hiddenCount} more problem(s).` : null,
     shouldFix ? 'Run `/matches audit` again without fix to verify everything is clean.' : 'Use `/matches audit fix:true` to repair channel names, links, and permissions without intentionally duplicating existing match rooms.'
-  ].filter(Boolean).join('\n'));
+  ].filter(Boolean).join('\n')));
 }
 
 async function auditMatchProvisioning(guild, match) {
@@ -975,6 +978,16 @@ function normalizeDiscordChannelName(value) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 90);
+}
+
+function truncateDiscordMessage(value) {
+  return truncateText(value, 1900);
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value || '');
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 15)).trimEnd()}\n...truncated`;
 }
 
 async function handleDeprecatedScheduleInteraction(interaction) {
