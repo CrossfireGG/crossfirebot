@@ -260,7 +260,7 @@ function buildSampleMatch(interaction) {
   const groupLetter = normalizeGroupLetter(interaction.options.getString('group') || 'A');
   const teamA = cleanSampleName(interaction.options.getString('team_a') || 'Sample Team One');
   const teamB = cleanSampleName(interaction.options.getString('team_b') || 'Sample Team Two');
-  const roundNumber = 1;
+  const roundNumber = normalizeGroupStageRound(interaction.options.getInteger('round') || 1);
   const categoryName = `Round ${roundNumber} Group Stage`;
 
   return {
@@ -288,6 +288,10 @@ function buildSampleMatch(interaction) {
 function normalizeGroupLetter(value) {
   const match = String(value || 'A').trim().match(/[a-z]/i);
   return match ? match[0].toUpperCase() : 'A';
+}
+
+function normalizeGroupStageRound(value) {
+  return [1, 2, 3].includes(Number(value)) ? Number(value) : 1;
 }
 
 function cleanSampleName(value) {

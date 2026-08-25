@@ -27,6 +27,17 @@ export const commands = [
             .setDescription('Group letter for the sample match')
             .setRequired(false)
         )
+        .addIntegerOption((option) =>
+          option
+            .setName('round')
+            .setDescription('Group Stage round number')
+            .setRequired(false)
+            .addChoices(
+              { name: 'Round 1 Group Stage', value: 1 },
+              { name: 'Round 2 Group Stage', value: 2 },
+              { name: 'Round 3 Group Stage', value: 3 }
+            )
+        )
         .addStringOption((option) =>
           option
             .setName('team_a')

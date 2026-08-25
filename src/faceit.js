@@ -132,19 +132,36 @@ function extractRound(raw) {
 
 function extractCategoryName(raw, source) {
   if (isGroupStageSource(source)) {
-    const roundNumber = Number(raw.round ?? raw.round_number);
-    if (Number.isInteger(roundNumber) && roundNumber > 0) {
-      return `Round ${roundNumber} Group Stage`;
-    }
-
-    const textRound = cleanName(raw.round_name || raw.round_label || '');
-    const roundMatch = textRound.match(/\bround\s*(\d+)\b/i);
-    if (roundMatch) return `Round ${roundMatch[1]} Group Stage`;
+    const roundNumber = extractGroupStageRoundNumber(raw);
+    if (roundNumber) return `Round ${roundNumber} Group Stage`;
 
     return 'Group Stage';
   }
 
   return extractRound(raw);
+}
+
+function extractGroupStageRoundNumber(raw) {
+  const textCandidates = [
+    raw.round_name,
+    raw.round_label,
+    raw.bracket_round,
+    raw.bracket_round_name,
+    raw.stage_name,
+    raw.bracket_name
+  ];
+
+  for (const candidate of textCandidates) {
+    const roundMatch = cleanName(candidate || '').match(/\bround\s*(1|2|3)\b/i);
+    if (roundMatch) return Number(roundMatch[1]);
+  }
+
+  for (const value of [raw.round_number, raw.round]) {
+    const number = Number(value);
+    if ([1, 2, 3].includes(number)) return number;
+  }
+
+  return null;
 }
 
 function extractGroup(raw, source) {

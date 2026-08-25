@@ -88,7 +88,7 @@ Then run these in Discord:
 
 - `/matches sync` creates/updates round categories and private match channels from FACEIT.
 - `/matches status` checks how many matches the bot knows about.
-- `/matches sample` creates a fake `a-team-one-vs-team-two` style match channel for testing permissions and scheduling.
+- `/matches sample group:A round:1` creates a fake `a-team-one-vs-team-two` style match channel in `Round 1 Group Stage` for testing permissions and scheduling.
 - `/teams sync` updates team roles, participant roles, captain roles, and nicknames from the Google Sheet.
 - `/teams sync notify_captains:true` also DMs captains about missing players.
 - After roster changes or team-name changes in the Google Sheet, run `/teams sync`; the bot fetches the latest sheet and removes stale team roles it previously managed.
