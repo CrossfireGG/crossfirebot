@@ -817,7 +817,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     roundInfo ? `Round window: **${roundInfo.start} - ${roundInfo.end}**` : 'Round window: **not configured for this round yet**',
     roundInfo ? `Default match day/time: **${roundInfo.defaultDate} at 8:00 PM EST**` : 'Default match day/time: **admins will announce**',
     `Discord match chat: <#${channel.id}>`,
-    match.faceitUrl ? `FACEIT match room: ${match.faceitUrl}` : null,
+    faceitRoomLine(match),
     getFaceitScheduledTimeLine(match),
     '',
     '**How to schedule this match**',
