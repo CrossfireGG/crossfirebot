@@ -15,7 +15,7 @@ import path from 'node:path';
 import { commands } from './commands.js';
 import { getConfig } from './config.js';
 import { FaceitClient } from './faceit.js';
-import { makeMatchChannelName, provisionMatchChannel, resolveTeamRole, updateMatchChannelName } from './discordProvision.js';
+import { makeMatchChannelName, provisionMatchChannel, repairMatchChannel, resolveTeamRole, updateMatchChannelName } from './discordProvision.js';
 import {
   acceptScheduleProposal,
   approveScheduleProposal,
@@ -197,7 +197,7 @@ client.on(Events.MessageCreate, async (message) => {
     }
   } catch (error) {
     console.error(error);
-    await message.reply(`Something failed: ${error.message}`);
+    await message.reply(truncateDiscordMessage(`Something failed: ${error.message}`));
   }
 });
 
@@ -228,11 +228,12 @@ async function handleSyncMatches(interaction) {
       continue;
     }
 
-    const discordIds = await provisionMatchChannel(guild, config, match);
-    await saveMatch(match, discordIds);
+    const matchForDiscord = clearDiscordScheduleStatus(match);
+    const discordIds = await provisionMatchChannel(guild, config, matchForDiscord);
+    await saveMatch(matchForDiscord, discordIds);
 
     const channel = await guild.channels.fetch(discordIds.channelId);
-    await upsertMatchIntroMessage(channel, match);
+    await upsertMatchIntroMessage(channel, matchForDiscord);
 
     created += 1;
   }
@@ -241,10 +242,10 @@ async function handleSyncMatches(interaction) {
     ? `Group Stage - Round ${requestedRound}`
     : 'all detected rounds';
   const coverage = summarizeSyncCoverage(matches);
-  await interaction.editReply([
+  await interaction.editReply(truncateDiscordMessage([
     `Synced ${created} match channel(s) for ${roundText}. Skipped ${skipped}.`,
     coverage
-  ].filter(Boolean).join('\n'));
+  ].filter(Boolean).join('\n')));
 }
 
 async function handleAuditMatches(interaction) {
@@ -283,10 +284,14 @@ async function handleAuditMatches(interaction) {
 
     if (shouldFix) {
       try {
-        const discordIds = await provisionMatchChannel(guild, config, match);
-        await saveMatch(match, discordIds);
-        const channel = await guild.channels.fetch(discordIds.channelId);
-        await upsertMatchIntroMessage(channel, match);
+        if (audit.missingChannel) {
+          result.problems.push(`${match.teamA} vs ${match.teamB}: missing channel; run /matches sync to create it`);
+          continue;
+        }
+
+        const matchForDiscord = clearDiscordScheduleStatus(match);
+        const discordIds = await repairMatchChannel(guild, config, audit.channel, matchForDiscord);
+        await saveMatch(matchForDiscord, discordIds);
         result.fixed += 1;
       } catch (error) {
         result.problems.push(`${match.teamA} vs ${match.teamB}: fix failed - ${error.message}`);
@@ -314,6 +319,15 @@ async function handleAuditMatches(interaction) {
   ].filter(Boolean).join('\n')));
 }
 
+function clearDiscordScheduleStatus(match) {
+  const next = { ...match };
+  delete next.scheduledByDiscord;
+  if (next.status === 'discord_scheduled') {
+    next.status = 'unknown';
+  }
+  return next;
+}
+
 async function auditMatchProvisioning(guild, match) {
   const expectedName = makeMatchChannelName(match);
   const channel = findAuditMatchChannel(guild, match, expectedName);
@@ -334,6 +348,7 @@ async function auditMatchProvisioning(guild, match) {
     problems.push(`missing channel ${expectedName}`);
     return {
       problems,
+      channel: null,
       missingChannel: true,
       missingRoles: [!teamARole ? match.teamA : null, !teamBRole ? match.teamB : null].filter(Boolean),
       badPermissions
@@ -375,6 +390,7 @@ async function auditMatchProvisioning(guild, match) {
 
   return {
     problems,
+    channel,
     missingChannel: false,
     missingRoles: [!teamARole ? match.teamA : null, !teamBRole ? match.teamB : null].filter(Boolean),
     badPermissions
@@ -604,9 +620,9 @@ async function handleSyncTeamRoles(interaction) {
     ? `\nCould not complete these actions: ${result.failedActions.join(', ')}`
     : '';
 
-  await interaction.editReply(
+  await interaction.editReply(truncateDiscordMessage(
     `Synced team roles from Google Sheet. Created ${result.rolesCreated} role(s), added ${result.added} team role assignment(s), ${result.participantAdded} season participant assignment(s), ${result.captainAdded} captain role assignment(s), removed ${result.removed} stale role assignment(s), changed ${result.nicknamesChanged} nickname(s), sent ${result.captainDmsSent} captain DM(s). Skipped ${result.skipped}.${missingLine}${failedLine}`
-  );
+  ));
 }
 
 async function handleMissingCaptains(interaction) {
@@ -629,9 +645,9 @@ async function handleMissingCaptains(interaction) {
     ? `\n...and ${moreCount} more.`
     : '';
 
-  await interaction.editReply(
+  await interaction.editReply(truncateDiscordMessage(
     `Captain audit complete. Found ${result.found.length}/${result.totalTeams} captain(s). Missing ${result.missing.length}.\n${body}${moreLine}`
-  );
+  ));
 }
 
 async function handleMissingPlayers(interaction) {
@@ -661,9 +677,9 @@ async function handleMissingPlayers(interaction) {
     ? `\n...and ${hiddenCount} more missing player(s).`
     : '';
 
-  await interaction.editReply(
+  await interaction.editReply(truncateDiscordMessage(
     `Missing player audit complete. Found ${result.foundPlayers}/${result.checkedPlayers} listed player(s). Missing ${result.missingPlayers} across ${result.teams.length} team(s).\n${body}${hiddenLine}`
-  );
+  ));
 }
 
 async function handleTextScheduleProposal(message, content, kind) {
@@ -1022,7 +1038,8 @@ async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy) {
     : 'FACEIT schedule updated.';
   const scheduledMatch = {
     ...stored.match,
-    status: 'scheduled',
+    status: 'discord_scheduled',
+    scheduledByDiscord: true,
     scheduledAt: proposal.scheduledAt
   };
   await updateMatchChannelName(channel, scheduledMatch);
@@ -1071,7 +1088,7 @@ async function upsertMatchIntroMessage(channel, match) {
   const allowedMentions = getIntroAllowedMentions(discordIds);
   const existingMessage = stored?.discord?.introMessageId
     ? await channel.messages.fetch(stored.discord.introMessageId).catch(() => null)
-    : null;
+    : await findExistingIntroMessage(channel, match);
 
   if (existingMessage) {
     await existingMessage.edit({
@@ -1079,6 +1096,7 @@ async function upsertMatchIntroMessage(channel, match) {
       allowedMentions,
       components: []
     });
+    await saveMatchIntroMessageId(match.id, existingMessage.id);
     return;
   }
 
@@ -1088,6 +1106,29 @@ async function upsertMatchIntroMessage(channel, match) {
   });
   await saveMatchIntroMessageId(match.id, message.id);
   await message.pin().catch(() => null);
+}
+
+async function findExistingIntroMessage(channel, match) {
+  const faceitUrl = String(match.faceitUrl || '').toLowerCase();
+  const matchTitle = `${match.teamA} vs ${match.teamB}`.toLowerCase();
+
+  const pinned = await channel.messages.fetchPinned().catch(() => null);
+  const pinnedMatch = pinned?.find((message) => isIntroMessage(message, faceitUrl, matchTitle));
+  if (pinnedMatch) return pinnedMatch;
+
+  const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+  return recent?.find((message) => isIntroMessage(message, faceitUrl, matchTitle)) || null;
+}
+
+function isIntroMessage(message, faceitUrl, matchTitle) {
+  if (message.author?.id !== client.user?.id) return false;
+
+  const content = String(message.content || '').toLowerCase();
+  return (
+    content.includes('how to schedule this match') &&
+    content.includes(matchTitle) &&
+    (!faceitUrl || content.includes(faceitUrl))
+  );
 }
 
 function buildMatchIntroMessage(channel, match, discordIds = {}) {

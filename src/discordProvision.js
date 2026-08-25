@@ -12,7 +12,7 @@ export async function provisionMatchChannel(guild, config, match) {
     guild,
     config.matchAccessRoleIds,
     config.matchAccessRoleNames,
-    config.createMissingTeamRoles
+    false
   );
   const privilegedRoles = [staffRole, ...matchAccessRoles].filter(Boolean);
 
@@ -29,7 +29,65 @@ export async function provisionMatchChannel(guild, config, match) {
 
   const category = await findOrCreateCategory(guild, match.categoryName || match.round, everyoneRole, privilegedRoles);
   const channelName = makeMatchChannelName(match);
-  const channel = await findOrCreateTextChannel(guild, category, channelName, [
+  const channel = await findOrCreateTextChannel(
+    guild,
+    category,
+    channelName,
+    makeMatchPermissionOverwrites(everyoneRole, teamARole, teamBRole, privilegedRoles),
+    match
+  );
+
+  return {
+    categoryId: category.id,
+    channelId: channel.id,
+    teamARoleId: teamARole.id,
+    teamBRoleId: teamBRole.id
+  };
+}
+
+export async function repairMatchChannel(guild, config, channel, match) {
+  const everyoneRole = guild.roles.everyone;
+  const staffRole = config.discordStaffRoleId
+    ? await guild.roles.fetch(config.discordStaffRoleId).catch(() => null)
+    : null;
+  const matchAccessRoles = await findOrCreateMatchAccessRoles(
+    guild,
+    config.matchAccessRoleIds,
+    config.matchAccessRoleNames,
+    false
+  );
+  const privilegedRoles = [staffRole, ...matchAccessRoles].filter(Boolean);
+  const teamARole = await findOrCreateTeamRole(guild, config, match.teamA);
+  const teamBRole = await findOrCreateTeamRole(guild, config, match.teamB);
+
+  if (!teamARole || !teamBRole) {
+    const missing = [
+      !teamARole ? match.teamA : null,
+      !teamBRole ? match.teamB : null
+    ].filter(Boolean);
+    throw new Error(`Missing Discord role(s): ${missing.join(', ')}`);
+  }
+
+  const category = await findOrCreateCategory(guild, match.categoryName || match.round, everyoneRole, privilegedRoles);
+  if (channel.parentId !== category.id) {
+    await channel.setParent(category.id, { lockPermissions: false });
+  }
+  await updateMatchChannelName(channel, match);
+  await channel.permissionOverwrites.set(
+    makeMatchPermissionOverwrites(everyoneRole, teamARole, teamBRole, privilegedRoles)
+  );
+  await updateChannelTopic(channel, match);
+
+  return {
+    categoryId: category.id,
+    channelId: channel.id,
+    teamARoleId: teamARole.id,
+    teamBRoleId: teamBRole.id
+  };
+}
+
+function makeMatchPermissionOverwrites(everyoneRole, teamARole, teamBRole, privilegedRoles) {
+  return [
     {
       id: everyoneRole.id,
       deny: [PermissionFlagsBits.ViewChannel]
@@ -59,14 +117,7 @@ export async function provisionMatchChannel(guild, config, match) {
         PermissionFlagsBits.ManageMessages
       ]
     }))
-  ], match);
-
-  return {
-    categoryId: category.id,
-    channelId: channel.id,
-    teamARoleId: teamARole.id,
-    teamBRoleId: teamBRole.id
-  };
+  ];
 }
 
 export async function updateMatchChannelName(channel, match) {
@@ -289,7 +340,7 @@ function makeStatusPrefix(match) {
     return '🟢';
   }
 
-  if (status.includes('scheduled')) {
+  if (match.scheduledByDiscord || status === 'discord_scheduled') {
     return '🟡';
   }
 
