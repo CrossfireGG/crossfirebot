@@ -162,6 +162,15 @@ async function handleAdminCommand(interaction) {
     }
   }
 
+  if (interaction.commandName === 'matchchat') {
+    const subcommand = interaction.options.getSubcommand();
+
+    if (subcommand === 'create') {
+      await handleCreateMatchChat(interaction);
+      return;
+    }
+  }
+
   await interaction.reply({ content: 'Unknown command.', ephemeral: true });
 }
 
@@ -317,6 +326,76 @@ async function handleAuditMatches(interaction) {
     hiddenCount ? `...and ${hiddenCount} more problem(s).` : null,
     shouldFix ? 'Run `/matches audit` again without fix to verify everything is clean.' : 'Use `/matches audit fix:true` to repair channel names, links, and permissions without intentionally duplicating existing match rooms.'
   ].filter(Boolean).join('\n')));
+}
+
+async function handleCreateMatchChat(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
+  const link = interaction.options.getString('link', true);
+  const matchId = extractFaceitMatchIdFromLink(link);
+  if (!matchId) {
+    await interaction.editReply('I could not read a FACEIT match ID from that link. Use a FACEIT room link like `https://www.faceit.com/en/cs2/room/1-...`.');
+    return;
+  }
+
+  const match = await findFaceitMatchForLink(link, matchId);
+  if (!match) {
+    await interaction.editReply('I could not find that match in the configured FACEIT Season 6 sources. Make sure `FACEIT_SOURCES` includes the right group-stage championship.');
+    return;
+  }
+
+  const guild = await client.guilds.fetch(config.discordGuildId);
+  await guild.channels.fetch();
+  await guild.roles.fetch();
+
+  const matchForDiscord = clearDiscordScheduleStatus({
+    ...match,
+    faceitUrl: match.faceitUrl || normalizeSubmittedFaceitLink(link)
+  });
+  const discordIds = await provisionMatchChannel(guild, config, matchForDiscord);
+  await saveMatch(matchForDiscord, discordIds);
+
+  const channel = await guild.channels.fetch(discordIds.channelId);
+  await upsertMatchIntroMessage(channel, matchForDiscord);
+
+  const details = getMatchDisplayDetails(matchForDiscord);
+  await interaction.editReply([
+    `Created/updated match chat: <#${channel.id}>`,
+    `Channel name: \`${channel.name}\``,
+    details.stage ? `Stage: ${details.stage}` : null,
+    details.round ? `Round: ${details.round}` : null,
+    details.group ? `Group: ${details.group}` : null,
+    `FACEIT match room: ${matchForDiscord.faceitUrl || 'not linked'}`
+  ].filter(Boolean).join('\n'));
+}
+
+async function findFaceitMatchForLink(link, matchId) {
+  const normalizedLink = normalizeSubmittedFaceitLink(link).toLowerCase();
+  const normalizedMatchId = matchId.toLowerCase();
+  const matches = await faceit.getMatches();
+
+  return matches.find((match) => {
+    const faceitUrl = String(match.faceitUrl || '').toLowerCase();
+    const id = String(match.id || '').toLowerCase();
+    return id === normalizedMatchId ||
+      id.endsWith(normalizedMatchId) ||
+      normalizedMatchId.endsWith(id) ||
+      (faceitUrl && faceitUrl === normalizedLink) ||
+      (faceitUrl && faceitUrl.includes(normalizedMatchId));
+  }) || null;
+}
+
+function extractFaceitMatchIdFromLink(value) {
+  const text = String(value || '').trim();
+  const roomMatch = text.match(/\/room\/([^/?#\s]+)/i);
+  if (roomMatch) return decodeURIComponent(roomMatch[1]);
+
+  const idMatch = text.match(/\b(?:1-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i);
+  return idMatch ? idMatch[0] : '';
+}
+
+function normalizeSubmittedFaceitLink(value) {
+  return String(value || '').trim().replace('%7Blang%7D', 'en').replace('{lang}', 'en');
 }
 
 function clearDiscordScheduleStatus(match) {

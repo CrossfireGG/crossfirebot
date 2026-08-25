@@ -46,6 +46,7 @@ const defaultTeamRoleIds = {
   'Kodex Esports': '1531190039491510377',
   "O'Fire Esports": '1531190083758329972',
   'OFire Esports': '1531190083758329972',
+  'O Fire': '1531190083758329972',
   'O Fire Esports': '1531190083758329972',
   'UltimateDarklordWizardz': '1531190087721943141',
   'counterstrike team': '1531190134106755264',
@@ -71,6 +72,7 @@ const defaultTeamRoleIds = {
   'ASCEND': '1538326447209316402',
   'Bucket Jon Boys': '1538326449076047942',
   'Bucketjonboys': '1538326449076047942',
+  'BucketJonsBoys': '1538326449076047942',
   'ThirdSite': '1538326449982013572'
 };
 

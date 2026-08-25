@@ -112,4 +112,20 @@ export const commands = [
         .setDescription('Show which sheet team captains are missing from this Discord server')
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  ,
+  new SlashCommandBuilder()
+    .setName('matchchat')
+    .setDescription('Create or update one FACEIT match chat')
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('create')
+        .setDescription('Create one match chat from a FACEIT match room link')
+        .addStringOption((option) =>
+          option
+            .setName('link')
+            .setDescription('FACEIT match room link')
+            .setRequired(true)
+        )
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
 ].map((command) => command.toJSON());
