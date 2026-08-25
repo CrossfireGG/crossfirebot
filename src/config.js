@@ -31,7 +31,7 @@ export function getConfig() {
     adminScheduleChannelId: process.env.ADMIN_SCHEDULE_CHANNEL_ID || null,
     adminAlertRoleIds: parseCsvValue(process.env.ADMIN_ALERT_ROLE_IDS || ''),
     matchAccessRoleIds: parseCsvValue(process.env.MATCH_ACCESS_ROLE_IDS || ''),
-    matchAccessRoleNames: parseCsvValue(process.env.MATCH_ACCESS_ROLE_NAMES || 'Match Staff,Producers'),
+    matchAccessRoleNames: parseCsvValue(process.env.MATCH_ACCESS_ROLE_NAMES || ''),
     createMissingTeamRoles: process.env.CREATE_MISSING_TEAM_ROLES === 'true',
     faceitApiKey: process.env.FACEIT_API_KEY,
     faceitSources,

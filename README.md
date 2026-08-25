@@ -9,7 +9,7 @@ What it does:
 - Creates one private channel per match inside the matching group category.
 - Names group-stage match channels with the group letter, such as `a-team-one-vs-team-two`.
 - Gives channel access to Discord roles whose names match the FACEIT team names.
-- Gives match channel access to the two teams, Match Staff, and Producers.
+- Gives match channel access to the two teams, Tournament Ops, and Producer.
 - Optionally creates missing team roles using the FACEIT team names.
 - Assigns members to team roles from a Google Sheet CSV export.
 - Gives users in `Team Captain Discord ID` the `Team Captain` role.
@@ -65,6 +65,9 @@ For admin schedule alerts, set:
 
 ```env
 ADMIN_SCHEDULE_CHANNEL_ID=your_admin_schedule_channel_id
+ADMIN_ALERT_ROLE_IDS=1128907825167482900
+MATCH_ACCESS_ROLE_IDS=1128907825167482900,1353921199016644700
+MATCH_ACCESS_ROLE_NAMES=
 ```
 
 When a captain runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. If the channel env value is blank, the alert is posted in the match channel instead.

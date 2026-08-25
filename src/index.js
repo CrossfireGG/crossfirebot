@@ -710,6 +710,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     `**${match.teamA} vs ${match.teamB}**`,
     '',
     `Round: **${match.round}**`,
+    match.group ? `Group: **${match.group.replace(/^Group\s+/i, '')}**` : null,
     roundInfo ? `Round window: **${roundInfo.start} - ${roundInfo.end}**` : 'Round window: **not configured for this round yet**',
     roundInfo ? `Default match day/time: **${roundInfo.defaultDate} at 8:00 PM EST**` : 'Default match day/time: **admins will announce**',
     `Discord match chat: <#${channel.id}>`,
