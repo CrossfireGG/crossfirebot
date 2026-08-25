@@ -598,7 +598,7 @@ async function handleCallAdmin(message, content) {
   }
 
   const reason = content.replace(/^!calladmin\s*/i, '').trim() || 'No reason given';
-  const adminChannel = await getAdminAlertChannel(message.guild);
+  const adminChannel = await getCallAdminChannel();
   const staffMentions = getStaffMentions(message.guild);
   const allowedMentions = getAdminAllowedMentions(message.guild);
 
@@ -777,7 +777,7 @@ async function handleScheduleAccepted(interaction) {
 }
 
 async function notifyAdmins(guild, stored, proposal, acceptedBy, faceitLine) {
-  const channel = await getAdminAlertChannel(guild);
+  const channel = await getScheduleAdminChannel();
   const allowedMentions = getAdminAllowedMentions(guild);
   const content = [
     getStaffMentions(guild),
@@ -943,9 +943,18 @@ function getChannelMentionByName(guild, name) {
   return channel ? `<#${channel.id}>` : null;
 }
 
-async function getAdminAlertChannel(guild) {
+async function getScheduleAdminChannel() {
   if (!config.adminScheduleChannelId) return null;
-  return guild.channels.fetch(config.adminScheduleChannelId).catch(() => null);
+  return fetchBotChannel(config.adminScheduleChannelId);
+}
+
+async function getCallAdminChannel() {
+  if (!config.callAdminChannelId) return null;
+  return fetchBotChannel(config.callAdminChannelId);
+}
+
+async function fetchBotChannel(channelId) {
+  return client.channels.fetch(channelId).catch(() => null);
 }
 
 function getStaffMentions(guild) {

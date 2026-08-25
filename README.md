@@ -65,13 +65,14 @@ For nickname updates, the bot needs **Manage Nicknames**, and its role must be a
 For admin schedule alerts, set:
 
 ```env
-ADMIN_SCHEDULE_CHANNEL_ID=your_admin_schedule_channel_id
-ADMIN_ALERT_ROLE_IDS=1128907825167482900
+ADMIN_SCHEDULE_CHANNEL_ID=1541647371405107232
+CALL_ADMIN_CHANNEL_ID=1541647392447664158
+ADMIN_ALERT_ROLE_IDS=1474118305169019163
 MATCH_ACCESS_ROLE_IDS=1128907825167482900,1353921199016644700
 MATCH_ACCESS_ROLE_NAMES=
 ```
 
-When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. If the channel env value is blank, the alert is posted in the match channel instead.
+When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!calladmin` posts in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server.
 
 Optional round windows:
 
