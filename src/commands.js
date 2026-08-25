@@ -1,7 +1,4 @@
 import {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
   PermissionFlagsBits,
   SlashCommandBuilder
 } from 'discord.js';
@@ -47,12 +44,3 @@ export const commands = [
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
 ].map((command) => command.toJSON());
-
-export function scheduleButtons(matchId) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`schedule:${matchId}`)
-      .setLabel('Propose time')
-      .setStyle(ButtonStyle.Primary)
-  );
-}

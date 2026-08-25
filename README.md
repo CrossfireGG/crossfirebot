@@ -5,8 +5,9 @@ This bot creates private Discord match channels from a FACEIT Crossfire bracket.
 What it does:
 
 - Reads matches from a FACEIT championship or tournament.
-- Creates one Discord category per FACEIT round.
+- Creates one Discord category per FACEIT round, such as `Round 1 Group Stage`.
 - Creates one private channel per match inside the matching group category.
+- Names group-stage match channels with the group letter, such as `a-team-one-vs-team-two`.
 - Gives channel access to Discord roles whose names match the FACEIT team names.
 - Gives match channel access to the two teams, Match Staff, and Producers.
 - Optionally creates missing team roles using the FACEIT team names.
@@ -96,6 +97,7 @@ Inside each match channel:
 
 - The pinned first message pings both team roles, shows the FACEIT room, the round window, and the default match day at 8:00 PM EST.
 - The pinned first message explains the full schedule flow: captain proposes with `!schedule`, other captain confirms with `!accept`, then admins are alerted to schedule it on FACEIT.
+- Scheduling is command-only in match rooms; the bot does not add a propose-time button.
 - `!schedule 8/24/2026 3 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 1 8 PM EST` proposes a match time, detects the timezone, and pings the other team to confirm.
 - `!propose July 28 8:00 PM EST` also proposes a match time.
 - `!reschedule July 29 8:00 PM EST` requests a reschedule.

@@ -13,7 +13,7 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { commands, scheduleButtons } from './commands.js';
+import { commands } from './commands.js';
 import { getConfig } from './config.js';
 import { FaceitClient } from './faceit.js';
 import { provisionMatchChannel } from './discordProvision.js';
@@ -682,15 +682,14 @@ async function upsertMatchIntroMessage(channel, match) {
     await existingMessage.edit({
       content,
       allowedMentions,
-      components: [scheduleButtons(match.id)]
+      components: []
     });
     return;
   }
 
   const message = await channel.send({
     content,
-    allowedMentions,
-    components: [scheduleButtons(match.id)]
+    allowedMentions
   });
   await saveMatchIntroMessageId(match.id, message.id);
   await message.pin().catch(() => null);

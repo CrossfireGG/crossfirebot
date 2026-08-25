@@ -37,16 +37,23 @@ export class FaceitClient {
       ? `/championships/${source.id}/matches`
       : `/tournaments/${source.id}/matches`;
     const all = [];
+    const seen = new Set();
     let offset = 0;
     const limit = 100;
 
     while (true) {
       const data = await this.request(`${sourcePath}?offset=${offset}&limit=${limit}`);
       const items = data.items || [];
-      all.push(...items);
+      const newItems = items.filter((item) => {
+        const id = item.match_id || item.id;
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+      all.push(...newItems);
 
-      if (items.length < limit) break;
-      offset += limit;
+      if (!items.length || !newItems.length) break;
+      offset += items.length;
     }
 
     return all.map((raw) => normalizeMatch(raw, source)).filter(Boolean);
@@ -63,11 +70,14 @@ function normalizeMatch(raw, source) {
 
   const id = raw.match_id || raw.id;
   if (!id) return null;
+  const categoryName = extractCategoryName(raw, source);
 
   return {
     id,
     status: raw.status || 'unknown',
-    round: extractRound(raw),
+    round: categoryName,
+    group: extractGroup(raw, source),
+    categoryName,
     source,
     teamA,
     teamB,
@@ -118,6 +128,64 @@ function extractRound(raw) {
 
   const fallback = textCandidates.find((candidate) => typeof candidate === 'string' && candidate.trim());
   return cleanName(fallback || 'Round Matches');
+}
+
+function extractCategoryName(raw, source) {
+  if (isGroupStageSource(source)) {
+    const roundNumber = Number(raw.round ?? raw.round_number);
+    if (Number.isInteger(roundNumber) && roundNumber > 0) {
+      return `Round ${roundNumber} Group Stage`;
+    }
+
+    const textRound = cleanName(raw.round_name || raw.round_label || '');
+    const roundMatch = textRound.match(/\bround\s*(\d+)\b/i);
+    if (roundMatch) return `Round ${roundMatch[1]} Group Stage`;
+
+    return 'Group Stage';
+  }
+
+  return extractRound(raw);
+}
+
+function extractGroup(raw, source) {
+  const candidates = [
+    raw.group_name,
+    raw.group,
+    raw.bracket_name,
+    raw.stage_name
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    const text = cleanName(candidate);
+    const letterMatch = text.match(/\bgroup\s*([a-z])\b/i);
+    if (letterMatch) return `Group ${letterMatch[1].toUpperCase()}`;
+  }
+
+  if (isGroupStageSource(source)) {
+    const groupNumber = Number(raw.group ?? raw.group_number);
+    if (Number.isInteger(groupNumber) && groupNumber > 0) {
+      return `Group ${numberToLetters(groupNumber)}`;
+    }
+  }
+
+  return '';
+}
+
+function numberToLetters(value) {
+  let number = value;
+  let letters = '';
+
+  while (number > 0) {
+    number -= 1;
+    letters = String.fromCharCode(65 + (number % 26)) + letters;
+    number = Math.floor(number / 26);
+  }
+
+  return letters;
+}
+
+function isGroupStageSource(source) {
+  return String(source?.name || '').toLowerCase().includes('group');
 }
 
 function isUsefulBracketLabel(value) {

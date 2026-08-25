@@ -27,8 +27,8 @@ export async function provisionMatchChannel(guild, config, match) {
     throw new Error(`Missing Discord role(s): ${missing.join(', ')}`);
   }
 
-  const category = await findOrCreateCategory(guild, match.round, everyoneRole, privilegedRoles);
-  const channelName = makeChannelName(`${match.teamA} vs ${match.teamB}`);
+  const category = await findOrCreateCategory(guild, match.categoryName || match.round, everyoneRole, privilegedRoles);
+  const channelName = makeMatchChannelName(match);
   const channel = await findOrCreateTextChannel(guild, category, channelName, [
     {
       id: everyoneRole.id,
@@ -109,7 +109,7 @@ async function findOrCreateMatchAccessRoles(guild, roleIds, roleNames, shouldCre
 }
 
 async function findOrCreateCategory(guild, roundName, everyoneRole, privilegedRoles) {
-  const categoryName = `FACEIT - ${roundName}`;
+  const categoryName = String(roundName || 'FACEIT Matches').slice(0, 100);
   const permissionOverwrites = [
     {
       id: everyoneRole.id,
@@ -138,28 +138,18 @@ async function findOrCreateCategory(guild, roundName, everyoneRole, privilegedRo
 }
 
 async function findOrCreateTextChannel(guild, category, name, permissionOverwrites, match) {
-  const existingInCategory = guild.channels.cache.find((channel) =>
-    channel.parentId === category.id &&
-    channel.type === ChannelType.GuildText &&
-    channel.name.toLowerCase() === name.toLowerCase()
-  );
+  const existing = findExistingMatchChannel(guild, category, name, match);
 
-  if (existingInCategory) {
-    await existingInCategory.permissionOverwrites.set(permissionOverwrites);
-    await updateChannelTopic(existingInCategory, match);
-    return existingInCategory;
-  }
-
-  const existingAnywhere = guild.channels.cache.find((channel) =>
-    channel.type === ChannelType.GuildText &&
-    channel.name.toLowerCase() === name.toLowerCase()
-  );
-
-  if (existingAnywhere) {
-    await existingAnywhere.setParent(category.id, { lockPermissions: false });
-    await existingAnywhere.permissionOverwrites.set(permissionOverwrites);
-    await updateChannelTopic(existingAnywhere, match);
-    return existingAnywhere;
+  if (existing) {
+    if (existing.name !== name) {
+      await existing.setName(name).catch(() => null);
+    }
+    if (existing.parentId !== category.id) {
+      await existing.setParent(category.id, { lockPermissions: false });
+    }
+    await existing.permissionOverwrites.set(permissionOverwrites);
+    await updateChannelTopic(existing, match);
+    return existing;
   }
 
   const created = await guild.channels.create({
@@ -172,12 +162,39 @@ async function findOrCreateTextChannel(guild, category, name, permissionOverwrit
   return created;
 }
 
+function findExistingMatchChannel(guild, category, name, match) {
+  const exactName = name.toLowerCase();
+  const legacyName = makeChannelName(`${match.teamA} vs ${match.teamB}`).toLowerCase();
+  const faceitUrl = String(match.faceitUrl || '').toLowerCase();
+
+  return guild.channels.cache.find((channel) => {
+    if (channel.type !== ChannelType.GuildText) return false;
+
+    const channelName = channel.name.toLowerCase();
+    if (channel.parentId === category.id && channelName === exactName) return true;
+    if (channelName === exactName || channelName === legacyName) return true;
+
+    return faceitUrl && String(channel.topic || '').toLowerCase().includes(faceitUrl);
+  }) || null;
+}
+
 function makeChannelName(value) {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 90);
+}
+
+function makeMatchChannelName(match) {
+  const groupPrefix = makeGroupPrefix(match.group);
+  const matchName = makeChannelName(`${match.teamA} vs ${match.teamB}`);
+  return [groupPrefix, matchName].filter(Boolean).join('-').slice(0, 90);
+}
+
+function makeGroupPrefix(value) {
+  const match = String(value || '').match(/\bgroup\s*([a-z])\b/i);
+  return match ? match[1].toLowerCase() : '';
 }
 
 async function updateChannelTopic(channel, match) {
