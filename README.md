@@ -13,7 +13,7 @@ What it does:
 - Optionally creates missing team roles using the FACEIT team names.
 - Assigns members to team roles from a Google Sheet CSV export.
 - Gives users in `Team Captain Discord ID` the `Team Captain` role.
-- Lets captains propose and confirm a scheduled match time in Discord.
+- Lets team members propose and confirm a scheduled match time in Discord.
 - Calls a FACEIT schedule adapter when a write endpoint is available.
 
 ## What I Need From You
@@ -70,7 +70,7 @@ MATCH_ACCESS_ROLE_IDS=1128907825167482900,1353921199016644700
 MATCH_ACCESS_ROLE_NAMES=
 ```
 
-When a captain runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. If the channel env value is blank, the alert is posted in the match channel instead.
+When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. If the channel env value is blank, the alert is posted in the match channel instead.
 
 Optional round windows:
 
@@ -99,13 +99,13 @@ These slash commands are restricted to Discord admins, users with Manage Server,
 Inside each match channel:
 
 - The pinned first message pings both team roles, shows the FACEIT room, the round window, and the default match day at 8:00 PM EST.
-- The pinned first message explains the full schedule flow: captain proposes with `!schedule`, other captain confirms with `!accept`, then admins are alerted to schedule it on FACEIT.
+- The pinned first message explains the full schedule flow: one team member proposes with `!schedule`, a member from the other team confirms with `!accept`, then admins are alerted to schedule it on FACEIT.
 - Scheduling is command-only in match rooms; the bot does not add a propose-time button.
 - `!schedule 8/24/2026 3 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 1 8 PM EST` proposes a match time, detects the timezone, and pings the other team to confirm.
 - `!propose July 28 8:00 PM EST` also proposes a match time.
 - `!reschedule July 29 8:00 PM EST` requests a reschedule.
-- `!accept` lets the other team captain accept it.
-- `!decline` lets the other team captain decline it.
+- `!accept` lets a member from the other team accept it.
+- `!decline` lets a member from the other team decline it.
 - `!calladmin reason here` alerts admins with the match channel and FACEIT link.
 
 Season 6 default round windows are built into the bot:

@@ -337,8 +337,8 @@ async function handleTextScheduleProposal(message, content, kind) {
 
   const member = await message.guild.members.fetch(message.author.id);
   const proposerTeam = getMemberTeam(member, stored.discord);
-  if (!proposerTeam || !isCaptain(member)) {
-    await message.reply('Only a captain from one of the two teams can propose a schedule.');
+  if (!proposerTeam) {
+    await message.reply('Only a member from one of the two teams can propose a schedule.');
     return;
   }
 
@@ -383,7 +383,7 @@ async function handleTextScheduleProposal(message, content, kind) {
     `Time: **${scheduledAt}**${parsedSchedule?.discordTimestamp ? ` (${parsedSchedule.discordTimestamp})` : ''}`,
     `Proposed by: <@${message.author.id}>`,
     validation.warning ? `Warning: **${validation.warning}**` : null,
-    'Other team captain: type `!accept` or `!decline` to confirm.'
+    'Other team: type `!accept` or `!decline` to confirm.'
   ].filter(Boolean).join('\n'));
 }
 
@@ -403,8 +403,8 @@ async function handleTextAccept(message) {
   const member = await message.guild.members.fetch(message.author.id);
   const memberTeam = getMemberTeam(member, stored.discord);
   const otherTeam = proposal.proposerTeam === 'teamA' ? 'teamB' : 'teamA';
-  if (memberTeam !== otherTeam || !isCaptain(member)) {
-    await message.reply('Only a captain from the other team can accept this schedule.');
+  if (memberTeam !== otherTeam) {
+    await message.reply('Only a member from the other team can accept this schedule.');
     return;
   }
 
@@ -445,8 +445,8 @@ async function handleTextDecline(message) {
   const member = await message.guild.members.fetch(message.author.id);
   const memberTeam = getMemberTeam(member, stored.discord);
   const otherTeam = proposal.proposerTeam === 'teamA' ? 'teamB' : 'teamA';
-  if (memberTeam !== otherTeam || !isCaptain(member)) {
-    await message.reply('Only a captain from the other team can decline this schedule.');
+  if (memberTeam !== otherTeam) {
+    await message.reply('Only a member from the other team can decline this schedule.');
     return;
   }
 
@@ -455,7 +455,7 @@ async function handleTextDecline(message) {
     `**Schedule declined:** ${stored.match.teamA} vs ${stored.match.teamB}`,
     `Declined time: **${formatProposalTime(proposal)}**`,
     `Declined by: <@${message.author.id}>`,
-    'A team captain can propose another time with `!schedule tomorrow at 9 PM EST`.'
+    'A team member can propose another time with `!schedule tomorrow at 9 PM EST`.'
   ].join('\n'));
 }
 
@@ -501,9 +501,9 @@ async function showScheduleDatePicker(interaction) {
 
   const member = await interaction.guild.members.fetch(interaction.user.id);
   const proposerTeam = getMemberTeam(member, stored.discord);
-  if (!proposerTeam || !isCaptain(member)) {
+  if (!proposerTeam) {
     await interaction.reply({
-      content: 'Only a captain from one of the two teams can propose a schedule.',
+      content: 'Only a member from one of the two teams can propose a schedule.',
       ephemeral: true
     });
     return;
@@ -544,8 +544,8 @@ async function handleScheduleTimeSelected(interaction) {
   }
 
   const member = await interaction.guild.members.fetch(interaction.user.id);
-  if (getMemberTeam(member, stored.discord) !== proposerTeam || !isCaptain(member)) {
-    await interaction.update({ content: 'Only the proposing team captain can finish this proposal.', components: [] });
+  if (getMemberTeam(member, stored.discord) !== proposerTeam) {
+    await interaction.update({ content: 'Only a member from the proposing team can finish this proposal.', components: [] });
     return;
   }
 
@@ -576,7 +576,7 @@ async function handleScheduleTimeSelected(interaction) {
       `**Schedule proposed:** ${stored.match.teamA} vs ${stored.match.teamB}`,
       `Time: **${displayScheduledAt}**${parsedSchedule?.discordTimestamp ? ` (${parsedSchedule.discordTimestamp})` : ''}`,
       `Proposed by: <@${interaction.user.id}>`,
-      'A captain from the other team must accept this.'
+      'A member from the other team must accept this.'
     ].join('\n'),
     components: [acceptButton(proposalId)]
   });
@@ -611,8 +611,8 @@ async function handleScheduleAccepted(interaction) {
   const member = await interaction.guild.members.fetch(interaction.user.id);
   const memberTeam = getMemberTeam(member, stored.discord);
   const otherTeam = proposal.proposerTeam === 'teamA' ? 'teamB' : 'teamA';
-  if (memberTeam !== otherTeam || !isCaptain(member)) {
-    await interaction.editReply('Only a captain from the other team can accept this schedule.');
+  if (memberTeam !== otherTeam) {
+    await interaction.editReply('Only a member from the other team can accept this schedule.');
     return;
   }
 
@@ -718,14 +718,14 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     match.scheduledAt ? `FACEIT default schedule: **${match.scheduledAt}**` : 'FACEIT default schedule: **not set**',
     '',
     '**How to schedule this match**',
-    '1. One team captain posts `!schedule 8/24/2026 3 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 1 8:00 PM EST`.',
+    '1. One team member posts `!schedule 8/24/2026 3 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 1 8:00 PM EST`.',
     '2. The bot detects the timezone, records the proposed time, and pings the other team role.',
-    '3. The other team captain posts `!accept` to confirm or `!decline` to reject.',
+    '3. A member from the other team posts `!accept` to confirm or `!decline` to reject.',
     `4. After \`!accept\`, ${adminNotificationLine}`,
     '',
     '**Other commands**',
     '`!propose July 28 8:00 PM EST` - same as `!schedule`',
-    '`!reschedule July 29 8:00 PM EST` - captain requests a new time',
+    '`!reschedule July 29 8:00 PM EST` - team member requests a new time',
     'Reschedules must stay inside the round window. Reschedules within 24 hours of match time require admin override.',
     isGroupStageMatch(match)
       ? 'Group Stage note: teams may reschedule matches within their round window by mutual agreement.'
