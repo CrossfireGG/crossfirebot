@@ -11,6 +11,18 @@ export const commands = [
       subcommand
         .setName('sync')
         .setDescription('Create or update Discord match channels from FACEIT')
+        .addIntegerOption((option) =>
+          option
+            .setName('round')
+            .setDescription('Only sync one Group Stage round')
+            .setRequired(false)
+            .addChoices(
+              { name: 'All detected rounds', value: 0 },
+              { name: 'Round 1 Group Stage', value: 1 },
+              { name: 'Round 2 Group Stage', value: 2 },
+              { name: 'Round 3 Group Stage', value: 3 }
+            )
+        )
     )
     .addSubcommand((subcommand) =>
       subcommand

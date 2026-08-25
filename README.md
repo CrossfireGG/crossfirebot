@@ -8,6 +8,7 @@ What it does:
 - Creates one Discord category per FACEIT round, such as `Round 1 Group Stage`.
 - Creates one private channel per match inside the matching group category.
 - Names group-stage match channels with the group letter, such as `a-team-one-vs-team-two`.
+- Adds `🟡-` to a match channel name when it is scheduled and `🟢-` when FACEIT reports it finished.
 - Gives channel access to Discord roles whose names match the FACEIT team names.
 - Gives match channel access to the two teams, Tournament Ops, and Producer.
 - Optionally creates missing team roles using the FACEIT team names.
@@ -87,6 +88,7 @@ https://discord.com/oauth2/authorize?client_id=1523887433047867423&permissions=2
 Then run these in Discord:
 
 - `/matches sync` creates/updates round categories and private match channels from FACEIT.
+- `/matches sync round:1` creates/updates only `Round 1 Group Stage`; use `round:2` or `round:3` for the other Group Stage rounds.
 - `/matches status` checks how many matches the bot knows about.
 - `/matches sample group:A round:1` creates a fake `a-team-one-vs-team-two` style match channel in `Round 1 Group Stage` for testing permissions and scheduling.
 - `/teams sync` updates team roles, participant roles, captain roles, and nicknames from the Google Sheet.
@@ -133,6 +135,7 @@ Reschedule rules:
 - Accepted schedules and reschedules are sent to admins to schedule manually on FACEIT.
 - Group Stage teams may reschedule inside their round window by mutual agreement.
 - Roster changes should go to `#make-a-ticket`.
+- Set `ROSTER_TICKET_CHANNEL_ID=1418725495545004175` so pinned match messages link directly to the roster ticket channel.
 
 ## Important FACEIT Note
 

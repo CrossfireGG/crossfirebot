@@ -30,6 +30,7 @@ export function getConfig() {
     discordStaffRoleId: process.env.DISCORD_STAFF_ROLE_ID || null,
     adminScheduleChannelId: process.env.ADMIN_SCHEDULE_CHANNEL_ID || null,
     adminAlertRoleIds: parseCsvValue(process.env.ADMIN_ALERT_ROLE_IDS || ''),
+    rosterTicketChannelId: process.env.ROSTER_TICKET_CHANNEL_ID || '1418725495545004175',
     matchAccessRoleIds: parseCsvValue(process.env.MATCH_ACCESS_ROLE_IDS || ''),
     matchAccessRoleNames: parseCsvValue(process.env.MATCH_ACCESS_ROLE_NAMES || ''),
     createMissingTeamRoles: process.env.CREATE_MISSING_TEAM_ROLES === 'true',

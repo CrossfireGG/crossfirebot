@@ -16,7 +16,7 @@ import path from 'node:path';
 import { commands } from './commands.js';
 import { getConfig } from './config.js';
 import { FaceitClient } from './faceit.js';
-import { provisionMatchChannel } from './discordProvision.js';
+import { provisionMatchChannel, updateMatchChannelName } from './discordProvision.js';
 import {
   acceptScheduleProposal,
   approveScheduleProposal,
@@ -208,12 +208,14 @@ async function registerCommands() {
 
 async function handleSyncMatches(interaction) {
   await interaction.deferReply({ ephemeral: true });
+  const requestedRound = interaction.options.getInteger('round') || 0;
 
   const guild = await client.guilds.fetch(config.discordGuildId);
   await guild.channels.fetch();
   await guild.roles.fetch();
 
-  const matches = await faceit.getMatches();
+  const allMatches = await faceit.getMatches();
+  const matches = filterAndSortMatchesForSync(allMatches, requestedRound);
   let created = 0;
   let skipped = 0;
 
@@ -232,7 +234,53 @@ async function handleSyncMatches(interaction) {
     created += 1;
   }
 
-  await interaction.editReply(`Synced ${created} match channel(s). Skipped ${skipped}.`);
+  const roundText = requestedRound
+    ? `Round ${requestedRound} Group Stage`
+    : 'all detected rounds';
+  await interaction.editReply(`Synced ${created} match channel(s) for ${roundText}. Skipped ${skipped}.`);
+}
+
+function filterAndSortMatchesForSync(matches, requestedRound) {
+  return matches
+    .filter((match) => {
+      if (!requestedRound) return true;
+      return getGroupStageRoundNumber(match) === requestedRound;
+    })
+    .sort(compareMatchesForChannelOrder);
+}
+
+function compareMatchesForChannelOrder(a, b) {
+  return getGroupStageRoundNumber(a) - getGroupStageRoundNumber(b) ||
+    getGroupSortIndex(a) - getGroupSortIndex(b) ||
+    String(a.teamA || '').localeCompare(String(b.teamA || ''), undefined, { sensitivity: 'base' }) ||
+    String(a.teamB || '').localeCompare(String(b.teamB || ''), undefined, { sensitivity: 'base' });
+}
+
+function getGroupStageRoundNumber(match) {
+  const categoryMatch = String(match.categoryName || match.round || '').match(/\bround\s*(\d+)\s+group stage\b/i);
+  if (categoryMatch) return Number(categoryMatch[1]);
+
+  const rawRound = Number(match.raw?.round_number ?? match.raw?.round);
+  return [1, 2, 3].includes(rawRound) ? rawRound : 999;
+}
+
+function getGroupSortIndex(match) {
+  const letterMatch = String(match.group || '').match(/\bgroup\s*([a-z]+)\b/i);
+  if (letterMatch) return lettersToNumber(letterMatch[1]);
+
+  const rawGroup = Number(match.raw?.group ?? match.raw?.group_number);
+  return Number.isInteger(rawGroup) && rawGroup > 0 ? rawGroup : 999;
+}
+
+function lettersToNumber(value) {
+  return String(value || '')
+    .toUpperCase()
+    .split('')
+    .reduce((total, char) => {
+      const code = char.charCodeAt(0);
+      if (code < 65 || code > 90) return total;
+      return total * 26 + code - 64;
+    }, 0) || 999;
 }
 
 async function handleSampleMatch(interaction) {
@@ -494,6 +542,13 @@ async function handleTextAccept(message) {
   const faceitLine = result.skipped
     ? adminActionLine(proposal)
     : 'FACEIT schedule updated.';
+  const scheduledMatch = {
+    ...stored.match,
+    status: 'scheduled',
+    scheduledAt: proposal.scheduledAt
+  };
+  await updateMatchChannelName(message.channel, scheduledMatch);
+  await saveMatch(scheduledMatch, stored.discord);
 
   await message.channel.send([
     `**${proposal.kind === 'reschedule' ? 'Reschedule' : 'Schedule'} accepted:** ${stored.match.teamA} vs ${stored.match.teamB}`,
@@ -702,6 +757,13 @@ async function handleScheduleAccepted(interaction) {
   const faceitLine = result.skipped
     ? adminActionLine(proposal)
     : 'FACEIT schedule updated.';
+  const scheduledMatch = {
+    ...stored.match,
+    status: 'scheduled',
+    scheduledAt: proposal.scheduledAt
+  };
+  await updateMatchChannelName(interaction.channel, scheduledMatch);
+  await saveMatch(scheduledMatch, stored.discord);
 
   await interaction.channel.send([
     `**Schedule accepted:** ${stored.match.teamA} vs ${stored.match.teamB}`,
@@ -777,7 +839,9 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     discordIds.teamARoleId ? `<@&${discordIds.teamARoleId}>` : `**${match.teamA}**`,
     discordIds.teamBRoleId ? `<@&${discordIds.teamBRoleId}>` : `**${match.teamB}**`
   ].join(' vs ');
-  const ticketChannel = getChannelMentionByName(channel.guild, 'make-a-ticket') || '#make-a-ticket';
+  const ticketChannel = config.rosterTicketChannelId
+    ? `<#${config.rosterTicketChannelId}>`
+    : getChannelMentionByName(channel.guild, 'make-a-ticket') || '#make-a-ticket';
   const adminNotificationLine = getAdminNotificationLine(channel);
 
   return [

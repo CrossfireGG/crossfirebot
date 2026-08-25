@@ -69,6 +69,13 @@ export async function provisionMatchChannel(guild, config, match) {
   };
 }
 
+export async function updateMatchChannelName(channel, match) {
+  const nextName = makeMatchChannelName(match);
+  if (channel.name !== nextName) {
+    await channel.setName(nextName).catch(() => null);
+  }
+}
+
 async function findRoleByName(guild, name) {
   await guild.roles.fetch();
   return guild.roles.cache.find((role) => role.name.toLowerCase() === name.toLowerCase()) || null;
@@ -165,14 +172,16 @@ async function findOrCreateTextChannel(guild, category, name, permissionOverwrit
 function findExistingMatchChannel(guild, category, name, match) {
   const exactName = name.toLowerCase();
   const legacyName = makeChannelName(`${match.teamA} vs ${match.teamB}`).toLowerCase();
+  const baseName = makeBaseMatchChannelName(match).toLowerCase();
   const faceitUrl = String(match.faceitUrl || '').toLowerCase();
 
   return guild.channels.cache.find((channel) => {
     if (channel.type !== ChannelType.GuildText) return false;
 
     const channelName = channel.name.toLowerCase();
+    const unprefixedChannelName = stripMatchStatusPrefix(channelName);
     if (channel.parentId === category.id && channelName === exactName) return true;
-    if (channelName === exactName || channelName === legacyName) return true;
+    if (channelName === exactName || channelName === legacyName || unprefixedChannelName === baseName) return true;
 
     return faceitUrl && String(channel.topic || '').toLowerCase().includes(faceitUrl);
   }) || null;
@@ -187,6 +196,12 @@ function makeChannelName(value) {
 }
 
 function makeMatchChannelName(match) {
+  const statusPrefix = makeStatusPrefix(match);
+  const baseName = makeBaseMatchChannelName(match);
+  return [statusPrefix, baseName].filter(Boolean).join('-').slice(0, 90);
+}
+
+function makeBaseMatchChannelName(match) {
   const groupPrefix = makeGroupPrefix(match.group);
   const matchName = makeChannelName(`${match.teamA} vs ${match.teamB}`);
   return [groupPrefix, matchName].filter(Boolean).join('-').slice(0, 90);
@@ -195,6 +210,25 @@ function makeMatchChannelName(match) {
 function makeGroupPrefix(value) {
   const match = String(value || '').match(/\bgroup\s*([a-z])\b/i);
   return match ? match[1].toLowerCase() : '';
+}
+
+function makeStatusPrefix(match) {
+  const status = String(match.status || '').toLowerCase();
+  if (['finished', 'done', 'completed', 'cancelled'].some((value) => status.includes(value))) {
+    return '🟢';
+  }
+
+  if (match.scheduledAt || ['scheduled', 'ready', 'configured'].some((value) => status.includes(value))) {
+    return '🟡';
+  }
+
+  return '';
+}
+
+function stripMatchStatusPrefix(value) {
+  return String(value || '')
+    .replace(/^(?:🟡|🟢|v)-/i, '')
+    .replace(/^(?:scheduled|finished)-/i, '');
 }
 
 async function updateChannelTopic(channel, match) {
