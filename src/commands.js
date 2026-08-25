@@ -31,6 +31,29 @@ export const commands = [
     )
     .addSubcommand((subcommand) =>
       subcommand
+        .setName('audit')
+        .setDescription('Check match channels, team roles, and permissions without creating duplicates')
+        .addIntegerOption((option) =>
+          option
+            .setName('round')
+            .setDescription('Only audit one Group Stage round')
+            .setRequired(false)
+            .addChoices(
+              { name: 'All detected rounds', value: 0 },
+              { name: 'Group Stage - Round 1', value: 1 },
+              { name: 'Group Stage - Round 2', value: 2 },
+              { name: 'Group Stage - Round 3', value: 3 }
+            )
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName('fix')
+            .setDescription('Fix channel permissions and linked match data when possible')
+            .setRequired(false)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
         .setName('sample')
         .setDescription('Create a sample match channel for testing')
         .addStringOption((option) =>

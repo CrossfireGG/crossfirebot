@@ -16,8 +16,8 @@ export async function provisionMatchChannel(guild, config, match) {
   );
   const privilegedRoles = [staffRole, ...matchAccessRoles].filter(Boolean);
 
-  const teamARole = await findOrCreateTeamRole(guild, match.teamA, config.createMissingTeamRoles);
-  const teamBRole = await findOrCreateTeamRole(guild, match.teamB, config.createMissingTeamRoles);
+  const teamARole = await findOrCreateTeamRole(guild, config, match.teamA);
+  const teamBRole = await findOrCreateTeamRole(guild, config, match.teamB);
 
   if (!teamARole || !teamBRole) {
     const missing = [
@@ -81,7 +81,24 @@ async function findRoleByName(guild, name) {
   return guild.roles.cache.find((role) => role.name.toLowerCase() === name.toLowerCase()) || null;
 }
 
-async function findOrCreateTeamRole(guild, name, shouldCreate) {
+export async function resolveTeamRole(guild, config, name) {
+  const mappedRoleId = config.teamRoleIds?.get(normalizeTeamKey(name));
+  if (mappedRoleId) {
+    const role = await guild.roles.fetch(mappedRoleId).catch(() => null);
+    if (role) return role;
+  }
+
+  return findRoleByName(guild, name);
+}
+
+async function findOrCreateTeamRole(guild, config, name) {
+  const shouldCreate = config.createMissingMatchTeamRoles;
+  const mappedRoleId = config.teamRoleIds?.get(normalizeTeamKey(name));
+  if (mappedRoleId) {
+    const mappedRole = await guild.roles.fetch(mappedRoleId).catch(() => null);
+    if (mappedRole) return mappedRole;
+  }
+
   const existing = await findRoleByName(guild, name);
   if (existing || !shouldCreate) return existing;
 
@@ -105,7 +122,7 @@ async function findOrCreateMatchAccessRoles(guild, roleIds, roleNames, shouldCre
   }
 
   for (const roleName of roleNames) {
-    const role = await findOrCreateTeamRole(guild, roleName, shouldCreate);
+    const role = await findOrCreateNamedRole(guild, roleName, shouldCreate);
     if (role && !seen.has(role.id)) {
       roles.push(role);
       seen.add(role.id);
@@ -113,6 +130,17 @@ async function findOrCreateMatchAccessRoles(guild, roleIds, roleNames, shouldCre
   }
 
   return roles;
+}
+
+async function findOrCreateNamedRole(guild, name, shouldCreate) {
+  const existing = await findRoleByName(guild, name);
+  if (existing || !shouldCreate) return existing;
+
+  return guild.roles.create({
+    name,
+    mentionable: true,
+    reason: 'FACEIT match channel permissions'
+  });
 }
 
 async function findOrCreateCategory(guild, roundName, everyoneRole, privilegedRoles) {
@@ -195,7 +223,16 @@ function makeChannelName(value) {
     .slice(0, 90);
 }
 
-function makeMatchChannelName(match) {
+function normalizeTeamKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+export function makeMatchChannelName(match) {
   const statusPrefix = makeStatusPrefix(match);
   const baseName = makeBaseMatchChannelName(match);
   return [statusPrefix, baseName].filter(Boolean).join('-').slice(0, 90);

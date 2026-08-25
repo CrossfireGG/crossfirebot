@@ -9,9 +9,10 @@ What it does:
 - Creates one private channel per match inside the matching group category.
 - Names group-stage match channels with the group letter, such as `a-team-one-vs-team-two`.
 - Adds `🟡-` to a match channel name when it is scheduled and `🟢-` when FACEIT reports it finished.
-- Gives channel access to Discord roles whose names match the FACEIT team names.
+- Gives channel access to exact configured team role IDs first, then falls back to Discord roles whose names match the FACEIT team names.
 - Gives match channel access to the two teams, Tournament Ops, and Producer.
-- Optionally creates missing team roles using the FACEIT team names.
+- Uses the built-in Crossfire team role ID registry, including aliases like `surge` -> `New Legends` and `Life's A Game` -> `LAG`.
+- Optionally creates missing roster/team roles only when explicitly enabled.
 - Assigns members to team roles from a Google Sheet CSV export.
 - Removes stale team, participant, and captain roles when the Google Sheet changes.
 - Gives users in `Team Captain Discord ID` the `Team Captain` role.
@@ -93,6 +94,8 @@ Then run these in Discord:
 
 - `/matches sync` creates/updates round categories and private match channels from FACEIT.
 - `/matches sync round:1` creates/updates only `Group Stage - Round 1`; use `round:2` or `round:3` for the other Group Stage rounds.
+- `/matches audit` checks FACEIT match channels, team role mappings, and permissions without creating new channels.
+- `/matches audit fix:true` repairs channel names, stored match links, pinned messages, and permissions using the same upsert logic as sync.
 - `/matches status` checks how many matches the bot knows about.
 - `/matches sample group:A round:1` creates a fake `a-team-one-vs-team-two` style match channel in `Group Stage - Round 1` for testing permissions and scheduling.
 - `/teams sync` updates team roles, participant roles, captain roles, and nicknames from the Google Sheet.

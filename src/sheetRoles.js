@@ -32,7 +32,7 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
   const currentTeamRoleIdByMemberId = new Map();
 
   for (const teamName of teamNames) {
-    const teamRoleResult = await findOrCreateRole(guild, teamName, config.createMissingTeamRoles);
+    const teamRoleResult = await findOrCreateRole(guild, teamName, config.createMissingTeamRoles, config);
     if (teamRoleResult.created) stats.rolesCreated += 1;
     if (teamRoleResult.role) teamRoles.set(teamName, teamRoleResult.role);
   }
@@ -355,7 +355,13 @@ function dedupeAssignments(assignments) {
   return [...byName.values()];
 }
 
-async function findOrCreateRole(guild, name, shouldCreate) {
+async function findOrCreateRole(guild, name, shouldCreate, config = null) {
+  const mappedRoleId = config?.teamRoleIds?.get(normalizeTeamKey(name));
+  if (mappedRoleId) {
+    const role = await guild.roles.fetch(mappedRoleId).catch(() => null);
+    if (role) return { role, created: false };
+  }
+
   const existing = guild.roles.cache.find((role) =>
     role.name.toLowerCase() === name.toLowerCase()
   );
@@ -559,6 +565,15 @@ function normalizeMemberLookup(value) {
     .replace(/^@/, '')
     .trim()
     .toLowerCase();
+}
+
+function normalizeTeamKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
 }
 
 function normalizeHeader(value) {

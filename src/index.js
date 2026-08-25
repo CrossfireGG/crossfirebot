@@ -15,7 +15,7 @@ import path from 'node:path';
 import { commands } from './commands.js';
 import { getConfig } from './config.js';
 import { FaceitClient } from './faceit.js';
-import { provisionMatchChannel, updateMatchChannelName } from './discordProvision.js';
+import { makeMatchChannelName, provisionMatchChannel, resolveTeamRole, updateMatchChannelName } from './discordProvision.js';
 import {
   acceptScheduleProposal,
   approveScheduleProposal,
@@ -132,6 +132,11 @@ async function handleAdminCommand(interaction) {
       return;
     }
 
+    if (subcommand === 'audit') {
+      await handleAuditMatches(interaction);
+      return;
+    }
+
     if (subcommand === 'sample') {
       await handleSampleMatch(interaction);
       return;
@@ -240,6 +245,153 @@ async function handleSyncMatches(interaction) {
     `Synced ${created} match channel(s) for ${roundText}. Skipped ${skipped}.`,
     coverage
   ].filter(Boolean).join('\n'));
+}
+
+async function handleAuditMatches(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
+  const requestedRound = interaction.options.getInteger('round') || 0;
+  const shouldFix = interaction.options.getBoolean('fix') || false;
+  const guild = await client.guilds.fetch(config.discordGuildId);
+  await guild.channels.fetch();
+  await guild.roles.fetch();
+
+  const matches = filterAndSortMatchesForSync(await faceit.getMatches(), requestedRound);
+  const result = {
+    checked: 0,
+    ok: 0,
+    missingChannel: 0,
+    missingRoles: 0,
+    badPermissions: 0,
+    fixed: 0,
+    problems: []
+  };
+
+  for (const match of matches) {
+    result.checked += 1;
+    const audit = await auditMatchProvisioning(guild, match);
+    const hasProblem = audit.problems.length > 0;
+
+    if (!hasProblem) {
+      result.ok += 1;
+      continue;
+    }
+
+    if (audit.missingChannel) result.missingChannel += 1;
+    if (audit.missingRoles.length) result.missingRoles += 1;
+    if (audit.badPermissions.length) result.badPermissions += 1;
+
+    if (shouldFix) {
+      try {
+        const discordIds = await provisionMatchChannel(guild, config, match);
+        await saveMatch(match, discordIds);
+        const channel = await guild.channels.fetch(discordIds.channelId);
+        await upsertMatchIntroMessage(channel, match);
+        result.fixed += 1;
+      } catch (error) {
+        result.problems.push(`${match.teamA} vs ${match.teamB}: fix failed - ${error.message}`);
+      }
+    } else {
+      result.problems.push(`${match.teamA} vs ${match.teamB}: ${audit.problems.join('; ')}`);
+    }
+  }
+
+  const roundText = requestedRound
+    ? `Group Stage - Round ${requestedRound}`
+    : 'all detected rounds';
+  const problemLines = result.problems.slice(0, 12).map((problem) => `- ${problem}`);
+  const hiddenCount = Math.max(0, result.problems.length - problemLines.length);
+
+  await interaction.editReply([
+    `${shouldFix ? 'Audited/fixed' : 'Audited'} ${result.checked} match(es) for ${roundText}.`,
+    `OK: ${result.ok}. Missing channels: ${result.missingChannel}. Missing mapped roles: ${result.missingRoles}. Bad permissions: ${result.badPermissions}. Fixed: ${result.fixed}.`,
+    problemLines.length ? ['Problems:', ...problemLines].join('\n') : null,
+    hiddenCount ? `...and ${hiddenCount} more problem(s).` : null,
+    shouldFix ? 'Run `/matches audit` again without fix to verify everything is clean.' : 'Use `/matches audit fix:true` to repair channel names, links, and permissions without intentionally duplicating existing match rooms.'
+  ].filter(Boolean).join('\n'));
+}
+
+async function auditMatchProvisioning(guild, match) {
+  const expectedName = makeMatchChannelName(match);
+  const channel = findAuditMatchChannel(guild, match, expectedName);
+  const teamARole = await resolveTeamRole(guild, config, match.teamA);
+  const teamBRole = await resolveTeamRole(guild, config, match.teamB);
+  const requiredAccessRoleIds = [
+    teamARole?.id,
+    teamBRole?.id,
+    ...config.matchAccessRoleIds
+  ].filter(Boolean);
+  const problems = [];
+  const badPermissions = [];
+
+  if (!teamARole) problems.push(`missing role mapping for ${match.teamA}`);
+  if (!teamBRole) problems.push(`missing role mapping for ${match.teamB}`);
+
+  if (!channel) {
+    problems.push(`missing channel ${expectedName}`);
+    return {
+      problems,
+      missingChannel: true,
+      missingRoles: [!teamARole ? match.teamA : null, !teamBRole ? match.teamB : null].filter(Boolean),
+      badPermissions
+    };
+  }
+
+  if (channel.name !== expectedName) {
+    problems.push(`wrong channel name ${channel.name}, expected ${expectedName}`);
+  }
+
+  const everyoneOverwrite = channel.permissionOverwrites.cache.get(guild.roles.everyone.id);
+  if (!everyoneOverwrite?.deny.has(PermissionFlagsBits.ViewChannel)) {
+    badPermissions.push('@everyone hidden');
+  }
+
+  for (const roleId of requiredAccessRoleIds) {
+    const overwrite = channel.permissionOverwrites.cache.get(roleId);
+    if (!overwrite?.allow.has(PermissionFlagsBits.ViewChannel)) {
+      badPermissions.push(`<@&${roleId}> view`);
+    }
+    if (!overwrite?.allow.has(PermissionFlagsBits.SendMessages)) {
+      badPermissions.push(`<@&${roleId}> send`);
+    }
+    if (!overwrite?.allow.has(PermissionFlagsBits.ReadMessageHistory)) {
+      badPermissions.push(`<@&${roleId}> history`);
+    }
+  }
+
+  for (const roleId of config.matchAccessRoleIds) {
+    const overwrite = channel.permissionOverwrites.cache.get(roleId);
+    if (!overwrite?.allow.has(PermissionFlagsBits.ManageMessages)) {
+      badPermissions.push(`<@&${roleId}> manage messages`);
+    }
+  }
+
+  if (badPermissions.length) {
+    problems.push(`bad permissions: ${badPermissions.join(', ')}`);
+  }
+
+  return {
+    problems,
+    missingChannel: false,
+    missingRoles: [!teamARole ? match.teamA : null, !teamBRole ? match.teamB : null].filter(Boolean),
+    badPermissions
+  };
+}
+
+function findAuditMatchChannel(guild, match, expectedName) {
+  const normalizedExpected = normalizeDiscordChannelName(stripMatchStatusPrefix(expectedName));
+  const faceitUrl = String(match.faceitUrl || '').toLowerCase();
+  const matchId = String(match.id || '').toLowerCase();
+
+  return guild.channels.cache.find((channel) => {
+    if (!channel.isTextBased?.() || !channel.permissionOverwrites?.cache) return false;
+
+    const channelName = normalizeDiscordChannelName(stripMatchStatusPrefix(channel.name));
+    if (channelName === normalizedExpected) return true;
+
+    const topic = String(channel.topic || '').toLowerCase();
+    return (matchId && topic.includes(matchId)) || (faceitUrl && topic.includes(faceitUrl));
+  }) || null;
 }
 
 function filterAndSortMatchesForSync(matches, requestedRound) {
@@ -709,8 +861,8 @@ async function recoverStoredMatchFromChannel(channel) {
   if (!match) return null;
 
   await channel.guild.roles.fetch().catch(() => null);
-  const teamARole = findRoleByName(channel.guild, match.teamA);
-  const teamBRole = findRoleByName(channel.guild, match.teamB);
+  const teamARole = await resolveTeamRole(channel.guild, config, match.teamA);
+  const teamBRole = await resolveTeamRole(channel.guild, config, match.teamB);
 
   if (!teamARole || !teamBRole) {
     return null;
@@ -762,12 +914,6 @@ function normalizeDiscordChannelName(value) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 90);
-}
-
-function findRoleByName(guild, name) {
-  return guild.roles.cache.find((role) =>
-    role.name.toLowerCase() === String(name || '').toLowerCase()
-  ) || null;
 }
 
 async function handleDeprecatedScheduleInteraction(interaction) {
