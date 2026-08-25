@@ -796,6 +796,7 @@ async function upsertMatchIntroMessage(channel, match) {
 
 function buildMatchIntroMessage(channel, match, discordIds = {}) {
   const roundInfo = getSeasonRoundInfo(match);
+  const scheduleWindow = getScheduleWindowForMatch(match);
   const matchDetails = getMatchDisplayDetails(match);
   const teamMentions = [
     discordIds.teamARoleId ? `<@&${discordIds.teamARoleId}>` : `**${match.teamA}**`,
@@ -814,8 +815,8 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     matchDetails.stage ? `Stage: **${matchDetails.stage}**` : null,
     `Round: **${matchDetails.round}**`,
     matchDetails.group ? `Group: **${matchDetails.group}**` : null,
-    roundInfo ? `Round window: **${roundInfo.start} - ${roundInfo.end}**` : 'Round window: **not configured for this round yet**',
-    roundInfo ? `Default match day/time: **${roundInfo.defaultDate} at 8:00 PM EST**` : 'Default match day/time: **admins will announce**',
+    scheduleWindow ? `${scheduleWindow.label}: **${scheduleWindow.start} - ${scheduleWindow.end}**` : 'Scheduling window: **not configured yet**',
+    roundInfo ? `Default round date/time: **${roundInfo.defaultDate} at 8:00 PM EST**` : 'Default round date/time: **admins will announce**',
     `Discord match chat: <#${channel.id}>`,
     faceitRoomLine(match),
     getFaceitScheduledTimeLine(match),
@@ -830,9 +831,9 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     '**Other commands**',
     '`!propose July 28 8:00 PM EST` - same as `!schedule`',
     '`!reschedule July 29 8:00 PM EST` - team member requests a new time',
-    'Reschedules must stay inside the round window. Reschedules within 24 hours of match time require admin override.',
+    'Schedules and reschedules must stay inside the scheduling window. Reschedules within 24 hours of match time require admin override.',
     isGroupStageMatch(match)
-      ? 'Group Stage note: teams may reschedule matches within their round window by mutual agreement.'
+      ? 'Group Stage note: any Group Stage match can be scheduled by mutual agreement from August 31, 2026 through September 8, 2026.'
       : null,
     `Roster changes: go to ${ticketChannel}.`,
     '',
@@ -1074,8 +1075,8 @@ function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) 
     allowed: true,
     warning: null,
     roundWindowMessage: window
-      ? `Round window: **${window.start} to ${window.end}**`
-      : 'Round window: **not configured; admins must verify manually**'
+      ? `${window.label}: **${window.start} to ${window.end}**`
+      : 'Scheduling window: **not configured; admins must verify manually**'
   };
 
   if (window && proposedDate) {
@@ -1085,7 +1086,7 @@ function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) 
       return {
         ...result,
         allowed: false,
-        message: `That time is outside the ${stored.match.round} window (${window.start} to ${window.end}). Ask an admin if you need an exception.`
+        message: `That time is outside the scheduling window (${window.start} to ${window.end}). Ask an admin if you need an exception.`
       };
     }
   }
@@ -1095,22 +1096,39 @@ function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) 
   }
 
   if (window && !proposedDate) {
-    result.warning = 'I could not read that date automatically. Admins must verify it is inside the round window.';
+    result.warning = 'I could not read that date automatically. Admins must verify it is inside the scheduling window.';
   }
 
   return result;
 }
 
 function getScheduleWindowForMatch(match) {
-  const configuredWindow = config.roundWindows[match.round.toLowerCase()];
-  if (configuredWindow) return configuredWindow;
+  const configuredWindow = config.roundWindows[String(match.round || '').toLowerCase()];
+  if (configuredWindow) {
+    return {
+      ...configuredWindow,
+      label: 'Scheduling window'
+    };
+  }
+
+  if (isGroupStageMatch(match)) {
+    const groupStage = seasonWindow('Group Stage');
+    if (!groupStage) return null;
+
+    return {
+      start: groupStage.start,
+      end: groupStage.end,
+      label: 'Group Stage scheduling window'
+    };
+  }
 
   const roundInfo = getSeasonRoundInfo(match);
   if (!roundInfo) return null;
 
   return {
     start: roundInfo.start,
-    end: roundInfo.end
+    end: roundInfo.end,
+    label: 'Scheduling window'
   };
 }
 

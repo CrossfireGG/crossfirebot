@@ -105,9 +105,9 @@ These slash commands are restricted to Discord admins, users with Manage Server,
 
 Inside each match channel:
 
-- The pinned first message pings both team roles, shows the FACEIT room, the round window, and the default match day at 8:00 PM EST.
-- Group Stage match messages show `Stage: Group Stage`, `Round: Round 1`, and `Group: A` instead of repeating the category name.
-- If FACEIT already has a scheduled time, the pinned message shows that; otherwise it shows the Season 6 default as the fallback.
+- The pinned first message pings both team roles, shows the FACEIT room, the scheduling window, and the default round date at 8:00 PM EST.
+- Group Stage match messages show `Stage: Group Stage`, `Round: 1`, and `Group: A` instead of repeating the category name.
+- If FACEIT already has a scheduled time, the pinned message shows that below the FACEIT room link.
 - The pinned first message explains the full schedule flow: one team member proposes with `!schedule`, a member from the other team confirms with `!accept`, then admins are alerted to schedule it on FACEIT.
 - Scheduling is command-only in match rooms; the bot does not add a propose-time button.
 - `!schedule 8/24/2026 3 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 1 8 PM EST` proposes a match time, detects the timezone, and pings the other team to confirm.
@@ -119,9 +119,9 @@ Inside each match channel:
 - `!calladmin reason here` alerts admins with the match channel and FACEIT link.
 - Old schedule buttons are disabled. Scheduling is command-only inside match rooms.
 
-Season 6 default round windows are built into the bot:
+Season 6 schedule windows and default round dates are built into the bot:
 
-- Group Stage: August 31, 2026 - September 8, 2026
+- Group Stage scheduling window: August 31, 2026 - September 8, 2026
 - Round 1: August 31, 2026 - September 2, 2026, default September 1, 2026 at 8:00 PM EST
 - Round 2: September 3, 2026 - September 5, 2026, default September 4, 2026 at 8:00 PM EST
 - Round 3: September 6, 2026 - September 8, 2026, default September 7, 2026 at 8:00 PM EST
@@ -138,11 +138,11 @@ Season 6 default round windows are built into the bot:
 
 Reschedule rules:
 
-- Reschedules must stay inside the configured round window.
+- Schedules and reschedules must stay inside the configured scheduling window.
 - Reschedules within 24 hours of the current match time are flagged for admin override.
 - Accepted schedules and reschedules are sent to admins to schedule manually on FACEIT.
 - When admins approve a schedule request in the staff channel, the bot reacts to that admin alert with a checkmark.
-- Group Stage teams may reschedule inside their round window by mutual agreement.
+- Group Stage teams may schedule or reschedule any Group Stage match from August 31, 2026 through September 8, 2026 by mutual agreement.
 - Roster changes should go to `#make-a-ticket`.
 - Set `ROSTER_TICKET_CHANNEL_ID=1418725495545004175` so pinned match messages link directly to the roster ticket channel.
 
