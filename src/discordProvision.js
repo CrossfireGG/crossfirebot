@@ -252,7 +252,7 @@ function makeStatusPrefix(match) {
     return '🟢';
   }
 
-  if (match.scheduledAt || status.includes('scheduled')) {
+  if (status.includes('scheduled')) {
     return '🟡';
   }
 
