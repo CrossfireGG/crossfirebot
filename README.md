@@ -103,6 +103,8 @@ These slash commands are restricted to Discord admins, users with Manage Server,
 Inside each match channel:
 
 - The pinned first message pings both team roles, shows the FACEIT room, the round window, and the default match day at 8:00 PM EST.
+- Group Stage match messages show `Stage: Group Stage`, `Round: Round 1`, and `Group: A` instead of repeating the category name.
+- If FACEIT already has a scheduled time, the pinned message shows that; otherwise it shows the Season 6 default as the fallback.
 - The pinned first message explains the full schedule flow: one team member proposes with `!schedule`, a member from the other team confirms with `!accept`, then admins are alerted to schedule it on FACEIT.
 - Scheduling is command-only in match rooms; the bot does not add a propose-time button.
 - `!schedule 8/24/2026 3 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 1 8 PM EST` proposes a match time, detects the timezone, and pings the other team to confirm.
@@ -134,6 +136,7 @@ Reschedule rules:
 - Reschedules must stay inside the configured round window.
 - Reschedules within 24 hours of the current match time are flagged for admin override.
 - Accepted schedules and reschedules are sent to admins to schedule manually on FACEIT.
+- When admins approve a schedule request in the staff channel, the bot reacts to that admin alert with a checkmark.
 - Group Stage teams may reschedule inside their round window by mutual agreement.
 - Roster changes should go to `#make-a-ticket`.
 - Set `ROSTER_TICKET_CHANNEL_ID=1418725495545004175` so pinned match messages link directly to the roster ticket channel.

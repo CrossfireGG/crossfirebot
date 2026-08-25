@@ -601,12 +601,15 @@ async function handleCallAdmin(message, content) {
   const adminChannel = await getCallAdminChannel();
   const staffMentions = getStaffMentions(message.guild);
   const allowedMentions = getAdminAllowedMentions(message.guild);
+  const matchDetails = getMatchDisplayDetails(stored.match);
 
   const alert = [
     staffMentions,
     '**ADMIN HELP REQUESTED**',
     `Match: **${stored.match.teamA} vs ${stored.match.teamB}**`,
-    `Round: **${stored.match.round}**`,
+    matchDetails.stage ? `Stage: **${matchDetails.stage}**` : null,
+    `Round: **${matchDetails.round}**`,
+    matchDetails.group ? `Group: **${matchDetails.group}**` : null,
     `Discord channel: <#${message.channel.id}>`,
     `Requested by: <@${message.author.id}>`,
     `Reason: ${reason}`,
@@ -779,13 +782,16 @@ async function handleScheduleAccepted(interaction) {
 async function notifyAdmins(guild, stored, proposal, acceptedBy, faceitLine) {
   const channel = await getScheduleAdminChannel();
   const allowedMentions = getAdminAllowedMentions(guild);
+  const matchDetails = getMatchDisplayDetails(stored.match);
   const content = [
     getStaffMentions(guild),
     proposal.kind === 'reschedule'
       ? '**ACTION NEEDED: Approve reschedule and update FACEIT**'
       : '**ACTION NEEDED: Schedule on FACEIT**',
     `Match: **${stored.match.teamA} vs ${stored.match.teamB}**`,
-    `Round: **${stored.match.round}**`,
+    matchDetails.stage ? `Stage: **${matchDetails.stage}**` : null,
+    `Round: **${matchDetails.round}**`,
+    matchDetails.group ? `Group: **${matchDetails.group}**` : null,
     `Accepted time: **${formatProposalTime(proposal)}**`,
     proposal.scheduledAtIso ? `Discord time: ${discordTimestamp(proposal.scheduledAtIso, 'F')}` : null,
     proposal.kind === 'reschedule' ? `Current/previous schedule: **${currentScheduleText(stored)}**` : null,
@@ -835,6 +841,7 @@ async function upsertMatchIntroMessage(channel, match) {
 
 function buildMatchIntroMessage(channel, match, discordIds = {}) {
   const roundInfo = getSeasonRoundInfo(match);
+  const matchDetails = getMatchDisplayDetails(match);
   const teamMentions = [
     discordIds.teamARoleId ? `<@&${discordIds.teamARoleId}>` : `**${match.teamA}**`,
     discordIds.teamBRoleId ? `<@&${discordIds.teamBRoleId}>` : `**${match.teamB}**`
@@ -849,13 +856,14 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     '',
     `**${match.teamA} vs ${match.teamB}**`,
     '',
-    `Round: **${match.round}**`,
-    match.group ? `Group: **${match.group.replace(/^Group\s+/i, '')}**` : null,
+    matchDetails.stage ? `Stage: **${matchDetails.stage}**` : null,
+    `Round: **${matchDetails.round}**`,
+    matchDetails.group ? `Group: **${matchDetails.group}**` : null,
     roundInfo ? `Round window: **${roundInfo.start} - ${roundInfo.end}**` : 'Round window: **not configured for this round yet**',
     roundInfo ? `Default match day/time: **${roundInfo.defaultDate} at 8:00 PM EST**` : 'Default match day/time: **admins will announce**',
     `Discord match chat: <#${channel.id}>`,
     match.faceitUrl ? `FACEIT match room: ${match.faceitUrl}` : null,
-    match.scheduledAt ? `FACEIT default schedule: **${match.scheduledAt}**` : 'FACEIT default schedule: **not set**',
+    getScheduleFallbackLine(match, roundInfo),
     '',
     '**How to schedule this match**',
     '1. One team member posts `!schedule 8/24/2026 3 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 1 8:00 PM EST`.',
@@ -878,11 +886,39 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
 }
 
 function getAdminNotificationLine(channel) {
-  const destination = config.adminScheduleChannelId
-    ? `<#${config.adminScheduleChannelId}>`
-    : 'this match channel';
+  return 'admins are notified and pinged to schedule it on FACEIT.';
+}
 
-  return `admins are notified in ${destination} and Match Staff/Producers are pinged to schedule it on FACEIT.`;
+function getMatchDisplayDetails(match) {
+  const roundNumber = getGroupStageRoundNumber(match);
+  const isGroupStage = isGroupStageMatch(match) || roundNumber !== 999;
+  const group = match.group ? match.group.replace(/^Group\s+/i, '') : '';
+
+  if (isGroupStage && roundNumber !== 999) {
+    return {
+      stage: 'Group Stage',
+      round: `Round ${roundNumber}`,
+      group
+    };
+  }
+
+  return {
+    stage: '',
+    round: match.round,
+    group
+  };
+}
+
+function getScheduleFallbackLine(match, roundInfo) {
+  if (match.scheduledAt) {
+    return `FACEIT scheduled time: **${match.scheduledAt}**`;
+  }
+
+  if (roundInfo) {
+    return `FACEIT schedule fallback: **${roundInfo.defaultDate} at 8:00 PM EST**`;
+  }
+
+  return 'FACEIT scheduled time: **not set**';
 }
 
 function getIntroAllowedMentions(discordIds = {}) {
@@ -901,10 +937,10 @@ function getSeasonRoundInfo(match) {
   const roundName = String(match.round || '').toLowerCase();
 
   if (stageName.includes('group')) {
-    const rawRound = Number(match.raw?.round ?? match.raw?.round_number);
-    if (rawRound === 1) return seasonWindow('Round 1');
-    if (rawRound === 2) return seasonWindow('Round 2');
-    if (rawRound === 3) return seasonWindow('Round 3');
+    const groupStageRound = getGroupStageRoundNumber(match);
+    if (groupStageRound === 1) return seasonWindow('Round 1');
+    if (groupStageRound === 2) return seasonWindow('Round 2');
+    if (groupStageRound === 3) return seasonWindow('Round 3');
     if (/\bround\s*1\b/.test(roundName)) return seasonWindow('Round 1');
     if (/\bround\s*2\b/.test(roundName)) return seasonWindow('Round 2');
     if (/\bround\s*3\b/.test(roundName)) return seasonWindow('Round 3');
@@ -1030,6 +1066,10 @@ async function handleAdminScheduleDecision(interaction, approved) {
       `Time: **${formatProposalTime(proposal)}**`,
       `Admin: <@${interaction.user.id}>`
     ].join('\n'));
+  }
+
+  if (approved) {
+    await interaction.message.react('✅').catch(() => null);
   }
 
   await interaction.editReply(approved ? 'Approved and match channel notified.' : 'Denied and match channel notified.');
