@@ -40,8 +40,12 @@ export class FaceitClient {
     const seen = new Set();
     let offset = 0;
     const limit = 100;
+    const maxPages = 50;
+    let pages = 0;
+    let duplicatePages = 0;
 
     while (true) {
+      pages += 1;
       const data = await this.request(`${sourcePath}?offset=${offset}&limit=${limit}`);
       const items = data.items || [];
       const newItems = items.filter((item) => {
@@ -52,8 +56,15 @@ export class FaceitClient {
       });
       all.push(...newItems);
 
-      if (!items.length || !newItems.length) break;
-      offset += items.length;
+      if (!items.length || items.length < limit || pages >= maxPages) break;
+
+      duplicatePages = newItems.length ? 0 : duplicatePages + 1;
+      if (duplicatePages >= 2) break;
+
+      const nextOffset = Number(data.end);
+      offset = Number.isInteger(nextOffset) && nextOffset > offset
+        ? nextOffset
+        : offset + items.length;
     }
 
     return all.map((raw) => normalizeMatch(raw, source)).filter(Boolean);
@@ -65,11 +76,11 @@ function normalizeMatch(raw, source) {
   const teams = raw.teams || {};
   const faction1 = teams.faction1 || teams.faction_a || {};
   const faction2 = teams.faction2 || teams.faction_b || {};
-  const teamA = cleanName(faction1.name || faction1.nickname || 'Team A');
-  const teamB = cleanName(faction2.name || faction2.nickname || 'Team B');
+  const teamA = cleanName(faction1.name || faction1.nickname || '');
+  const teamB = cleanName(faction2.name || faction2.nickname || '');
 
   const id = raw.match_id || raw.id;
-  if (!id) return null;
+  if (!id || !teamA || !teamB) return null;
   const categoryName = extractCategoryName(raw, source);
 
   return {
@@ -176,6 +187,9 @@ function extractGroup(raw, source) {
     const text = cleanName(candidate);
     const letterMatch = text.match(/\bgroup\s*([a-z])\b/i);
     if (letterMatch) return `Group ${letterMatch[1].toUpperCase()}`;
+
+    const numberMatch = text.match(/\bgroup\s*(\d+)\b/i);
+    if (numberMatch) return `Group ${numberToLetters(Number(numberMatch[1]))}`;
   }
 
   if (isGroupStageSource(source)) {

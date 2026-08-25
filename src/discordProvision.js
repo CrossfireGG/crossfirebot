@@ -208,8 +208,42 @@ function makeBaseMatchChannelName(match) {
 }
 
 function makeGroupPrefix(value) {
-  const match = String(value || '').match(/\bgroup\s*([a-z])\b/i);
-  return match ? match[1].toLowerCase() : '';
+  const text = String(value || '');
+  const letterMatch = text.match(/\bgroup\s*([a-z])\b/i);
+  if (letterMatch) return letterMatch[1].toLowerCase();
+
+  const numberMatch = text.match(/\bgroup\s*(\d+)\b/i);
+  if (numberMatch) return numberToLetters(Number(numberMatch[1])).toLowerCase();
+
+  return '';
+}
+
+function numberToLetters(value) {
+  let number = value;
+  let letters = '';
+
+  while (number > 0) {
+    number -= 1;
+    letters = String.fromCharCode(65 + (number % 26)) + letters;
+    number = Math.floor(number / 26);
+  }
+
+  return letters;
+}
+
+async function updateChannelTopic(channel, match) {
+  const topic = makeChannelTopic(match);
+  if (channel.topic !== topic) {
+    await channel.setTopic(topic).catch(() => null);
+  }
+}
+
+function makeChannelTopic(match) {
+  return [
+    `Round: ${match.round}`,
+    match.scheduledAt ? `FACEIT schedule: ${match.scheduledAt}` : 'FACEIT schedule: not set',
+    match.faceitUrl ? `Room: ${match.faceitUrl}` : null
+  ].filter(Boolean).join(' | ').slice(0, 1024);
 }
 
 function makeStatusPrefix(match) {
@@ -229,19 +263,4 @@ function stripMatchStatusPrefix(value) {
   return String(value || '')
     .replace(/^(?:🟡|🟢|v)-/i, '')
     .replace(/^(?:scheduled|finished)-/i, '');
-}
-
-async function updateChannelTopic(channel, match) {
-  const topic = makeChannelTopic(match);
-  if (channel.topic !== topic) {
-    await channel.setTopic(topic).catch(() => null);
-  }
-}
-
-function makeChannelTopic(match) {
-  return [
-    `Round: ${match.round}`,
-    match.scheduledAt ? `FACEIT schedule: ${match.scheduledAt}` : 'FACEIT schedule: not set',
-    match.faceitUrl ? `Room: ${match.faceitUrl}` : null
-  ].filter(Boolean).join(' | ').slice(0, 1024);
 }

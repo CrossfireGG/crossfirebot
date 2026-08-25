@@ -20,12 +20,16 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
     participantAdded: 0,
     captainAdded: 0,
     nicknamesChanged: 0,
+    removed: 0,
     skipped: 0,
     missingMembers: [],
     failedActions: [],
     captainDmsSent: 0,
     captainDmsFailed: 0
   };
+  const currentCaptainMemberIds = new Set();
+  const currentRosterMemberIds = new Set();
+  const currentTeamRoleIdByMemberId = new Map();
 
   for (const teamName of teamNames) {
     const teamRoleResult = await findOrCreateRole(guild, teamName, config.createMissingTeamRoles);
@@ -73,6 +77,9 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
         continue;
       }
 
+      currentRosterMemberIds.add(member.id);
+      currentTeamRoleIdByMemberId.set(member.id, teamRole.id);
+
       if (!member.roles.cache.has(teamRole.id)) {
         if (await addRole(member, teamRole, 'Google Sheet team role sync')) {
           stats.added += 1;
@@ -93,6 +100,7 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
 
       if (assignment.isCaptain) {
         captainMembers.push(member);
+        currentCaptainMemberIds.add(member.id);
         if (captainRoleResult.role && !member.roles.cache.has(captainRoleResult.role.id)) {
           if (await addRole(member, captainRoleResult.role, 'Google Sheet captain role sync')) {
             stats.captainAdded += 1;
@@ -123,10 +131,23 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
         participantAdded: stats.participantAdded,
         captainAdded: stats.captainAdded,
         nicknamesChanged: stats.nicknamesChanged,
+        removed: stats.removed,
         skipped: stats.skipped
       });
     }
   }
+
+  const captainRoleResult = await findCaptainRole(guild, config);
+  if (captainRoleResult.role) {
+    await removeStaleCaptainRoles(guild, captainRoleResult.role, currentCaptainMemberIds, stats);
+  }
+
+  const participantRoleResult = await findParticipantRole(guild, config);
+  if (participantRoleResult.role) {
+    await removeStaleParticipantRoles(guild, participantRoleResult.role, currentRosterMemberIds, stats);
+  }
+
+  await removeStaleManagedTeamRoles(guild, teamRoles, previousTeamRoleIds, currentTeamRoleIdByMemberId, stats);
 
   return {
     ...stats,
@@ -436,6 +457,56 @@ async function removeStaleTeamRoles(member, teamRoles, previousTeamRoleIds, curr
       await member.roles.remove(roleId, 'Removing stale Google Sheet team role');
     } catch {
       stats.failedActions.push(`${currentTeamName}: could not remove stale ${teamName} role from ${member.user.username}`);
+    }
+  }
+}
+
+async function removeStaleCaptainRoles(guild, captainRole, currentCaptainMemberIds, stats) {
+  for (const member of guild.members.cache.values()) {
+    if (!member.roles.cache.has(captainRole.id) || currentCaptainMemberIds.has(member.id)) continue;
+
+    try {
+      await member.roles.remove(captainRole, 'Removing stale Google Sheet captain role');
+      stats.removed += 1;
+    } catch {
+      stats.failedActions.push(`could not remove stale captain role from ${member.user.username}`);
+    }
+  }
+}
+
+async function removeStaleParticipantRoles(guild, participantRole, currentRosterMemberIds, stats) {
+  for (const member of guild.members.cache.values()) {
+    if (!member.roles.cache.has(participantRole.id) || currentRosterMemberIds.has(member.id)) continue;
+
+    try {
+      await member.roles.remove(participantRole, 'Removing stale Google Sheet participant role');
+      stats.removed += 1;
+    } catch {
+      stats.failedActions.push(`could not remove stale participant role from ${member.user.username}`);
+    }
+  }
+}
+
+async function removeStaleManagedTeamRoles(guild, teamRoles, previousTeamRoleIds, currentTeamRoleIdByMemberId, stats) {
+  const managedRoleIds = new Set([
+    ...[...teamRoles.values()].map((role) => role.id),
+    ...Object.entries(previousTeamRoleIds || {})
+      .filter(([teamName]) => teamName !== 'updatedAt')
+      .map(([, roleId]) => roleId)
+  ].filter(Boolean));
+
+  for (const member of guild.members.cache.values()) {
+    const currentRoleId = currentTeamRoleIdByMemberId.get(member.id) || null;
+
+    for (const roleId of managedRoleIds) {
+      if (roleId === currentRoleId || !member.roles.cache.has(roleId)) continue;
+
+      try {
+        await member.roles.remove(roleId, 'Removing stale Google Sheet team role');
+        stats.removed += 1;
+      } catch {
+        stats.failedActions.push(`could not remove stale team role from ${member.user.username}`);
+      }
     }
   }
 }

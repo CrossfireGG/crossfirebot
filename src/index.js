@@ -7,8 +7,7 @@ import {
   GatewayIntentBits,
   PermissionFlagsBits,
   REST,
-  Routes,
-  StringSelectMenuBuilder
+  Routes
 } from 'discord.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,7 +22,6 @@ import {
   denyScheduleProposal,
   declineScheduleProposal,
   getLatestOpenScheduleProposalForMatch,
-  getScheduleProposal,
   getStoredMatch,
   getStoredMatchByChannel,
   listStoredMatches,
@@ -80,7 +78,7 @@ client.once(Events.ClientReady, async () => {
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) {
-      if (!isAdminStaff(interaction.member)) {
+      if (!canUseBotAdminCommand(interaction.member)) {
         await interaction.reply({ content: 'Only admins/match staff can use this bot command.', ephemeral: true });
         return;
       }
@@ -90,19 +88,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('schedule:')) {
-      await showScheduleDatePicker(interaction);
+      await handleDeprecatedScheduleInteraction(interaction);
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('schedule_date:')) {
-      await showScheduleTimePicker(interaction);
+      await handleDeprecatedScheduleInteraction(interaction);
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('schedule_time:')) {
-      await handleScheduleTimeSelected(interaction);
+      await handleDeprecatedScheduleInteraction(interaction);
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('schedule_accept:')) {
-      await handleScheduleAccepted(interaction);
+      await handleDeprecatedScheduleInteraction(interaction);
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('admin_schedule_approve:')) {
@@ -237,7 +235,11 @@ async function handleSyncMatches(interaction) {
   const roundText = requestedRound
     ? `Group Stage - Round ${requestedRound}`
     : 'all detected rounds';
-  await interaction.editReply(`Synced ${created} match channel(s) for ${roundText}. Skipped ${skipped}.`);
+  const coverage = summarizeSyncCoverage(matches);
+  await interaction.editReply([
+    `Synced ${created} match channel(s) for ${roundText}. Skipped ${skipped}.`,
+    coverage
+  ].filter(Boolean).join('\n'));
 }
 
 function filterAndSortMatchesForSync(matches, requestedRound) {
@@ -281,6 +283,67 @@ function lettersToNumber(value) {
       if (code < 65 || code > 90) return total;
       return total * 26 + code - 64;
     }, 0) || 999;
+}
+
+function summarizeSyncCoverage(matches) {
+  const grouped = new Map();
+
+  for (const match of matches) {
+    if (!isGroupStageMatch(match)) continue;
+
+    const round = getGroupStageRoundNumber(match);
+    const group = getGroupLetterForMatch(match);
+    if (!round || round === 999 || !group) continue;
+
+    if (!grouped.has(round)) grouped.set(round, new Set());
+    grouped.get(round).add(group);
+  }
+
+  if (!grouped.size) return '';
+
+  return [...grouped.entries()]
+    .sort(([roundA], [roundB]) => roundA - roundB)
+    .map(([round, groups]) => {
+      const sortedGroups = [...groups].sort((a, b) => lettersToNumber(a) - lettersToNumber(b));
+      const missingGroups = expectedGroupLetters()
+        .filter((group) => !groups.has(group));
+      const missingText = missingGroups.length
+        ? ` Missing groups: ${missingGroups.join(', ')}.`
+        : ' All groups A-L detected.';
+      return `Group Stage - Round ${round}: groups ${sortedGroups.join(', ')}.${missingText}`;
+    })
+    .join('\n');
+}
+
+function expectedGroupLetters() {
+  return Array.from({ length: 12 }, (_, index) => String.fromCharCode(65 + index));
+}
+
+function numberToLetters(value) {
+  let number = value;
+  let letters = '';
+
+  while (number > 0) {
+    number -= 1;
+    letters = String.fromCharCode(65 + (number % 26)) + letters;
+    number = Math.floor(number / 26);
+  }
+
+  return letters;
+}
+
+function getGroupLetterForMatch(match) {
+  const groupText = String(match.group || '');
+  const groupNameMatch = groupText.match(/\bgroup\s*([a-z]+)\b/i);
+  if (groupNameMatch) return groupNameMatch[1].toUpperCase();
+
+  const rawGroup = Number(match.raw?.group ?? match.raw?.group_number);
+  if (Number.isInteger(rawGroup) && rawGroup > 0) {
+    return numberToLetters(rawGroup);
+  }
+
+  const fallback = groupText.match(/[a-z]+/i);
+  return fallback ? fallback[0].toUpperCase() : '';
 }
 
 async function handleSampleMatch(interaction) {
@@ -374,7 +437,7 @@ async function handleSyncTeamRoles(interaction) {
       lastProgressAt = now;
 
       await interaction.editReply(
-        `Syncing team roles... ${progress.current}/${progress.total} teams checked. Created ${progress.rolesCreated} role(s), added ${progress.added} team role assignment(s), ${progress.participantAdded} participant assignment(s), ${progress.captainAdded} captain assignment(s). Captain DMs: **${notifyCaptains ? 'on' : 'off'}**.`
+        `Syncing team roles... ${progress.current}/${progress.total} teams checked. Created ${progress.rolesCreated} role(s), added ${progress.added} team role assignment(s), ${progress.participantAdded} participant assignment(s), ${progress.captainAdded} captain assignment(s), removed ${progress.removed} stale role assignment(s). Captain DMs: **${notifyCaptains ? 'on' : 'off'}**.`
       ).catch(() => null);
     }
   );
@@ -387,7 +450,7 @@ async function handleSyncTeamRoles(interaction) {
     : '';
 
   await interaction.editReply(
-    `Synced team roles from Google Sheet. Created ${result.rolesCreated} role(s), added ${result.added} team role assignment(s), ${result.participantAdded} season participant assignment(s), ${result.captainAdded} captain role assignment(s), changed ${result.nicknamesChanged} nickname(s), sent ${result.captainDmsSent} captain DM(s). Skipped ${result.skipped}.${missingLine}${failedLine}`
+    `Synced team roles from Google Sheet. Created ${result.rolesCreated} role(s), added ${result.added} team role assignment(s), ${result.participantAdded} season participant assignment(s), ${result.captainAdded} captain role assignment(s), removed ${result.removed} stale role assignment(s), changed ${result.nicknamesChanged} nickname(s), sent ${result.captainDmsSent} captain DM(s). Skipped ${result.skipped}.${missingLine}${failedLine}`
   );
 }
 
@@ -627,142 +690,23 @@ async function handleCallAdmin(message, content) {
   await message.channel.send({ content: alert, allowedMentions });
 }
 
-async function showScheduleDatePicker(interaction) {
-  const matchId = interaction.customId.split(':')[1];
-  const stored = await getStoredMatch(matchId);
-  if (!stored) {
-    await interaction.reply({ content: 'I could not find that stored match. Run `/matches sync` again.', ephemeral: true });
-    return;
-  }
+async function handleDeprecatedScheduleInteraction(interaction) {
+  const response = {
+    content: 'Scheduling is command-only now. In the match room, use `!schedule September 1 8 PM EST`; teams confirm with `!accept`, and Tournament Ops can schedule directly.',
+    components: [],
+    ephemeral: true
+  };
 
-  const member = await interaction.guild.members.fetch(interaction.user.id);
-  const proposerTeam = getMemberTeam(member, stored.discord);
-  if (!proposerTeam) {
-    await interaction.reply({
-      content: 'Only a member from one of the two teams can propose a schedule.',
-      ephemeral: true
+  if (interaction.isMessageComponent()) {
+    await interaction.update({ content: response.content, components: [] }).catch(async () => {
+      await interaction.followUp(response).catch(() => null);
     });
     return;
   }
 
-  const dateMenu = new StringSelectMenuBuilder()
-    .setCustomId(`schedule_date:${matchId}:${proposerTeam}`)
-    .setPlaceholder('Pick a match date')
-    .addOptions(nextDateOptions());
-
-  await interaction.reply({
-    content: `Pick a date for **${stored.match.teamA} vs ${stored.match.teamB}**.`,
-    components: [new ActionRowBuilder().addComponents(dateMenu)],
-    ephemeral: true
-  });
-}
-
-async function showScheduleTimePicker(interaction) {
-  const [, matchId, proposerTeam] = interaction.customId.split(':');
-  const selectedDate = interaction.values[0];
-  const timeMenu = new StringSelectMenuBuilder()
-    .setCustomId(`schedule_time:${matchId}:${proposerTeam}:${selectedDate}`)
-    .setPlaceholder('Pick a match time')
-    .addOptions(timeOptions(selectedDate));
-
-  await interaction.update({
-    content: `Date selected: **${formatDateLabel(selectedDate)}**. Now pick a time.`,
-    components: [new ActionRowBuilder().addComponents(timeMenu)]
-  });
-}
-
-async function handleScheduleTimeSelected(interaction) {
-  const [, matchId, proposerTeam, selectedDate] = interaction.customId.split(':');
-  const stored = await getStoredMatch(matchId);
-  if (!stored) {
-    await interaction.update({ content: 'I could not find that stored match. Run `/matches sync` again.', components: [] });
-    return;
+  if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+    await interaction.reply(response);
   }
-
-  const member = await interaction.guild.members.fetch(interaction.user.id);
-  if (getMemberTeam(member, stored.discord) !== proposerTeam) {
-    await interaction.update({ content: 'Only a member from the proposing team can finish this proposal.', components: [] });
-    return;
-  }
-
-  const selectedTime = interaction.values[0];
-  const scheduledAt = `${selectedDate} ${selectedTime}`;
-  const parsedSchedule = parseScheduleInput(`${selectedDate} ${selectedTime} ${config.defaultTimezone}`);
-  const displayScheduledAt = parsedSchedule?.display || `${scheduledAt} ${config.defaultTimezone}`;
-  const proposalId = makeProposalId();
-  const otherTeam = proposerTeam === 'teamA' ? 'teamB' : 'teamA';
-  const otherRoleId = otherTeam === 'teamA'
-    ? stored.discord.teamARoleId
-    : stored.discord.teamBRoleId;
-
-  await saveScheduleProposal({
-    id: proposalId,
-    matchId,
-    scheduledAt: displayScheduledAt,
-    scheduledAtIso: parsedSchedule?.iso || null,
-    timezone: parsedSchedule?.timeZone || config.defaultTimezone,
-    proposedBy: interaction.user.id,
-    proposerTeam,
-    accepted: false
-  });
-
-  await interaction.channel.send({
-    content: [
-      `<@&${otherRoleId}>`,
-      `**Schedule proposed:** ${stored.match.teamA} vs ${stored.match.teamB}`,
-      `Time: **${displayScheduledAt}**${parsedSchedule?.discordTimestamp ? ` (${parsedSchedule.discordTimestamp})` : ''}`,
-      `Proposed by: <@${interaction.user.id}>`,
-      'A member from the other team must accept this.'
-    ].join('\n'),
-    components: [acceptButton(proposalId)]
-  });
-
-  await interaction.update({
-    content: `Proposal posted for **${displayScheduledAt}**.`,
-    components: []
-  });
-}
-
-async function handleScheduleAccepted(interaction) {
-  await interaction.deferReply({ ephemeral: true });
-
-  const proposalId = interaction.customId.split(':')[1];
-  const proposal = await getScheduleProposal(proposalId);
-  if (!proposal) {
-    await interaction.editReply('I could not find that schedule proposal.');
-    return;
-  }
-
-  if (proposal.accepted) {
-    await interaction.editReply('That schedule was already accepted.');
-    return;
-  }
-
-  const stored = await getStoredMatch(proposal.matchId);
-  if (!stored) {
-    await interaction.editReply('I could not find the stored match for that proposal.');
-    return;
-  }
-
-  const member = await interaction.guild.members.fetch(interaction.user.id);
-  const memberTeam = getMemberTeam(member, stored.discord);
-  const otherTeam = proposal.proposerTeam === 'teamA' ? 'teamB' : 'teamA';
-  if (memberTeam !== otherTeam) {
-    await interaction.editReply('Only a member from the other team can accept this schedule.');
-    return;
-  }
-
-  const faceitLine = await applyAcceptedSchedule(interaction.channel, stored, proposal, interaction.user.id);
-
-  await interaction.channel.send([
-    `**Schedule accepted:** ${stored.match.teamA} vs ${stored.match.teamB}`,
-    `Time: **${formatProposalTime(proposal)}**`,
-    `Accepted by: <@${interaction.user.id}>`,
-    faceitLine
-  ].join('\n'));
-
-  await notifyAdmins(interaction.guild, stored, proposal, interaction.user.id, faceitLine);
-  await interaction.editReply('Schedule accepted and admins were notified.');
 }
 
 async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy) {
@@ -1093,9 +1037,24 @@ function isAdminStaff(member) {
     return true;
   }
 
+  if (config.adminAlertRoleIds.some((roleId) => member.roles.cache.has(roleId))) {
+    return true;
+  }
+
   return config.matchAccessRoleNames.some((roleName) =>
     member.roles.cache.some((role) => role.name.toLowerCase() === roleName.toLowerCase())
-  ) || config.matchAccessRoleIds.some((roleId) => member.roles.cache.has(roleId));
+  ) ||
+    config.matchAccessRoleIds.some((roleId) => member.roles.cache.has(roleId)) ||
+    config.scheduleOverrideRoleIds.some((roleId) => member.roles.cache.has(roleId));
+}
+
+function canUseBotAdminCommand(member) {
+  if (member.permissions?.has(PermissionFlagsBits.Administrator) ||
+      member.permissions?.has(PermissionFlagsBits.ManageGuild)) {
+    return true;
+  }
+
+  return Boolean(config.discordStaffRoleId && member.roles.cache.has(config.discordStaffRoleId));
 }
 
 function hasScheduleOverride(member) {
@@ -1463,74 +1422,6 @@ function getMemberTeam(member, discordIds) {
   if (member.roles.cache.has(discordIds.teamARoleId)) return 'teamA';
   if (member.roles.cache.has(discordIds.teamBRoleId)) return 'teamB';
   return null;
-}
-
-function isCaptain(member) {
-  return member.roles.cache.some((role) =>
-    role.name.toLowerCase() === config.teamCaptainRoleName.toLowerCase()
-  );
-}
-
-function nextDateOptions() {
-  const options = [];
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric'
-  });
-
-  for (let offset = 0; offset < 14; offset += 1) {
-    const date = new Date();
-    date.setDate(date.getDate() + offset);
-    const value = date.toISOString().slice(0, 10);
-    const prefix = offset === 0 ? 'Today' : offset === 1 ? 'Tomorrow' : formatter.format(date);
-    options.push({
-      label: `${prefix} (${value})`,
-      value
-    });
-  }
-
-  return options;
-}
-
-function timeOptions() {
-  const times = [
-    '5:00 PM',
-    '5:30 PM',
-    '6:00 PM',
-    '6:30 PM',
-    '7:00 PM',
-    '7:30 PM',
-    '8:00 PM',
-    '8:30 PM',
-    '9:00 PM',
-    '9:30 PM',
-    '10:00 PM',
-    '10:30 PM',
-    '11:00 PM',
-    '11:30 PM'
-  ];
-
-  return times.map((time) => ({ label: time, value: time }));
-}
-
-function formatDateLabel(value) {
-  const [year, month, day] = value.split('-').map(Number);
-  return new Intl.DateTimeFormat('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric'
-  }).format(new Date(year, month - 1, day));
-}
-
-function acceptButton(proposalId) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`schedule_accept:${proposalId}`)
-      .setLabel('Accept schedule')
-      .setStyle(ButtonStyle.Success)
-  );
 }
 
 function makeProposalId() {

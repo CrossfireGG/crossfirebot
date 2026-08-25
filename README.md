@@ -13,8 +13,10 @@ What it does:
 - Gives match channel access to the two teams, Tournament Ops, and Producer.
 - Optionally creates missing team roles using the FACEIT team names.
 - Assigns members to team roles from a Google Sheet CSV export.
+- Removes stale team, participant, and captain roles when the Google Sheet changes.
 - Gives users in `Team Captain Discord ID` the `Team Captain` role.
 - Lets team members propose and confirm a scheduled match time in Discord.
+- Lets Tournament Ops schedule directly from a match channel without waiting for team acceptance.
 - Calls a FACEIT schedule adapter when a write endpoint is available.
 
 ## What I Need From You
@@ -115,6 +117,7 @@ Inside each match channel:
 - `!decline` lets a member from the other team decline it.
 - Users with a role in `SCHEDULE_OVERRIDE_ROLE_IDS` can run `!schedule` in a match room to set the schedule directly without both teams accepting.
 - `!calladmin reason here` alerts admins with the match channel and FACEIT link.
+- Old schedule buttons are disabled. Scheduling is command-only inside match rooms.
 
 Season 6 default round windows are built into the bot:
 
