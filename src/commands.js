@@ -17,6 +17,29 @@ export const commands = [
         .setName('status')
         .setDescription('Show how many FACEIT matches are stored by the bot')
     )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('sample')
+        .setDescription('Create a sample match channel for testing')
+        .addStringOption((option) =>
+          option
+            .setName('group')
+            .setDescription('Group letter for the sample match')
+            .setRequired(false)
+        )
+        .addStringOption((option) =>
+          option
+            .setName('team_a')
+            .setDescription('First sample team name')
+            .setRequired(false)
+        )
+        .addStringOption((option) =>
+          option
+            .setName('team_b')
+            .setDescription('Second sample team name')
+            .setRequired(false)
+        )
+    )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
     .setName('teams')

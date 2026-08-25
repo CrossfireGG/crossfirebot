@@ -133,6 +133,11 @@ async function handleAdminCommand(interaction) {
       await interaction.reply({ content: `I know about ${matches.length} match(es).`, ephemeral: true });
       return;
     }
+
+    if (subcommand === 'sample') {
+      await handleSampleMatch(interaction);
+      return;
+    }
   }
 
   if (interaction.commandName === 'teams') {
@@ -228,6 +233,73 @@ async function handleSyncMatches(interaction) {
   }
 
   await interaction.editReply(`Synced ${created} match channel(s). Skipped ${skipped}.`);
+}
+
+async function handleSampleMatch(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
+  const guild = await client.guilds.fetch(config.discordGuildId);
+  await guild.channels.fetch();
+  await guild.roles.fetch();
+
+  const match = buildSampleMatch(interaction);
+  const discordIds = await provisionMatchChannel(guild, config, match);
+  await saveMatch(match, discordIds);
+
+  const channel = await guild.channels.fetch(discordIds.channelId);
+  await upsertMatchIntroMessage(channel, match);
+
+  await interaction.editReply([
+    `Created sample match chat: <#${channel.id}>`,
+    `Channel name should be \`${channel.name}\`.`,
+    `Give yourself one sample team role, give another person the other sample team role, then test \`!propose Tuesday 8 PM EST\` and \`!accept\`.`
+  ].join('\n'));
+}
+
+function buildSampleMatch(interaction) {
+  const groupLetter = normalizeGroupLetter(interaction.options.getString('group') || 'A');
+  const teamA = cleanSampleName(interaction.options.getString('team_a') || 'Sample Team One');
+  const teamB = cleanSampleName(interaction.options.getString('team_b') || 'Sample Team Two');
+  const roundNumber = 1;
+  const categoryName = `Round ${roundNumber} Group Stage`;
+
+  return {
+    id: `sample:${interaction.guildId}:${groupLetter}:${slugForId(teamA)}:${slugForId(teamB)}`,
+    status: 'sample',
+    round: categoryName,
+    group: `Group ${groupLetter}`,
+    categoryName,
+    source: {
+      type: 'sample',
+      id: 'sample',
+      name: 'Group Stage - Sample'
+    },
+    teamA,
+    teamB,
+    faceitUrl: null,
+    scheduledAt: null,
+    raw: {
+      round: roundNumber,
+      group: groupLetter
+    }
+  };
+}
+
+function normalizeGroupLetter(value) {
+  const match = String(value || 'A').trim().match(/[a-z]/i);
+  return match ? match[0].toUpperCase() : 'A';
+}
+
+function cleanSampleName(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').slice(0, 80) || 'Sample Team';
+}
+
+function slugForId(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
 }
 
 async function handleSyncTeamRoles(interaction) {
