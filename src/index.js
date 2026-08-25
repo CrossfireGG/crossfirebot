@@ -235,7 +235,7 @@ async function handleSyncMatches(interaction) {
   }
 
   const roundText = requestedRound
-    ? `Round ${requestedRound} Group Stage`
+    ? `Group Stage - Round ${requestedRound}`
     : 'all detected rounds';
   await interaction.editReply(`Synced ${created} match channel(s) for ${roundText}. Skipped ${skipped}.`);
 }
@@ -257,7 +257,7 @@ function compareMatchesForChannelOrder(a, b) {
 }
 
 function getGroupStageRoundNumber(match) {
-  const categoryMatch = String(match.categoryName || match.round || '').match(/\bround\s*(\d+)\s+group stage\b/i);
+  const categoryMatch = String(match.categoryName || match.round || '').match(/\b(?:group stage\s*-\s*round|round)\s*(\d+)(?:\s+group stage)?\b/i);
   if (categoryMatch) return Number(categoryMatch[1]);
 
   const rawRound = Number(match.raw?.round_number ?? match.raw?.round);
@@ -309,7 +309,7 @@ function buildSampleMatch(interaction) {
   const teamA = cleanSampleName(interaction.options.getString('team_a') || 'Sample Team One');
   const teamB = cleanSampleName(interaction.options.getString('team_b') || 'Sample Team Two');
   const roundNumber = normalizeGroupStageRound(interaction.options.getInteger('round') || 1);
-  const categoryName = `Round ${roundNumber} Group Stage`;
+  const categoryName = `Group Stage - Round ${roundNumber}`;
 
   return {
     id: `sample:${interaction.guildId}:${groupLetter}:${slugForId(teamA)}:${slugForId(teamB)}`,

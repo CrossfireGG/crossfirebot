@@ -133,7 +133,7 @@ function extractRound(raw) {
 function extractCategoryName(raw, source) {
   if (isGroupStageSource(source)) {
     const roundNumber = extractGroupStageRoundNumber(raw);
-    if (roundNumber) return `Round ${roundNumber} Group Stage`;
+    if (roundNumber) return `Group Stage - Round ${roundNumber}`;
 
     return 'Group Stage';
   }

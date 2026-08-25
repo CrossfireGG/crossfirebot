@@ -5,7 +5,7 @@ This bot creates private Discord match channels from a FACEIT Crossfire bracket.
 What it does:
 
 - Reads matches from a FACEIT championship or tournament.
-- Creates one Discord category per FACEIT round, such as `Round 1 Group Stage`.
+- Creates one Discord category per FACEIT round, such as `Group Stage - Round 1`.
 - Creates one private channel per match inside the matching group category.
 - Names group-stage match channels with the group letter, such as `a-team-one-vs-team-two`.
 - Adds `🟡-` to a match channel name when it is scheduled and `🟢-` when FACEIT reports it finished.
@@ -89,9 +89,9 @@ https://discord.com/oauth2/authorize?client_id=1523887433047867423&permissions=2
 Then run these in Discord:
 
 - `/matches sync` creates/updates round categories and private match channels from FACEIT.
-- `/matches sync round:1` creates/updates only `Round 1 Group Stage`; use `round:2` or `round:3` for the other Group Stage rounds.
+- `/matches sync round:1` creates/updates only `Group Stage - Round 1`; use `round:2` or `round:3` for the other Group Stage rounds.
 - `/matches status` checks how many matches the bot knows about.
-- `/matches sample group:A round:1` creates a fake `a-team-one-vs-team-two` style match channel in `Round 1 Group Stage` for testing permissions and scheduling.
+- `/matches sample group:A round:1` creates a fake `a-team-one-vs-team-two` style match channel in `Group Stage - Round 1` for testing permissions and scheduling.
 - `/teams sync` updates team roles, participant roles, captain roles, and nicknames from the Google Sheet.
 - `/teams sync notify_captains:true` also DMs captains about missing players.
 - After roster changes or team-name changes in the Google Sheet, run `/teams sync`; the bot fetches the latest sheet and removes stale team roles it previously managed.

@@ -18,9 +18,9 @@ export const commands = [
             .setRequired(false)
             .addChoices(
               { name: 'All detected rounds', value: 0 },
-              { name: 'Round 1 Group Stage', value: 1 },
-              { name: 'Round 2 Group Stage', value: 2 },
-              { name: 'Round 3 Group Stage', value: 3 }
+              { name: 'Group Stage - Round 1', value: 1 },
+              { name: 'Group Stage - Round 2', value: 2 },
+              { name: 'Group Stage - Round 3', value: 3 }
             )
         )
     )
@@ -45,9 +45,9 @@ export const commands = [
             .setDescription('Group Stage round number')
             .setRequired(false)
             .addChoices(
-              { name: 'Round 1 Group Stage', value: 1 },
-              { name: 'Round 2 Group Stage', value: 2 },
-              { name: 'Round 3 Group Stage', value: 3 }
+              { name: 'Group Stage - Round 1', value: 1 },
+              { name: 'Group Stage - Round 2', value: 2 },
+              { name: 'Group Stage - Round 3', value: 3 }
             )
         )
         .addStringOption((option) =>
