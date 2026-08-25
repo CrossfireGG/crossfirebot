@@ -818,7 +818,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     roundInfo ? `Default match day/time: **${roundInfo.defaultDate} at 8:00 PM EST**` : 'Default match day/time: **admins will announce**',
     `Discord match chat: <#${channel.id}>`,
     match.faceitUrl ? `FACEIT match room: ${match.faceitUrl}` : null,
-    getScheduleFallbackLine(match, roundInfo),
+    getFaceitScheduledTimeLine(match),
     '',
     '**How to schedule this match**',
     '1. One team member posts `!schedule 8/24/2026 3 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 1 8:00 PM EST`.',
@@ -865,16 +865,12 @@ function getMatchDisplayDetails(match) {
   };
 }
 
-function getScheduleFallbackLine(match, roundInfo) {
+function getFaceitScheduledTimeLine(match) {
   if (match.scheduledAt) {
     return `FACEIT scheduled time: **${match.scheduledAt}**`;
   }
 
-  if (roundInfo) {
-    return `FACEIT schedule fallback: **${roundInfo.defaultDate} at 8:00 PM EST**`;
-  }
-
-  return 'FACEIT scheduled time: **not set**';
+  return null;
 }
 
 function faceitRoomLine(match) {
