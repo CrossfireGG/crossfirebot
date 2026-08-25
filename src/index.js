@@ -666,12 +666,12 @@ async function handleMissingPlayers(interaction) {
 async function handleTextScheduleProposal(message, content, kind) {
   const stored = await getStoredMatchForChannel(message.channel);
   if (!stored) {
-    await message.reply([
+    await message.reply(await buildUnlinkedMatchChannelMessage(message.channel, [
       kind === 'reschedule'
         ? 'Use `!reschedule` inside a match channel created by the bot.'
         : 'Use `!schedule` or `!propose` inside a match channel created by the bot.',
-      'If this should be a match room, run the real Discord slash command `/matches sync` from the command menu first so I can link the channel to the FACEIT match.'
-    ].join('\n'));
+      'If this should be a match room, run `/matches audit fix:true` to repair missing links, names, and permissions.'
+    ]));
     return;
   }
 
@@ -749,7 +749,10 @@ async function handleTextScheduleProposal(message, content, kind) {
 async function handleTextAccept(message) {
   const stored = await getStoredMatchForChannel(message.channel);
   if (!stored) {
-    await message.reply('Use `!accept` inside a match channel created by the bot.');
+    await message.reply(await buildUnlinkedMatchChannelMessage(message.channel, [
+      'Use `!accept` inside a match channel created by the bot.',
+      'If this is a match room, run `/matches audit fix:true` so I can relink it.'
+    ]));
     return;
   }
 
@@ -783,7 +786,10 @@ async function handleTextAccept(message) {
 async function handleTextDecline(message) {
   const stored = await getStoredMatchForChannel(message.channel);
   if (!stored) {
-    await message.reply('Use `!decline` inside a match channel created by the bot.');
+    await message.reply(await buildUnlinkedMatchChannelMessage(message.channel, [
+      'Use `!decline` inside a match channel created by the bot.',
+      'If this is a match room, run `/matches audit fix:true` so I can relink it.'
+    ]));
     return;
   }
 
@@ -814,7 +820,10 @@ async function handleTextDecline(message) {
 async function handleCallAdmin(message, content) {
   const stored = await getStoredMatchForChannel(message.channel);
   if (!stored) {
-    await message.reply('Use `!calladmin` inside a match channel created by the bot.');
+    await message.reply(await buildUnlinkedMatchChannelMessage(message.channel, [
+      'Use `!calladmin` inside a match channel created by the bot.',
+      'If this is a match room, run `/matches audit fix:true` so I can relink it.'
+    ]));
     return;
   }
 
@@ -851,6 +860,34 @@ async function getStoredMatchForChannel(channel) {
   if (stored) return stored;
 
   return recoverStoredMatchFromChannel(channel);
+}
+
+async function buildUnlinkedMatchChannelMessage(channel, baseLines) {
+  const matches = await faceit.getMatches().catch(() => []);
+  const likelyMatches = matches
+    .filter((match) => channelLooksLikeMatch(channel, match))
+    .slice(0, 5);
+  const topicStatus = channel.topic
+    ? 'Channel topic exists, but I could not match it to a FACEIT room/match ID.'
+    : 'Channel topic is empty, so I could not read a FACEIT room/match ID from it.';
+  const likelyLines = likelyMatches.length
+    ? [
+        'Closest FACEIT matches I can see:',
+        ...likelyMatches.map((match) =>
+          `- ${match.teamA} vs ${match.teamB} | ${match.categoryName || match.round}${match.group ? ` | ${match.group}` : ''}`
+        )
+      ]
+    : ['I could not find a close FACEIT match from this channel name.'];
+
+  return [
+    ...baseLines,
+    '',
+    `Channel checked: <#${channel.id}> (\`${channel.name}\`)`,
+    topicStatus,
+    ...likelyLines,
+    '',
+    'Admin fix: run the real slash command `/matches audit`, then `/matches audit fix:true` if it reports missing links or permissions.'
+  ].join('\n');
 }
 
 async function recoverStoredMatchFromChannel(channel) {
@@ -893,13 +930,37 @@ function channelMatchesFaceitMatch(channel, match) {
   if (faceitUrl && topic.includes(faceitUrl)) return true;
 
   const channelName = normalizeDiscordChannelName(stripMatchStatusPrefix(channel.name));
-  return channelName === recoverableMatchChannelName(match);
+  return recoverableMatchChannelNames(match).includes(channelName);
+}
+
+function recoverableMatchChannelNames(match) {
+  const groupPrefix = getGroupLetterForMatch(match).toLowerCase();
+  return [
+    `${match.teamA} vs ${match.teamB}`,
+    `${match.teamB} vs ${match.teamA}`
+  ].map((name) => {
+    const matchName = normalizeDiscordChannelName(name);
+    return [groupPrefix, matchName].filter(Boolean).join('-').slice(0, 90);
+  });
 }
 
 function recoverableMatchChannelName(match) {
-  const groupPrefix = getGroupLetterForMatch(match).toLowerCase();
-  const matchName = normalizeDiscordChannelName(`${match.teamA} vs ${match.teamB}`);
-  return [groupPrefix, matchName].filter(Boolean).join('-').slice(0, 90);
+  return recoverableMatchChannelNames(match)[0];
+}
+
+function channelLooksLikeMatch(channel, match) {
+  const channelName = normalizeDiscordChannelName(stripMatchStatusPrefix(channel.name));
+  const teamA = normalizeDiscordChannelName(match.teamA);
+  const teamB = normalizeDiscordChannelName(match.teamB);
+  const topic = String(channel.topic || '').toLowerCase();
+  const matchId = String(match.id || '').toLowerCase();
+  const faceitUrl = String(match.faceitUrl || '').toLowerCase();
+
+  return Boolean(
+    (teamA && teamB && channelName.includes(teamA) && channelName.includes(teamB)) ||
+    (matchId && topic.includes(matchId)) ||
+    (faceitUrl && topic.includes(faceitUrl))
+  );
 }
 
 function stripMatchStatusPrefix(value) {

@@ -96,6 +96,7 @@ Then run these in Discord:
 - `/matches sync round:1` creates/updates only `Group Stage - Round 1`; use `round:2` or `round:3` for the other Group Stage rounds.
 - `/matches audit` checks FACEIT match channels, team role mappings, and permissions without creating new channels.
 - `/matches audit fix:true` repairs channel names, stored match links, pinned messages, and permissions using the same upsert logic as sync.
+- If `!schedule`, `!propose`, `!accept`, `!decline`, or `!calladmin` is used in an unlinked match room, the bot tries to recover the match from the channel topic/name and reports what it could not recognize.
 - `/matches status` checks how many matches the bot knows about.
 - `/matches sample group:A round:1` creates a fake `a-team-one-vs-team-two` style match channel in `Group Stage - Round 1` for testing permissions and scheduling.
 - `/teams sync` updates team roles, participant roles, captain roles, and nicknames from the Google Sheet.
