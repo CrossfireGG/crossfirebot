@@ -300,7 +300,8 @@ async function handleSampleMatch(interaction) {
   await interaction.editReply([
     `Created sample match chat: <#${channel.id}>`,
     `Channel name should be \`${channel.name}\`.`,
-    `Give yourself one sample team role, give another person the other sample team role, then test \`!propose Tuesday 8 PM EST\` and \`!accept\`.`
+    `Team test: give yourself one sample team role, give another person the other sample team role, then test \`!propose Tuesday 8 PM EST\` and \`!accept\`.`,
+    `Tournament Ops test: give yourself the Tournament Ops role, then test \`!schedule Tuesday 8 PM EST\` without \`!accept\`.`
   ].join('\n'));
 }
 
@@ -461,8 +462,9 @@ async function handleTextScheduleProposal(message, content, kind) {
 
   const member = await message.guild.members.fetch(message.author.id);
   const proposerTeam = getMemberTeam(member, stored.discord);
-  if (!proposerTeam) {
-    await message.reply('Only a member from one of the two teams can propose a schedule.');
+  const canScheduleDirectly = hasScheduleOverride(member);
+  if (!proposerTeam && !canScheduleDirectly) {
+    await message.reply('Only a member from one of the two teams can propose a schedule. Tournament Ops can schedule it directly.');
     return;
   }
 
@@ -481,12 +483,7 @@ async function handleTextScheduleProposal(message, content, kind) {
   const scheduledAt = parsedSchedule?.display || proposedText;
 
   const proposalId = makeProposalId();
-  const otherTeam = proposerTeam === 'teamA' ? 'teamB' : 'teamA';
-  const otherRoleId = otherTeam === 'teamA'
-    ? stored.discord.teamARoleId
-    : stored.discord.teamBRoleId;
-
-  await saveScheduleProposal({
+  const proposal = {
     id: proposalId,
     matchId: stored.match.id,
     scheduledAt,
@@ -494,12 +491,33 @@ async function handleTextScheduleProposal(message, content, kind) {
     timezone: parsedSchedule?.timeZone || config.defaultTimezone,
     timezoneInput: parsedSchedule?.timeZoneInput || null,
     proposedBy: message.author.id,
-    proposerTeam,
+    proposerTeam: proposerTeam || 'ops',
     accepted: false,
     kind,
     source: 'text',
-    validation
-  });
+    validation,
+    override: canScheduleDirectly
+  };
+
+  await saveScheduleProposal(proposal);
+
+  if (canScheduleDirectly) {
+    const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id);
+    await message.channel.send([
+      `**${kind === 'reschedule' ? 'Reschedule' : 'Schedule'} set by Tournament Ops:** ${stored.match.teamA} vs ${stored.match.teamB}`,
+      `Time: **${formatProposalTime(proposal)}**`,
+      `Set by: <@${message.author.id}>`,
+      validation.warning ? `Warning: **${validation.warning}**` : null,
+      faceitLine
+    ].filter(Boolean).join('\n'));
+    await notifyAdmins(message.guild, stored, proposal, message.author.id, faceitLine);
+    return;
+  }
+
+  const otherTeam = proposerTeam === 'teamA' ? 'teamB' : 'teamA';
+  const otherRoleId = otherTeam === 'teamA'
+    ? stored.discord.teamARoleId
+    : stored.discord.teamBRoleId;
 
   await message.channel.send([
     `<@&${otherRoleId}>`,
@@ -532,23 +550,7 @@ async function handleTextAccept(message) {
     return;
   }
 
-  await acceptScheduleProposal(proposal.id, message.author.id);
-  const result = await scheduleFaceitMatch(
-    config,
-    proposal.matchId,
-    proposal.scheduledAtIso || proposal.scheduledAt,
-    proposal.timezone
-  );
-  const faceitLine = result.skipped
-    ? adminActionLine(proposal)
-    : 'FACEIT schedule updated.';
-  const scheduledMatch = {
-    ...stored.match,
-    status: 'scheduled',
-    scheduledAt: proposal.scheduledAt
-  };
-  await updateMatchChannelName(message.channel, scheduledMatch);
-  await saveMatch(scheduledMatch, stored.discord);
+  const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id);
 
   await message.channel.send([
     `**${proposal.kind === 'reschedule' ? 'Reschedule' : 'Schedule'} accepted:** ${stored.match.teamA} vs ${stored.match.teamB}`,
@@ -750,7 +752,21 @@ async function handleScheduleAccepted(interaction) {
     return;
   }
 
-  await acceptScheduleProposal(proposalId, interaction.user.id);
+  const faceitLine = await applyAcceptedSchedule(interaction.channel, stored, proposal, interaction.user.id);
+
+  await interaction.channel.send([
+    `**Schedule accepted:** ${stored.match.teamA} vs ${stored.match.teamB}`,
+    `Time: **${formatProposalTime(proposal)}**`,
+    `Accepted by: <@${interaction.user.id}>`,
+    faceitLine
+  ].join('\n'));
+
+  await notifyAdmins(interaction.guild, stored, proposal, interaction.user.id, faceitLine);
+  await interaction.editReply('Schedule accepted and admins were notified.');
+}
+
+async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy) {
+  await acceptScheduleProposal(proposal.id, acceptedBy);
   const result = await scheduleFaceitMatch(
     config,
     proposal.matchId,
@@ -765,18 +781,9 @@ async function handleScheduleAccepted(interaction) {
     status: 'scheduled',
     scheduledAt: proposal.scheduledAt
   };
-  await updateMatchChannelName(interaction.channel, scheduledMatch);
+  await updateMatchChannelName(channel, scheduledMatch);
   await saveMatch(scheduledMatch, stored.discord);
-
-  await interaction.channel.send([
-    `**Schedule accepted:** ${stored.match.teamA} vs ${stored.match.teamB}`,
-    `Time: **${formatProposalTime(proposal)}**`,
-    `Accepted by: <@${interaction.user.id}>`,
-    faceitLine
-  ].join('\n'));
-
-  await notifyAdmins(interaction.guild, stored, proposal, interaction.user.id, faceitLine);
-  await interaction.editReply('Schedule accepted and admins were notified.');
+  return faceitLine;
 }
 
 async function notifyAdmins(guild, stored, proposal, acceptedBy, faceitLine) {
@@ -796,7 +803,7 @@ async function notifyAdmins(guild, stored, proposal, acceptedBy, faceitLine) {
     proposal.scheduledAtIso ? `Discord time: ${discordTimestamp(proposal.scheduledAtIso, 'F')}` : null,
     proposal.kind === 'reschedule' ? `Current/previous schedule: **${currentScheduleText(stored)}**` : null,
     `Proposed by: <@${proposal.proposedBy}>`,
-    `Accepted by: <@${acceptedBy}>`,
+    proposal.override ? `Set by Tournament Ops: <@${acceptedBy}>` : `Accepted by: <@${acceptedBy}>`,
     proposal.validation?.warning ? `Warning: **${proposal.validation.warning}**` : null,
     proposal.validation?.roundWindowMessage ? proposal.validation.roundWindowMessage : null,
     stored.match.faceitUrl ? `FACEIT: ${stored.match.faceitUrl}` : null,
@@ -870,6 +877,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     '2. The bot detects the timezone, records the proposed time, and pings the other team role.',
     '3. A member from the other team posts `!accept` to confirm or `!decline` to reject.',
     `4. After \`!accept\`, ${adminNotificationLine}`,
+    'Tournament Ops can use `!schedule September 1 8 PM EST` to set the time directly without team approval.',
     '',
     '**Other commands**',
     '`!propose July 28 8:00 PM EST` - same as `!schedule`',
@@ -1057,7 +1065,7 @@ async function handleAdminScheduleDecision(interaction, approved) {
 
   const stored = await getStoredMatch(proposal.matchId);
   const matchChannel = stored
-    ? await interaction.guild.channels.fetch(stored.discord.channelId).catch(() => null)
+    ? await client.channels.fetch(stored.discord.channelId).catch(() => null)
     : null;
 
   if (matchChannel) {
@@ -1088,6 +1096,10 @@ function isAdminStaff(member) {
   return config.matchAccessRoleNames.some((roleName) =>
     member.roles.cache.some((role) => role.name.toLowerCase() === roleName.toLowerCase())
   ) || config.matchAccessRoleIds.some((roleId) => member.roles.cache.has(roleId));
+}
+
+function hasScheduleOverride(member) {
+  return config.scheduleOverrideRoleIds.some((roleId) => member.roles.cache.has(roleId));
 }
 
 function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) {

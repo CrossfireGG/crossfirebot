@@ -34,6 +34,7 @@ export function getConfig() {
     rosterTicketChannelId: process.env.ROSTER_TICKET_CHANNEL_ID || '1418725495545004175',
     matchAccessRoleIds: parseCsvValue(process.env.MATCH_ACCESS_ROLE_IDS || ''),
     matchAccessRoleNames: parseCsvValue(process.env.MATCH_ACCESS_ROLE_NAMES || ''),
+    scheduleOverrideRoleIds: parseCsvValue(process.env.SCHEDULE_OVERRIDE_ROLE_IDS || '1128907825167482900'),
     createMissingTeamRoles: process.env.CREATE_MISSING_TEAM_ROLES === 'true',
     faceitApiKey: process.env.FACEIT_API_KEY,
     faceitSources,

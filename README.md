@@ -69,6 +69,7 @@ ADMIN_SCHEDULE_CHANNEL_ID=1541647371405107232
 CALL_ADMIN_CHANNEL_ID=1541647392447664158
 ADMIN_ALERT_ROLE_IDS=1474118305169019163
 MATCH_ACCESS_ROLE_IDS=1128907825167482900,1353921199016644700
+SCHEDULE_OVERRIDE_ROLE_IDS=1128907825167482900
 MATCH_ACCESS_ROLE_NAMES=
 ```
 
@@ -112,6 +113,7 @@ Inside each match channel:
 - `!reschedule July 29 8:00 PM EST` requests a reschedule.
 - `!accept` lets a member from the other team accept it.
 - `!decline` lets a member from the other team decline it.
+- Users with a role in `SCHEDULE_OVERRIDE_ROLE_IDS` can run `!schedule` in a match room to set the schedule directly without both teams accepting.
 - `!calladmin reason here` alerts admins with the match channel and FACEIT link.
 
 Season 6 default round windows are built into the bot:
