@@ -512,13 +512,13 @@ async function handleMissingPlayers(interaction) {
 }
 
 async function handleTextScheduleProposal(message, content, kind) {
-  const stored = await getStoredMatchByChannel(message.channel.id);
+  const stored = await getStoredMatchForChannel(message.channel);
   if (!stored) {
     await message.reply([
       kind === 'reschedule'
         ? 'Use `!reschedule` inside a match channel created by the bot.'
         : 'Use `!schedule` or `!propose` inside a match channel created by the bot.',
-      'If this should be a match room, run `/matches sync` first so I can link the channel to the FACEIT match.'
+      'If this should be a match room, run the real Discord slash command `/matches sync` from the command menu first so I can link the channel to the FACEIT match.'
     ].join('\n'));
     return;
   }
@@ -595,7 +595,7 @@ async function handleTextScheduleProposal(message, content, kind) {
 }
 
 async function handleTextAccept(message) {
-  const stored = await getStoredMatchByChannel(message.channel.id);
+  const stored = await getStoredMatchForChannel(message.channel);
   if (!stored) {
     await message.reply('Use `!accept` inside a match channel created by the bot.');
     return;
@@ -629,7 +629,7 @@ async function handleTextAccept(message) {
 }
 
 async function handleTextDecline(message) {
-  const stored = await getStoredMatchByChannel(message.channel.id);
+  const stored = await getStoredMatchForChannel(message.channel);
   if (!stored) {
     await message.reply('Use `!decline` inside a match channel created by the bot.');
     return;
@@ -660,7 +660,7 @@ async function handleTextDecline(message) {
 }
 
 async function handleCallAdmin(message, content) {
-  const stored = await getStoredMatchByChannel(message.channel.id);
+  const stored = await getStoredMatchForChannel(message.channel);
   if (!stored) {
     await message.reply('Use `!calladmin` inside a match channel created by the bot.');
     return;
@@ -692,6 +692,82 @@ async function handleCallAdmin(message, content) {
   }
 
   await message.channel.send({ content: alert, allowedMentions });
+}
+
+async function getStoredMatchForChannel(channel) {
+  const stored = await getStoredMatchByChannel(channel.id);
+  if (stored) return stored;
+
+  return recoverStoredMatchFromChannel(channel);
+}
+
+async function recoverStoredMatchFromChannel(channel) {
+  if (!channel.guild) return null;
+
+  const matches = await faceit.getMatches().catch(() => []);
+  const match = matches.find((candidate) => channelMatchesFaceitMatch(channel, candidate));
+  if (!match) return null;
+
+  await channel.guild.roles.fetch().catch(() => null);
+  const teamARole = findRoleByName(channel.guild, match.teamA);
+  const teamBRole = findRoleByName(channel.guild, match.teamB);
+
+  if (!teamARole || !teamBRole) {
+    return null;
+  }
+
+  const discordIds = {
+    categoryId: channel.parentId,
+    channelId: channel.id,
+    teamARoleId: teamARole.id,
+    teamBRoleId: teamBRole.id
+  };
+
+  await saveMatch(match, discordIds);
+  await upsertMatchIntroMessage(channel, match);
+
+  return {
+    match,
+    discord: discordIds
+  };
+}
+
+function channelMatchesFaceitMatch(channel, match) {
+  const topic = String(channel.topic || '').toLowerCase();
+  const faceitUrl = String(match.faceitUrl || '').toLowerCase();
+  const matchId = String(match.id || '').toLowerCase();
+
+  if (matchId && topic.includes(matchId)) return true;
+  if (faceitUrl && topic.includes(faceitUrl)) return true;
+
+  const channelName = normalizeDiscordChannelName(stripMatchStatusPrefix(channel.name));
+  return channelName === recoverableMatchChannelName(match);
+}
+
+function recoverableMatchChannelName(match) {
+  const groupPrefix = getGroupLetterForMatch(match).toLowerCase();
+  const matchName = normalizeDiscordChannelName(`${match.teamA} vs ${match.teamB}`);
+  return [groupPrefix, matchName].filter(Boolean).join('-').slice(0, 90);
+}
+
+function stripMatchStatusPrefix(value) {
+  return String(value || '')
+    .replace(/^(?:🟡|🟢|v)-/i, '')
+    .replace(/^(?:scheduled|finished)-/i, '');
+}
+
+function normalizeDiscordChannelName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 90);
+}
+
+function findRoleByName(guild, name) {
+  return guild.roles.cache.find((role) =>
+    role.name.toLowerCase() === String(name || '').toLowerCase()
+  ) || null;
 }
 
 async function handleDeprecatedScheduleInteraction(interaction) {
