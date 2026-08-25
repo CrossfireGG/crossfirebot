@@ -569,6 +569,7 @@ async function handleTextScheduleProposal(message, content, kind) {
     await message.channel.send([
       `**${kind === 'reschedule' ? 'Reschedule' : 'Schedule'} set by Tournament Ops:** ${stored.match.teamA} vs ${stored.match.teamB}`,
       `Time: **${formatProposalTime(proposal)}**`,
+      faceitRoomLine(stored.match),
       `Set by: <@${message.author.id}>`,
       validation.warning ? `Warning: **${validation.warning}**` : null,
       faceitLine
@@ -586,6 +587,7 @@ async function handleTextScheduleProposal(message, content, kind) {
     `<@&${otherRoleId}>`,
     `**${kind === 'reschedule' ? 'Reschedule' : 'Schedule'} proposed:** ${stored.match.teamA} vs ${stored.match.teamB}`,
     `Time: **${scheduledAt}**${parsedSchedule?.discordTimestamp ? ` (${parsedSchedule.discordTimestamp})` : ''}`,
+    faceitRoomLine(stored.match),
     `Proposed by: <@${message.author.id}>`,
     validation.warning ? `Warning: **${validation.warning}**` : null,
     'Other team: type `!accept` or `!decline` to confirm.'
@@ -618,6 +620,7 @@ async function handleTextAccept(message) {
   await message.channel.send([
     `**${proposal.kind === 'reschedule' ? 'Reschedule' : 'Schedule'} accepted:** ${stored.match.teamA} vs ${stored.match.teamB}`,
     `Time: **${formatProposalTime(proposal)}**`,
+    faceitRoomLine(stored.match),
     `Accepted by: <@${message.author.id}>`,
     faceitLine
   ].join('\n'));
@@ -650,6 +653,7 @@ async function handleTextDecline(message) {
   await message.channel.send([
     `**Schedule declined:** ${stored.match.teamA} vs ${stored.match.teamB}`,
     `Declined time: **${formatProposalTime(proposal)}**`,
+    faceitRoomLine(stored.match),
     `Declined by: <@${message.author.id}>`,
     'A team member can propose another time with `!schedule tomorrow at 9 PM EST`.'
   ].join('\n'));
@@ -750,7 +754,7 @@ async function notifyAdmins(guild, stored, proposal, acceptedBy, faceitLine) {
     proposal.override ? `Set by Tournament Ops: <@${acceptedBy}>` : `Accepted by: <@${acceptedBy}>`,
     proposal.validation?.warning ? `Warning: **${proposal.validation.warning}**` : null,
     proposal.validation?.roundWindowMessage ? proposal.validation.roundWindowMessage : null,
-    stored.match.faceitUrl ? `FACEIT: ${stored.match.faceitUrl}` : null,
+    faceitRoomLine(stored.match),
     faceitLine
   ].filter(Boolean).join('\n');
   const targetChannel = channel || await guild.channels.fetch(stored.discord.channelId).catch(() => null);
@@ -849,7 +853,7 @@ function getMatchDisplayDetails(match) {
   if (isGroupStage && roundNumber !== 999) {
     return {
       stage: 'Group Stage',
-      round: `Round ${roundNumber}`,
+      round: String(roundNumber),
       group
     };
   }
@@ -871,6 +875,12 @@ function getScheduleFallbackLine(match, roundInfo) {
   }
 
   return 'FACEIT scheduled time: **not set**';
+}
+
+function faceitRoomLine(match) {
+  return match.faceitUrl
+    ? `FACEIT match room: ${match.faceitUrl}`
+    : 'FACEIT match room: not linked';
 }
 
 function getIntroAllowedMentions(discordIds = {}) {
