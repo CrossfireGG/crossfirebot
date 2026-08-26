@@ -815,7 +815,9 @@ async function handleTextScheduleProposal(message, content, kind) {
   await saveScheduleProposal(proposal);
 
   if (canScheduleDirectly) {
-    const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id);
+    const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id, {
+      markScheduled: true
+    });
     await message.channel.send([
       `**${kind === 'reschedule' ? 'Reschedule' : 'Schedule'} set by Tournament Ops:** ${stored.match.teamA} vs ${stored.match.teamB}`,
       `Time: **${formatProposalTime(proposal)}**`,
@@ -1104,7 +1106,7 @@ async function handleDeprecatedScheduleInteraction(interaction) {
   }
 }
 
-async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy) {
+async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy, options = {}) {
   await acceptScheduleProposal(proposal.id, acceptedBy);
   const result = await scheduleFaceitMatch(
     config,
@@ -1117,11 +1119,13 @@ async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy) {
     : 'FACEIT schedule updated.';
   const scheduledMatch = {
     ...stored.match,
-    status: 'discord_scheduled',
-    scheduledByDiscord: true,
+    status: options.markScheduled ? 'discord_scheduled' : 'schedule_pending_admin',
+    scheduledByDiscord: Boolean(options.markScheduled),
     scheduledAt: proposal.scheduledAt
   };
-  await updateMatchChannelName(channel, scheduledMatch);
+  if (options.markScheduled) {
+    await updateMatchChannelName(channel, scheduledMatch);
+  }
   await saveMatch(scheduledMatch, stored.discord);
   return faceitLine;
 }
@@ -1144,6 +1148,7 @@ async function notifyAdmins(guild, stored, proposal, acceptedBy, faceitLine) {
     proposal.kind === 'reschedule' ? `Current/previous schedule: **${currentScheduleText(stored)}**` : null,
     `Proposed by: <@${proposal.proposedBy}>`,
     proposal.override ? `Set by Tournament Ops: <@${acceptedBy}>` : `Accepted by: <@${acceptedBy}>`,
+    `Discord match chat: <#${stored.discord.channelId}>`,
     proposal.validation?.warning ? `Warning: **${proposal.validation.warning}**` : null,
     proposal.validation?.roundWindowMessage ? proposal.validation.roundWindowMessage : null,
     faceitRoomLine(stored.match),
@@ -1156,7 +1161,7 @@ async function notifyAdmins(guild, stored, proposal, acceptedBy, faceitLine) {
   await targetChannel.send({
     content,
     allowedMentions,
-    components: [adminDecisionButtons(proposal.id)]
+    components: [adminDecisionButtons(proposal.id, stored.discord.channelId)]
   });
 }
 
@@ -1420,17 +1425,14 @@ async function handleAdminScheduleDecision(interaction, approved) {
     return;
   }
 
-  const proposalId = interaction.customId.split(':')[1];
+  const [, proposalId, channelId] = interaction.customId.split(':');
   const proposal = approved
     ? await approveScheduleProposal(proposalId, interaction.user.id)
     : await denyScheduleProposal(proposalId, interaction.user.id);
+  const stored = proposal
+    ? await getStoredMatch(proposal.matchId)
+    : await findStoredMatchFromAdminMessage(interaction.message, channelId);
 
-  if (!proposal) {
-    await interaction.editReply('I could not find that schedule request.');
-    return;
-  }
-
-  const stored = await getStoredMatch(proposal.matchId);
   const matchChannel = stored
     ? await client.channels.fetch(stored.discord.channelId).catch(() => null)
     : null;
@@ -1438,16 +1440,54 @@ async function handleAdminScheduleDecision(interaction, approved) {
   if (matchChannel) {
     await matchChannel.send([
       approved ? '**Admin approved schedule request.**' : '**Admin denied schedule request.**',
-      `Time: **${formatProposalTime(proposal)}**`,
+      proposal ? `Time: **${formatProposalTime(proposal)}**` : null,
       `Admin: <@${interaction.user.id}>`
-    ].join('\n'));
+    ].filter(Boolean).join('\n'));
   }
 
   if (approved) {
+    if (matchChannel && stored) {
+      await markMatchChannelScheduled(matchChannel, stored, proposal);
+    }
     await interaction.message.react('✅').catch(() => null);
   }
 
-  await interaction.editReply(approved ? 'Approved and match channel notified.' : 'Denied and match channel notified.');
+  const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
+  const missingChannelNote = matchChannel ? '' : ' I could not find the match channel to mark yellow.';
+  await interaction.editReply(
+    `${approved ? 'Approved and reacted with a checkmark.' : 'Denied.'}${missingProposalNote}${missingChannelNote}`
+  );
+}
+
+async function findStoredMatchFromAdminMessage(message, channelId) {
+  if (channelId) {
+    const storedByChannel = await getStoredMatchByChannel(channelId);
+    if (storedByChannel) return storedByChannel;
+  }
+
+  const content = String(message?.content || '');
+  const channelMention = content.match(/<#(\d{15,25})>/);
+  if (channelMention) {
+    const storedByMention = await getStoredMatchByChannel(channelMention[1]);
+    if (storedByMention) return storedByMention;
+  }
+
+  const storedMatches = await listStoredMatches();
+  return storedMatches.find((stored) => {
+    const faceitUrl = stored.match?.faceitUrl;
+    return faceitUrl && content.includes(faceitUrl);
+  }) || null;
+}
+
+async function markMatchChannelScheduled(channel, stored, proposal = null) {
+  const scheduledMatch = {
+    ...stored.match,
+    status: 'discord_scheduled',
+    scheduledByDiscord: true,
+    scheduledAt: proposal?.scheduledAt || stored.match.scheduledAt || null
+  };
+  await updateMatchChannelName(channel, scheduledMatch);
+  await saveMatch(scheduledMatch, stored.discord);
 }
 
 function isAdminStaff(member) {
@@ -1845,14 +1885,14 @@ function adminActionLine(proposal) {
   return 'Admins still need to schedule this on FACEIT.';
 }
 
-function adminDecisionButtons(proposalId) {
+function adminDecisionButtons(proposalId, channelId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`admin_schedule_approve:${proposalId}`)
+      .setCustomId(['admin_schedule_approve', proposalId, channelId].filter(Boolean).join(':'))
       .setLabel('Admin approve')
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
-      .setCustomId(`admin_schedule_deny:${proposalId}`)
+      .setCustomId(['admin_schedule_deny', proposalId, channelId].filter(Boolean).join(':'))
       .setLabel('Admin deny')
       .setStyle(ButtonStyle.Danger)
   );
