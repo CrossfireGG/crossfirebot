@@ -5,6 +5,7 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  Partials,
   PermissionFlagsBits,
   REST,
   Routes
@@ -68,7 +69,13 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.MessageContent
+  ],
+  partials: [
+    Partials.Channel,
+    Partials.Message,
+    Partials.Reaction
   ]
 });
 
@@ -221,6 +228,14 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   }
 });
 
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+  try {
+    await handleCallAdminReaction(reaction, user);
+  } catch (error) {
+    console.error('Call admin reaction failed:', error);
+  }
+});
+
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
   await rest.put(
@@ -256,6 +271,37 @@ async function syncMirroredRoleSide(oldMember, newMember, source, target) {
   if (!hasRole && targetHasRole) {
     await targetMember.roles.remove(target.roleId, 'Mirrored Production role from linked server');
   }
+}
+
+async function handleCallAdminReaction(reaction, user) {
+  if (user.bot) return;
+
+  const fullReaction = reaction.partial
+    ? await reaction.fetch().catch(() => null)
+    : reaction;
+  if (!fullReaction) return;
+
+  const message = fullReaction.message.partial
+    ? await fullReaction.message.fetch().catch(() => null)
+    : fullReaction.message;
+  if (!message || message.channelId !== config.callAdminChannelId) return;
+  if (!String(message.content || '').includes('ADMIN HELP REQUESTED')) return;
+
+  const adminMember = await message.guild.members.fetch(user.id).catch(() => null);
+  if (!adminMember || !isAdminStaff(adminMember)) return;
+
+  const matchChannelId = extractDiscordChannelId(message.content);
+  if (!matchChannelId) return;
+
+  const matchChannel = await client.channels.fetch(matchChannelId).catch(() => null);
+  if (!matchChannel?.isTextBased?.()) return;
+
+  await matchChannel.send(`Admin <@${user.id}> is on this calladmin request.`);
+}
+
+function extractDiscordChannelId(value) {
+  const mention = String(value || '').match(/<#(\d{15,25})>/);
+  return mention ? mention[1] : '';
 }
 
 async function handleSyncMatches(interaction) {
@@ -973,9 +1019,7 @@ async function handleTextScheduleProposal(message, content, kind) {
   await saveScheduleProposal(proposal);
 
   if (canScheduleDirectly) {
-    const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id, {
-      markScheduled: true
-    });
+    const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id);
     await message.channel.send([
       `**${kind === 'reschedule' ? 'Reschedule' : 'Schedule'} set by Tournament Ops:** ${stored.match.teamA} vs ${stored.match.teamB}`,
       `Time: **${formatProposalTime(proposal)}**`,
