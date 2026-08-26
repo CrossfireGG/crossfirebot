@@ -210,12 +210,49 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
+client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+  try {
+    await syncMirroredRoles(oldMember, newMember);
+  } catch (error) {
+    console.error('Role sync failed:', error);
+  }
+});
+
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
   await rest.put(
     Routes.applicationGuildCommands(config.discordClientId, config.discordGuildId),
     { body: commands }
   );
+}
+
+async function syncMirroredRoles(oldMember, newMember) {
+  for (const pair of config.roleSyncPairs) {
+    await syncMirroredRoleSide(oldMember, newMember, pair.left, pair.right);
+    await syncMirroredRoleSide(oldMember, newMember, pair.right, pair.left);
+  }
+}
+
+async function syncMirroredRoleSide(oldMember, newMember, source, target) {
+  if (newMember.guild.id !== source.guildId) return;
+
+  const hadRole = oldMember.roles.cache.has(source.roleId);
+  const hasRole = newMember.roles.cache.has(source.roleId);
+  if (hadRole === hasRole) return;
+
+  const targetGuild = await client.guilds.fetch(target.guildId).catch(() => null);
+  if (!targetGuild) return;
+
+  const targetMember = await targetGuild.members.fetch(newMember.id).catch(() => null);
+  if (!targetMember) return;
+
+  const targetHasRole = targetMember.roles.cache.has(target.roleId);
+  if (hasRole && !targetHasRole) {
+    await targetMember.roles.add(target.roleId, 'Mirrored Production role from linked server');
+  }
+  if (!hasRole && targetHasRole) {
+    await targetMember.roles.remove(target.roleId, 'Mirrored Production role from linked server');
+  }
 }
 
 async function handleSyncMatches(interaction) {

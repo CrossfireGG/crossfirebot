@@ -111,6 +111,10 @@ export function getConfig() {
     matchAccessRoleIds: parseCsvValue(process.env.MATCH_ACCESS_ROLE_IDS || '1128907825167482900,1353921199016644700'),
     matchAccessRoleNames: parseCsvValue(process.env.MATCH_ACCESS_ROLE_NAMES || ''),
     scheduleOverrideRoleIds: parseCsvValue(process.env.SCHEDULE_OVERRIDE_ROLE_IDS || '1128907825167482900'),
+    roleSyncPairs: parseRoleSyncPairs(
+      process.env.ROLE_SYNC_PAIRS ||
+      '1128905368018354277:1128907940720562296=1473173377005912074:1474117290600562920'
+    ),
     teamRoleIds: parseTeamRoleIds(process.env.TEAM_ROLE_IDS || ''),
     createMissingMatchTeamRoles: process.env.CREATE_MISSING_MATCH_TEAM_ROLES === 'true',
     createMissingTeamRoles: process.env.CREATE_MISSING_TEAM_ROLES === 'true',
@@ -127,6 +131,28 @@ export function getConfig() {
     roundWindows: parseRoundWindows(process.env.ROUND_WINDOWS || ''),
     defaultTimezone: process.env.DEFAULT_TIMEZONE || 'America/New_York'
   };
+}
+
+function parseRoleSyncPairs(value) {
+  return value
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [left, right] = entry.split('=').map((part) => parseRoleSyncSide(part));
+      if (!left || !right) return null;
+      return { left, right };
+    })
+    .filter(Boolean);
+}
+
+function parseRoleSyncSide(value) {
+  const [guildId, roleId] = String(value || '').split(':').map((part) => part.trim());
+  if (!/^\d{15,25}$/.test(guildId || '') || !/^\d{15,25}$/.test(roleId || '')) {
+    return null;
+  }
+
+  return { guildId, roleId };
 }
 
 function parseTeamRoleIds(value) {
