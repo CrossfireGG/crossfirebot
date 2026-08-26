@@ -27,6 +27,7 @@ import {
   listStoredMatches,
   saveMatch,
   saveMatchIntroMessageId,
+  saveSchedule,
   saveScheduleProposal
 } from './store.js';
 import { scheduleFaceitMatch } from './faceitSchedule.js';
@@ -502,6 +503,59 @@ function decodePendingSchedule(value) {
   }
 }
 
+async function getRecoverableScheduleProposal(channel, stored) {
+  return await getLatestOpenScheduleProposalForMatch(stored.match.id) ||
+    getPendingScheduleFromChannelTopic(channel, stored.match.id) ||
+    await getPendingScheduleFromRecentMessages(channel, stored);
+}
+
+async function getPendingScheduleFromRecentMessages(channel, stored) {
+  const messages = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  if (!messages) return null;
+
+  const proposalMessage = [...messages.values()]
+    .filter((message) => message.author?.id === client.user?.id)
+    .find((message) => isScheduleProposalMessage(message, stored.match));
+  if (!proposalMessage) return null;
+
+  return buildProposalFromMessage(proposalMessage, stored);
+}
+
+function isScheduleProposalMessage(message, match) {
+  const content = String(message.content || '');
+  return /\*\*(?:Schedule|Reschedule) proposed:\*\*/i.test(content) &&
+    content.includes(`${match.teamA} vs ${match.teamB}`) &&
+    /Other team:\s*type `!accept` or `!decline`/i.test(content);
+}
+
+function buildProposalFromMessage(message, stored) {
+  const content = String(message.content || '');
+  const timeMatch = content.match(/^Time:\s*\*\*(.+?)\*\*/mi);
+  const proposedByMatch = content.match(/Proposed by:\s*<@!?(\d{15,25})>/i);
+  const roleMentionMatch = content.match(/^<@&(\d{15,25})>/m);
+  const mentionedRoleId = roleMentionMatch?.[1] || '';
+  const proposerTeam = mentionedRoleId === stored.discord.teamARoleId ? 'teamB' : 'teamA';
+  const kind = /\*\*Reschedule proposed:\*\*/i.test(content) ? 'reschedule' : 'schedule';
+  const scheduledAt = timeMatch?.[1]?.replace(/\s*\(<t:\d+:[A-Za-z]>\)\s*$/, '').trim() || 'unknown time';
+  const parsedSchedule = parseScheduleInput(scheduledAt);
+
+  return {
+    id: `recovered:${message.id}`,
+    matchId: stored.match.id,
+    scheduledAt: parsedSchedule?.display || scheduledAt,
+    scheduledAtIso: parsedSchedule?.iso || null,
+    timezone: parsedSchedule?.timeZone || config.defaultTimezone,
+    timezoneInput: parsedSchedule?.timeZoneInput || null,
+    proposedBy: proposedByMatch?.[1] || message.author.id,
+    proposerTeam,
+    accepted: false,
+    kind,
+    source: 'recovered_message',
+    validation: validateScheduleRequest(stored, scheduledAt, kind, parsedSchedule?.date || null),
+    override: false
+  };
+}
+
 function clearDiscordScheduleStatus(match) {
   const next = { ...match };
   delete next.scheduledByDiscord;
@@ -962,8 +1016,7 @@ async function handleTextAccept(message) {
     return;
   }
 
-  const proposal = await getLatestOpenScheduleProposalForMatch(stored.match.id) ||
-    getPendingScheduleFromChannelTopic(message.channel, stored.match.id);
+  const proposal = await getRecoverableScheduleProposal(message.channel, stored);
   if (!proposal) {
     await message.reply('There is no open schedule proposal for this match.');
     return;
@@ -1001,8 +1054,7 @@ async function handleTextDecline(message) {
     return;
   }
 
-  const proposal = await getLatestOpenScheduleProposalForMatch(stored.match.id) ||
-    getPendingScheduleFromChannelTopic(message.channel, stored.match.id);
+  const proposal = await getRecoverableScheduleProposal(message.channel, stored);
   if (!proposal) {
     await message.reply('There is no open schedule proposal for this match.');
     return;
@@ -1217,7 +1269,17 @@ async function handleDeprecatedScheduleInteraction(interaction) {
 }
 
 async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy, options = {}) {
-  await acceptScheduleProposal(proposal.id, acceptedBy);
+  const acceptedProposal = await acceptScheduleProposal(proposal.id, acceptedBy);
+  if (!acceptedProposal) {
+    await saveSchedule(proposal.matchId, {
+      scheduledAt: proposal.scheduledAt,
+      timezone: proposal.timezone,
+      proposedBy: proposal.proposedBy,
+      acceptedBy,
+      proposalId: proposal.id,
+      kind: proposal.kind || 'schedule'
+    });
+  }
   const result = await scheduleFaceitMatch(
     config,
     proposal.matchId,
