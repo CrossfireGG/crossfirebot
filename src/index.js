@@ -41,6 +41,8 @@ const faceit = new FaceitClient(
   config.faceitSources
 );
 
+const PENDING_SCHEDULE_TOPIC_PREFIX = 'Pending schedule:';
+
 const SEASON_SCHEDULE = [
   { name: 'Group Stage', start: 'August 31, 2026', end: 'September 8, 2026', defaultDate: 'September 4, 2026' },
   { name: 'Round 1', start: 'August 31, 2026', end: 'September 2, 2026', defaultDate: 'September 1, 2026' },
@@ -433,6 +435,71 @@ function extractFaceitMatchIdFromLink(value) {
 
 function normalizeSubmittedFaceitLink(value) {
   return String(value || '').trim().replace('%7Blang%7D', 'en').replace('{lang}', 'en');
+}
+
+async function savePendingScheduleToChannelTopic(channel, proposal) {
+  const topic = stripPendingScheduleFromTopic(channel.topic);
+  const pending = encodePendingSchedule(proposal);
+  await channel.setTopic(
+    [topic, `${PENDING_SCHEDULE_TOPIC_PREFIX}${pending}`]
+      .filter(Boolean)
+      .join(' | ')
+      .slice(0, 1024)
+  ).catch(() => null);
+}
+
+async function clearPendingScheduleFromChannelTopic(channel, proposalId) {
+  const pending = getPendingScheduleFromChannelTopic(channel);
+  if (proposalId && pending?.id && pending.id !== proposalId) return;
+
+  const topic = stripPendingScheduleFromTopic(channel.topic);
+  if (topic !== channel.topic) {
+    await channel.setTopic(topic || null).catch(() => null);
+  }
+}
+
+function getPendingScheduleFromChannelTopic(channel, matchId = null) {
+  const topic = String(channel.topic || '');
+  const escapedPrefix = PENDING_SCHEDULE_TOPIC_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = topic.match(new RegExp(`${escapedPrefix}\\s*([^|]+)`));
+  if (!match) return null;
+
+  const proposal = decodePendingSchedule(match[1].trim());
+  if (!proposal) return null;
+  if (matchId && proposal.matchId !== matchId) return null;
+  return proposal;
+}
+
+function stripPendingScheduleFromTopic(topic) {
+  const escapedPrefix = PENDING_SCHEDULE_TOPIC_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return String(topic || '')
+    .replace(new RegExp(`\\s*\\|?\\s*${escapedPrefix}\\s*[^|]+`, 'g'), '')
+    .replace(/\s+\|\s+$/g, '')
+    .trim();
+}
+
+function encodePendingSchedule(proposal) {
+  const pending = {
+    id: proposal.id,
+    matchId: proposal.matchId,
+    scheduledAt: proposal.scheduledAt,
+    scheduledAtIso: proposal.scheduledAtIso,
+    timezone: proposal.timezone,
+    proposedBy: proposal.proposedBy,
+    proposerTeam: proposal.proposerTeam,
+    kind: proposal.kind,
+    override: proposal.override
+  };
+
+  return Buffer.from(JSON.stringify(pending), 'utf8').toString('base64url');
+}
+
+function decodePendingSchedule(value) {
+  try {
+    return JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
 }
 
 function clearDiscordScheduleStatus(match) {
@@ -867,6 +934,8 @@ async function handleTextScheduleProposal(message, content, kind) {
     return;
   }
 
+  await savePendingScheduleToChannelTopic(message.channel, proposal);
+
   const otherTeam = proposerTeam === 'teamA' ? 'teamB' : 'teamA';
   const otherRoleId = otherTeam === 'teamA'
     ? stored.discord.teamARoleId
@@ -893,7 +962,8 @@ async function handleTextAccept(message) {
     return;
   }
 
-  const proposal = await getLatestOpenScheduleProposalForMatch(stored.match.id);
+  const proposal = await getLatestOpenScheduleProposalForMatch(stored.match.id) ||
+    getPendingScheduleFromChannelTopic(message.channel, stored.match.id);
   if (!proposal) {
     await message.reply('There is no open schedule proposal for this match.');
     return;
@@ -908,6 +978,7 @@ async function handleTextAccept(message) {
   }
 
   const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id);
+  await clearPendingScheduleFromChannelTopic(message.channel, proposal.id);
 
   await message.channel.send([
     `**${proposal.kind === 'reschedule' ? 'Reschedule' : 'Schedule'} accepted:** ${stored.match.teamA} vs ${stored.match.teamB}`,
@@ -930,7 +1001,8 @@ async function handleTextDecline(message) {
     return;
   }
 
-  const proposal = await getLatestOpenScheduleProposalForMatch(stored.match.id);
+  const proposal = await getLatestOpenScheduleProposalForMatch(stored.match.id) ||
+    getPendingScheduleFromChannelTopic(message.channel, stored.match.id);
   if (!proposal) {
     await message.reply('There is no open schedule proposal for this match.');
     return;
@@ -945,6 +1017,7 @@ async function handleTextDecline(message) {
   }
 
   await declineScheduleProposal(proposal.id, message.author.id);
+  await clearPendingScheduleFromChannelTopic(message.channel, proposal.id);
   await message.channel.send([
     `**Schedule declined:** ${stored.match.teamA} vs ${stored.match.teamB}`,
     `Declined time: **${formatProposalTime(proposal)}**`,
