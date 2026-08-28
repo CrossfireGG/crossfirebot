@@ -1114,13 +1114,21 @@ async function handleTextDecline(message) {
 
   await declineScheduleProposal(proposal.id, message.author.id);
   await clearPendingScheduleFromChannelTopic(message.channel, proposal.id);
-  await message.channel.send([
-    `**Schedule declined:** ${stored.match.teamA} vs ${stored.match.teamB}`,
-    `Declined time: **${formatProposalTime(proposal)}**`,
-    faceitRoomLine(stored.match),
-    `Declined by: <@${message.author.id}>`,
-    'A team member can propose another time with `!schedule tomorrow at 9 PM EST`.'
-  ].join('\n'));
+  await message.channel.send({
+    content: [
+      `<@${proposal.proposedBy}>`,
+      `**Schedule declined:** ${stored.match.teamA} vs ${stored.match.teamB}`,
+      `Declined time: **${formatProposalTime(proposal)}**`,
+      faceitRoomLine(stored.match),
+      `Declined by: <@${message.author.id}>`,
+      'A team member can propose another time with `!schedule tomorrow at 9 PM EST`.'
+    ].join('\n'),
+    allowedMentions: {
+      users: [proposal.proposedBy],
+      roles: [],
+      repliedUser: false
+    }
+  });
 }
 
 async function handleCallAdmin(message, content) {
