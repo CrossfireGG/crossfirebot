@@ -128,6 +128,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isButton() && interaction.customId.startsWith('admin_schedule_deny:')) {
       await handleAdminScheduleDecision(interaction, false);
     }
+
+    if (interaction.isButton() && interaction.customId.startsWith('calladmin_claim:')) {
+      await handleCallAdminClaim(interaction);
+    }
   } catch (error) {
     console.error(error);
     const message = `Something failed: ${error.message}`;
@@ -304,7 +308,53 @@ async function handleCallAdminReaction(reaction, user) {
   const matchChannel = await client.channels.fetch(matchChannelId).catch(() => null);
   if (!matchChannel?.isTextBased?.()) return;
 
-  await matchChannel.send(`Admin <@${user.id}> is on this calladmin request.`);
+  await sendCallAdminClaimToMatchChannel(matchChannel, user.id);
+}
+
+async function handleCallAdminClaim(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
+  if (!isAdminStaff(interaction.member)) {
+    await interaction.editReply('Only match staff/admins can claim calladmin tickets.');
+    return;
+  }
+
+  const [, channelId] = interaction.customId.split(':');
+  const matchChannelId = channelId || extractDiscordChannelIdFromMessage(interaction.message);
+  if (!matchChannelId) {
+    await interaction.editReply('I could not find the match channel for this calladmin ticket.');
+    return;
+  }
+
+  const matchChannel = await client.channels.fetch(matchChannelId).catch(() => null);
+  if (!matchChannel?.isTextBased?.()) {
+    await interaction.editReply('I could not open the match channel for this calladmin ticket.');
+    return;
+  }
+
+  await sendCallAdminClaimToMatchChannel(matchChannel, interaction.user.id);
+  await interaction.message.react('✅').catch(() => null);
+  await interaction.message.edit({
+    components: [callAdminClaimButton(matchChannelId, true)]
+  }).catch(() => null);
+  await interaction.editReply('Claimed. I posted in the match chat that you are looking into it.');
+}
+
+async function sendCallAdminClaimToMatchChannel(matchChannel, adminId) {
+  await matchChannel.send({
+    embeds: [
+      new EmbedBuilder()
+        .setColor(EMBED_COLORS.admin)
+        .setTitle('Admin Is Looking Into This')
+        .setDescription(`<@${adminId}> has claimed the admin request for this match.`)
+        .setTimestamp(new Date())
+    ],
+    allowedMentions: {
+      users: [adminId],
+      roles: [],
+      repliedUser: false
+    }
+  });
 }
 
 function extractDiscordChannelId(value) {
@@ -1228,14 +1278,15 @@ async function handleCallAdmin(message, content) {
       { name: 'Reason', value: reason.slice(0, 1024), inline: false },
       stored.match.faceitUrl ? { name: 'FACEIT Match Room', value: stored.match.faceitUrl, inline: false } : null
     ].filter(Boolean))
-    .setFooter({ text: 'React to this message to tell the match room you are handling it.' })
+    .setFooter({ text: 'Press Claim this ticket to tell the match room you are handling it.' })
     .setTimestamp(new Date());
 
   if (adminChannel) {
     await adminChannel.send({
       content: staffMentions,
       embeds: [alertEmbed],
-      allowedMentions
+      allowedMentions,
+      components: [callAdminClaimButton(message.channel.id)]
     });
     await message.reply('Admins have been notified.');
     return;
@@ -1244,7 +1295,8 @@ async function handleCallAdmin(message, content) {
   await message.channel.send({
     content: staffMentions,
     embeds: [alertEmbed],
-    allowedMentions
+    allowedMentions,
+    components: [callAdminClaimButton(message.channel.id)]
   });
 }
 
@@ -2304,6 +2356,16 @@ function adminDecisionButtons(proposalId, channelId) {
       .setCustomId(['admin_schedule_deny', proposalId, channelId].filter(Boolean).join(':'))
       .setLabel('Admin deny')
       .setStyle(ButtonStyle.Danger)
+  );
+}
+
+function callAdminClaimButton(channelId, claimed = false) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`calladmin_claim:${channelId}`)
+      .setLabel(claimed ? 'Ticket claimed' : 'Claim this ticket')
+      .setStyle(claimed ? ButtonStyle.Secondary : ButtonStyle.Primary)
+      .setDisabled(claimed)
   );
 }
 
