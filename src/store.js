@@ -19,7 +19,8 @@ function normalizeDb(db) {
     matches: db.matches || {},
     schedules: db.schedules || {},
     scheduleProposals: db.scheduleProposals || {},
-    sheetTeamRoles: db.sheetTeamRoles || {}
+    sheetTeamRoles: db.sheetTeamRoles || {},
+    sclDemos: db.sclDemos || {}
   };
 }
 
@@ -186,4 +187,27 @@ export async function declineScheduleProposal(proposalId, declinedBy) {
   };
   await writeDb(db);
   return db.scheduleProposals[proposalId];
+}
+
+export async function hasPostedSclDemo(matchId, mapNumber, viewerUrl) {
+  const db = normalizeDb(await readDb());
+  const key = sclDemoKey(matchId, mapNumber, viewerUrl);
+  return Boolean(db.sclDemos[key]);
+}
+
+export async function savePostedSclDemo(matchId, map) {
+  const db = normalizeDb(await readDb());
+  const key = sclDemoKey(matchId, map.map_number, map.viewer_url);
+  db.sclDemos[key] = {
+    matchId,
+    mapNumber: map.map_number,
+    mapName: map.map_name,
+    viewerUrl: map.viewer_url,
+    postedAt: new Date().toISOString()
+  };
+  await writeDb(db);
+}
+
+function sclDemoKey(matchId, mapNumber, viewerUrl) {
+  return `${matchId}:${mapNumber}:${viewerUrl}`;
 }

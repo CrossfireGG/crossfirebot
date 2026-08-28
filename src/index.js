@@ -17,6 +17,7 @@ import path from 'node:path';
 import { commands } from './commands.js';
 import { getConfig } from './config.js';
 import { FaceitClient } from './faceit.js';
+import { SclClient } from './scl.js';
 import { makeMatchChannelName, provisionMatchChannel, repairMatchChannel, resolveTeamRole, updateMatchChannelName } from './discordProvision.js';
 import {
   acceptScheduleProposal,
@@ -26,14 +27,17 @@ import {
   getLatestOpenScheduleProposalForMatch,
   getStoredMatch,
   getStoredMatchByChannel,
+  hasPostedSclDemo,
   listStoredMatches,
   saveMatch,
   saveMatchIntroMessageId,
+  savePostedSclDemo,
   saveSchedule,
   saveScheduleProposal
 } from './store.js';
 import { scheduleFaceitMatch } from './faceitSchedule.js';
 import { auditMissingCaptains, auditMissingPlayers, syncRolesFromSheet } from './sheetRoles.js';
+import { startWebhookServer } from './webhookServer.js';
 
 const config = getConfig();
 const lockPath = path.resolve('bot.lock');
@@ -43,6 +47,8 @@ const faceit = new FaceitClient(
   config.faceitApiKey,
   config.faceitSources
 );
+const scl = new SclClient(config.sclApiKey);
+let webhookServer = null;
 
 const PENDING_SCHEDULE_TOPIC_PREFIX = 'Pending schedule:';
 const EMBED_COLORS = {
@@ -91,6 +97,12 @@ client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
   await registerCommands();
   console.log('Slash commands registered');
+
+  if (!webhookServer) {
+    webhookServer = startWebhookServer(config, {
+      onSclDemoReady: handleSclDemoReady
+    });
+  }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -283,6 +295,69 @@ async function syncMirroredRoleSide(oldMember, newMember, source, target) {
   if (!hasRole && targetHasRole) {
     await targetMember.roles.remove(target.roleId, 'Mirrored Production role from linked server');
   }
+}
+
+async function handleSclDemoReady(event) {
+  const matchId = String(event.match_id || '').trim();
+  if (event.provider !== 'faceit' || !matchId) {
+    console.log('Ignored SCL event without a FACEIT match id:', event);
+    return;
+  }
+
+  const stored = await getStoredMatch(matchId);
+  if (!stored?.discord?.channelId) {
+    console.log(`SCL demo ready for unsynced FACEIT match ${matchId}`);
+    return;
+  }
+
+  const channel = await client.channels.fetch(stored.discord.channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) {
+    console.log(`SCL demo ready for ${matchId}, but Discord channel is unavailable`);
+    return;
+  }
+
+  const sclMatch = await scl.getFaceitMatch(matchId);
+  const readyMaps = (sclMatch.maps || [])
+    .filter((map) => map.status === 'ready' && map.viewer_url)
+    .sort((a, b) => Number(a.map_number || 0) - Number(b.map_number || 0));
+
+  let posted = 0;
+  for (const map of readyMaps) {
+    if (await hasPostedSclDemo(matchId, map.map_number, map.viewer_url)) {
+      continue;
+    }
+
+    await channel.send({
+      embeds: [sclDemoReadyEmbed(stored, sclMatch, map)]
+    });
+    await savePostedSclDemo(matchId, map);
+    posted += 1;
+  }
+
+  console.log(`SCL demo ready handled for ${matchId}: posted ${posted} new map link(s)`);
+}
+
+function sclDemoReadyEmbed(stored, sclMatch, map) {
+  const score = Number.isInteger(map.team1_score) && Number.isInteger(map.team2_score)
+    ? `${map.team1_score} - ${map.team2_score}`
+    : 'Not available';
+  const expires = map.expires_at
+    ? discordTimestamp(new Date(Number(map.expires_at) * 1000).toISOString(), 'R')
+    : 'Not listed';
+
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(`SCL 2D Demo Ready - Map ${map.map_number}`)
+    .setDescription(`**${stored.match.teamA} vs ${stored.match.teamB}**`)
+    .addFields([
+      { name: 'Map', value: map.map_name || `Map ${map.map_number}`, inline: true },
+      { name: 'Score', value: score, inline: true },
+      { name: 'Series Status', value: sclMatch.status || 'Unknown', inline: true },
+      { name: 'SCL Viewer', value: map.viewer_url, inline: false },
+      stored.match.faceitUrl ? { name: 'FACEIT Match Room', value: stored.match.faceitUrl, inline: false } : null,
+      { name: 'Link Expires', value: expires, inline: true }
+    ].filter(Boolean))
+    .setTimestamp(new Date());
 }
 
 async function handleCallAdminReaction(reaction, user) {

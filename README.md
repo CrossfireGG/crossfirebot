@@ -19,6 +19,7 @@ What it does:
 - Lets team members propose and confirm a scheduled match time in Discord.
 - Lets Tournament Ops schedule directly from a match channel without waiting for team acceptance.
 - Calls a FACEIT schedule adapter when a write endpoint is available.
+- Accepts SCL `demo_ready` webhooks and posts ready 2D demo links into the correct match channel.
 
 ## What I Need From You
 
@@ -31,6 +32,7 @@ What it does:
 7. Confirmation that Discord roles already exist with the exact team names, or permission for the bot to create missing roles.
 8. The FACEIT write/schedule endpoint or docs, if your API account has one.
 9. Optional Google Sheet CSV export URL with `Team Name`, starter/sub/coach Discord ID columns, and `Team Captain Discord ID`.
+10. Optional SCL API key and SCL webhook secret if you want automatic 2D demo posts.
 
 Do not paste secrets in public channels. Put them in `.env`.
 
@@ -77,6 +79,22 @@ MATCH_ACCESS_ROLE_NAMES=
 ```
 
 When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!calladmin` posts in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server.
+
+For SCL 2D demo posting, set these Railway variables after SCL issues them:
+
+```env
+SCL_API_KEY=your_scl_api_key
+SCL_WEBHOOK_SECRET=your_scl_webhook_secret
+SCL_WEBHOOK_PATH=/webhooks/scl
+```
+
+Give SCL this callback URL:
+
+```text
+https://your-railway-domain.up.railway.app/webhooks/scl
+```
+
+SCL sends `demo_ready` once per map. The bot verifies the SCL JWT, calls SCL for the FACEIT match, posts each ready `viewer_url` into the saved Discord match channel, and avoids reposting the same map link if SCL retries the webhook.
 
 Optional round windows:
 
