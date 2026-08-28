@@ -1826,12 +1826,14 @@ async function handleAdminScheduleDecision(interaction, approved) {
       await markMatchChannelScheduled(matchChannel, stored, proposal);
     }
     await interaction.message.react('✅').catch(() => null);
+  } else {
+    await interaction.message.react('❌').catch(() => null);
   }
 
   const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
   const missingChannelNote = matchChannel ? '' : ' I could not find the match channel to mark yellow.';
   await interaction.editReply(
-    `${approved ? 'Approved and reacted with a checkmark.' : 'Denied.'}${missingProposalNote}${missingChannelNote}`
+    `${approved ? 'Approved and reacted with a checkmark.' : 'Denied and reacted with an X.'}${missingProposalNote}${missingChannelNote}`
   );
 }
 
