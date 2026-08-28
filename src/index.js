@@ -3,6 +3,7 @@ import {
   ButtonBuilder,
   ButtonStyle,
   Client,
+  EmbedBuilder,
   Events,
   GatewayIntentBits,
   Partials,
@@ -44,6 +45,13 @@ const faceit = new FaceitClient(
 );
 
 const PENDING_SCHEDULE_TOPIC_PREFIX = 'Pending schedule:';
+const EMBED_COLORS = {
+  proposed: 0xf1c40f,
+  accepted: 0x2ecc71,
+  declined: 0xe74c3c,
+  admin: 0x3498db,
+  warning: 0xe67e22
+};
 
 const SEASON_SCHEDULE = [
   { name: 'Group Stage', start: 'August 31, 2026', end: 'September 8, 2026', defaultDate: 'September 4, 2026' },
@@ -285,12 +293,12 @@ async function handleCallAdminReaction(reaction, user) {
     ? await fullReaction.message.fetch().catch(() => null)
     : fullReaction.message;
   if (!message || message.channelId !== config.callAdminChannelId) return;
-  if (!String(message.content || '').includes('ADMIN HELP REQUESTED')) return;
+  if (!isCallAdminAlertMessage(message)) return;
 
   const adminMember = await message.guild.members.fetch(user.id).catch(() => null);
   if (!adminMember || !isAdminStaff(adminMember)) return;
 
-  const matchChannelId = extractDiscordChannelId(message.content);
+  const matchChannelId = extractDiscordChannelIdFromMessage(message);
   if (!matchChannelId) return;
 
   const matchChannel = await client.channels.fetch(matchChannelId).catch(() => null);
@@ -302,6 +310,29 @@ async function handleCallAdminReaction(reaction, user) {
 function extractDiscordChannelId(value) {
   const mention = String(value || '').match(/<#(\d{15,25})>/);
   return mention ? mention[1] : '';
+}
+
+function extractDiscordChannelIdFromMessage(message) {
+  const contentMatch = extractDiscordChannelId(message.content);
+  if (contentMatch) return contentMatch;
+
+  for (const embed of message.embeds || []) {
+    const field = embed.fields?.find((candidate) =>
+      candidate.name?.toLowerCase() === 'discord channel' ||
+      candidate.name?.toLowerCase() === 'discord match chat'
+    );
+    const fieldMatch = extractDiscordChannelId(field?.value);
+    if (fieldMatch) return fieldMatch;
+  }
+
+  return '';
+}
+
+function isCallAdminAlertMessage(message) {
+  if (String(message.content || '').includes('ADMIN HELP REQUESTED')) return true;
+  return (message.embeds || []).some((embed) =>
+    String(embed.title || '').toLowerCase().includes('admin help requested')
+  );
 }
 
 async function handleSyncMatches(interaction) {
@@ -569,20 +600,37 @@ async function getPendingScheduleFromRecentMessages(channel, stored) {
 
 function isScheduleProposalMessage(message, match) {
   const content = String(message.content || '');
-  return /\*\*(?:Schedule|Reschedule) proposed:\*\*/i.test(content) &&
+  const plainTextProposal = /\*\*(?:Schedule|Reschedule) proposed:\*\*/i.test(content) &&
     content.includes(`${match.teamA} vs ${match.teamB}`) &&
     /Other team:\s*type `!accept` or `!decline`/i.test(content);
+  const embedProposal = (message.embeds || []).some((embed) =>
+    String(embed.title || '').toLowerCase().includes('proposed') &&
+    String(embed.description || '').includes(`${match.teamA} vs ${match.teamB}`)
+  );
+
+  return plainTextProposal || embedProposal;
 }
 
 function buildProposalFromMessage(message, stored) {
   const content = String(message.content || '');
+  const embed = (message.embeds || []).find((candidate) =>
+    String(candidate.title || '').toLowerCase().includes('proposed')
+  );
+  const timeField = embed?.fields?.find((field) => field.name === 'Time');
+  const proposedByField = embed?.fields?.find((field) => field.name === 'Proposed By');
   const timeMatch = content.match(/^Time:\s*\*\*(.+?)\*\*/mi);
-  const proposedByMatch = content.match(/Proposed by:\s*<@!?(\d{15,25})>/i);
+  const proposedByMatch = content.match(/Proposed by:\s*<@!?(\d{15,25})>/i) ||
+    String(proposedByField?.value || '').match(/<@!?(\d{15,25})>/i);
   const roleMentionMatch = content.match(/^<@&(\d{15,25})>/m);
   const mentionedRoleId = roleMentionMatch?.[1] || '';
   const proposerTeam = mentionedRoleId === stored.discord.teamARoleId ? 'teamB' : 'teamA';
-  const kind = /\*\*Reschedule proposed:\*\*/i.test(content) ? 'reschedule' : 'schedule';
-  const scheduledAt = timeMatch?.[1]?.replace(/\s*\(<t:\d+:[A-Za-z]>\)\s*$/, '').trim() || 'unknown time';
+  const kind = /\*\*Reschedule proposed:\*\*/i.test(content) ||
+    String(embed?.title || '').toLowerCase().includes('reschedule')
+    ? 'reschedule'
+    : 'schedule';
+  const scheduledAt = (timeMatch?.[1] || timeField?.value || '')
+    .replace(/\s*\(<t:\d+:[A-Za-z]>\)\s*$/, '')
+    .trim() || 'unknown time';
   const parsedSchedule = parseScheduleInput(scheduledAt);
 
   return {
@@ -1020,14 +1068,18 @@ async function handleTextScheduleProposal(message, content, kind) {
 
   if (canScheduleDirectly) {
     const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id);
-    await message.channel.send([
-      `**${kind === 'reschedule' ? 'Reschedule' : 'Schedule'} set by Tournament Ops:** ${stored.match.teamA} vs ${stored.match.teamB}`,
-      `Time: **${formatProposalTime(proposal)}**`,
-      faceitRoomLine(stored.match),
-      `Set by: <@${message.author.id}>`,
-      validation.warning ? `Warning: **${validation.warning}**` : null,
-      faceitLine
-    ].filter(Boolean).join('\n'));
+    await message.channel.send({
+      embeds: [scheduleStatusEmbed({
+        title: kind === 'reschedule' ? 'Reschedule Set By Tournament Ops' : 'Schedule Set By Tournament Ops',
+        color: EMBED_COLORS.admin,
+        stored,
+        proposal,
+        actorLabel: 'Set By',
+        actorId: message.author.id,
+        footer: faceitLine,
+        warning: validation.warning
+      })]
+    });
     await notifyAdmins(message.guild, stored, proposal, message.author.id, faceitLine);
     return;
   }
@@ -1039,15 +1091,24 @@ async function handleTextScheduleProposal(message, content, kind) {
     ? stored.discord.teamARoleId
     : stored.discord.teamBRoleId;
 
-  await message.channel.send([
-    `<@&${otherRoleId}>`,
-    `**${kind === 'reschedule' ? 'Reschedule' : 'Schedule'} proposed:** ${stored.match.teamA} vs ${stored.match.teamB}`,
-    `Time: **${scheduledAt}**${parsedSchedule?.discordTimestamp ? ` (${parsedSchedule.discordTimestamp})` : ''}`,
-    faceitRoomLine(stored.match),
-    `Proposed by: <@${message.author.id}>`,
-    validation.warning ? `Warning: **${validation.warning}**` : null,
-    'Other team: type `!accept` or `!decline` to confirm.'
-  ].filter(Boolean).join('\n'));
+  await message.channel.send({
+    content: `<@&${otherRoleId}>`,
+    embeds: [scheduleStatusEmbed({
+      title: kind === 'reschedule' ? 'Reschedule Proposed' : 'Schedule Proposed',
+      color: EMBED_COLORS.proposed,
+      stored,
+      proposal,
+      actorLabel: 'Proposed By',
+      actorId: message.author.id,
+      footer: 'Other team: type !accept or !decline to confirm.',
+      warning: validation.warning
+    })],
+    allowedMentions: {
+      roles: [otherRoleId],
+      users: [],
+      repliedUser: false
+    }
+  });
 }
 
 async function handleTextAccept(message) {
@@ -1077,13 +1138,17 @@ async function handleTextAccept(message) {
   const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id);
   await clearPendingScheduleFromChannelTopic(message.channel, proposal.id);
 
-  await message.channel.send([
-    `**${proposal.kind === 'reschedule' ? 'Reschedule' : 'Schedule'} accepted:** ${stored.match.teamA} vs ${stored.match.teamB}`,
-    `Time: **${formatProposalTime(proposal)}**`,
-    faceitRoomLine(stored.match),
-    `Accepted by: <@${message.author.id}>`,
-    faceitLine
-  ].join('\n'));
+  await message.channel.send({
+    embeds: [scheduleStatusEmbed({
+      title: proposal.kind === 'reschedule' ? 'Reschedule Accepted' : 'Schedule Accepted',
+      color: EMBED_COLORS.accepted,
+      stored,
+      proposal,
+      actorLabel: 'Accepted By',
+      actorId: message.author.id,
+      footer: faceitLine
+    })]
+  });
 
   await notifyAdmins(message.guild, stored, proposal, message.author.id, faceitLine);
 }
@@ -1115,14 +1180,17 @@ async function handleTextDecline(message) {
   await declineScheduleProposal(proposal.id, message.author.id);
   await clearPendingScheduleFromChannelTopic(message.channel, proposal.id);
   await message.channel.send({
-    content: [
-      `<@${proposal.proposedBy}>`,
-      `**Schedule declined:** ${stored.match.teamA} vs ${stored.match.teamB}`,
-      `Declined time: **${formatProposalTime(proposal)}**`,
-      faceitRoomLine(stored.match),
-      `Declined by: <@${message.author.id}>`,
-      'A team member can propose another time with `!schedule tomorrow at 9 PM EST`.'
-    ].join('\n'),
+    content: `<@${proposal.proposedBy}>`,
+    embeds: [scheduleStatusEmbed({
+      title: 'Schedule Declined',
+      color: EMBED_COLORS.declined,
+      stored,
+      proposal,
+      timeLabel: 'Declined Time',
+      actorLabel: 'Declined By',
+      actorId: message.author.id,
+      footer: 'A team member can propose another time with !schedule tomorrow at 9 PM EST.'
+    })],
     allowedMentions: {
       users: [proposal.proposedBy],
       roles: [],
@@ -1147,26 +1215,106 @@ async function handleCallAdmin(message, content) {
   const allowedMentions = getAdminAllowedMentions(message.guild);
   const matchDetails = getMatchDisplayDetails(stored.match);
 
-  const alert = [
-    staffMentions,
-    '**ADMIN HELP REQUESTED**',
-    `Match: **${stored.match.teamA} vs ${stored.match.teamB}**`,
-    matchDetails.stage ? `Stage: **${matchDetails.stage}**` : null,
-    `Round: **${matchDetails.round}**`,
-    matchDetails.group ? `Group: **${matchDetails.group}**` : null,
-    `Discord channel: <#${message.channel.id}>`,
-    `Requested by: <@${message.author.id}>`,
-    `Reason: ${reason}`,
-    stored.match.faceitUrl ? `FACEIT: ${stored.match.faceitUrl}` : null
-  ].filter(Boolean).join('\n');
+  const alertEmbed = new EmbedBuilder()
+    .setColor(EMBED_COLORS.warning)
+    .setTitle('Admin Help Requested')
+    .setDescription(`**${stored.match.teamA} vs ${stored.match.teamB}**`)
+    .addFields([
+      matchDetails.stage ? { name: 'Stage', value: matchDetails.stage, inline: true } : null,
+      { name: 'Round', value: matchDetails.round || 'Unknown', inline: true },
+      matchDetails.group ? { name: 'Group', value: matchDetails.group, inline: true } : null,
+      { name: 'Discord Channel', value: `<#${message.channel.id}>`, inline: false },
+      { name: 'Requested By', value: `<@${message.author.id}>`, inline: true },
+      { name: 'Reason', value: reason.slice(0, 1024), inline: false },
+      stored.match.faceitUrl ? { name: 'FACEIT Match Room', value: stored.match.faceitUrl, inline: false } : null
+    ].filter(Boolean))
+    .setFooter({ text: 'React to this message to tell the match room you are handling it.' })
+    .setTimestamp(new Date());
 
   if (adminChannel) {
-    await adminChannel.send({ content: alert, allowedMentions });
+    await adminChannel.send({
+      content: staffMentions,
+      embeds: [alertEmbed],
+      allowedMentions
+    });
     await message.reply('Admins have been notified.');
     return;
   }
 
-  await message.channel.send({ content: alert, allowedMentions });
+  await message.channel.send({
+    content: staffMentions,
+    embeds: [alertEmbed],
+    allowedMentions
+  });
+}
+
+function scheduleStatusEmbed({
+  title,
+  color,
+  stored,
+  proposal,
+  timeLabel = 'Time',
+  actorLabel,
+  actorId,
+  footer,
+  warning
+}) {
+  const matchDetails = getMatchDisplayDetails(stored.match);
+  const fields = [
+    {
+      name: timeLabel,
+      value: formatProposalTime(proposal),
+      inline: false
+    },
+    matchDetails.stage ? {
+      name: 'Stage',
+      value: matchDetails.stage,
+      inline: true
+    } : null,
+    matchDetails.round ? {
+      name: 'Round',
+      value: matchDetails.round,
+      inline: true
+    } : null,
+    matchDetails.group ? {
+      name: 'Group',
+      value: matchDetails.group,
+      inline: true
+    } : null,
+    actorId ? {
+      name: actorLabel,
+      value: `<@${actorId}>`,
+      inline: true
+    } : null,
+    stored.discord?.channelId ? {
+      name: 'Discord Match Chat',
+      value: `<#${stored.discord.channelId}>`,
+      inline: true
+    } : null,
+    stored.match.faceitUrl ? {
+      name: 'FACEIT Match Room',
+      value: stored.match.faceitUrl,
+      inline: false
+    } : null,
+    warning ? {
+      name: 'Warning',
+      value: warning,
+      inline: false
+    } : null
+  ].filter(Boolean);
+
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setTitle(title)
+    .setDescription(`**${stored.match.teamA} vs ${stored.match.teamB}**`)
+    .addFields(fields)
+    .setTimestamp(new Date());
+
+  if (footer) {
+    embed.setFooter({ text: String(footer).slice(0, 2048) });
+  }
+
+  return embed;
 }
 
 async function getStoredMatchForChannel(channel) {
@@ -1357,33 +1505,34 @@ async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy, opti
 async function notifyAdmins(guild, stored, proposal, acceptedBy, faceitLine) {
   const channel = await getScheduleAdminChannel();
   const allowedMentions = getAdminAllowedMentions(guild);
-  const matchDetails = getMatchDisplayDetails(stored.match);
-  const content = [
-    getStaffMentions(guild),
-    proposal.kind === 'reschedule'
-      ? '**ACTION NEEDED: Approve reschedule and update FACEIT**'
-      : '**ACTION NEEDED: Schedule on FACEIT**',
-    `Match: **${stored.match.teamA} vs ${stored.match.teamB}**`,
-    matchDetails.stage ? `Stage: **${matchDetails.stage}**` : null,
-    `Round: **${matchDetails.round}**`,
-    matchDetails.group ? `Group: **${matchDetails.group}**` : null,
-    `Accepted time: **${formatProposalTime(proposal)}**`,
-    proposal.scheduledAtIso ? `Discord time: ${discordTimestamp(proposal.scheduledAtIso, 'F')}` : null,
-    proposal.kind === 'reschedule' ? `Current/previous schedule: **${currentScheduleText(stored)}**` : null,
-    `Proposed by: <@${proposal.proposedBy}>`,
-    proposal.override ? `Set by Tournament Ops: <@${acceptedBy}>` : `Accepted by: <@${acceptedBy}>`,
-    `Discord match chat: <#${stored.discord.channelId}>`,
-    proposal.validation?.warning ? `Warning: **${proposal.validation.warning}**` : null,
-    proposal.validation?.roundWindowMessage ? proposal.validation.roundWindowMessage : null,
-    faceitRoomLine(stored.match),
-    faceitLine
-  ].filter(Boolean).join('\n');
+  const adminEmbed = scheduleStatusEmbed({
+    title: proposal.kind === 'reschedule'
+      ? 'Action Needed: Approve Reschedule'
+      : 'Action Needed: Schedule On FACEIT',
+    color: EMBED_COLORS.warning,
+    stored,
+    proposal,
+    timeLabel: 'Accepted Time',
+    actorLabel: proposal.override ? 'Set By Tournament Ops' : 'Accepted By',
+    actorId: acceptedBy,
+    footer: faceitLine,
+    warning: [
+      proposal.validation?.warning,
+      proposal.validation?.roundWindowMessage,
+      proposal.kind === 'reschedule' ? `Current/previous schedule: ${currentScheduleText(stored)}` : null
+    ].filter(Boolean).join('\n') || null
+  }).addFields({
+    name: 'Proposed By',
+    value: `<@${proposal.proposedBy}>`,
+    inline: true
+  });
   const targetChannel = channel || await guild.channels.fetch(stored.discord.channelId).catch(() => null);
 
   if (!targetChannel) return;
 
   await targetChannel.send({
-    content,
+    content: getStaffMentions(guild),
+    embeds: [adminEmbed],
     allowedMentions,
     components: [adminDecisionButtons(proposal.id, stored.discord.channelId)]
   });
@@ -1662,11 +1811,14 @@ async function handleAdminScheduleDecision(interaction, approved) {
     : null;
 
   if (matchChannel) {
-    await matchChannel.send([
-      approved ? '**Admin approved schedule request.**' : '**Admin denied schedule request.**',
-      proposal ? `Time: **${formatProposalTime(proposal)}**` : null,
-      `Admin: <@${interaction.user.id}>`
-    ].filter(Boolean).join('\n'));
+    await matchChannel.send({
+      embeds: [adminDecisionEmbed({
+        approved,
+        stored,
+        proposal,
+        adminId: interaction.user.id
+      })]
+    });
   }
 
   if (approved) {
@@ -1712,6 +1864,37 @@ async function markMatchChannelScheduled(channel, stored, proposal = null) {
   };
   await updateMatchChannelName(channel, scheduledMatch);
   await saveMatch(scheduledMatch, stored.discord);
+}
+
+function adminDecisionEmbed({ approved, stored, proposal, adminId }) {
+  const embed = new EmbedBuilder()
+    .setColor(approved ? EMBED_COLORS.accepted : EMBED_COLORS.declined)
+    .setTitle(approved ? 'Schedule Approved By Admin' : 'Schedule Denied By Admin')
+    .setDescription(`**${stored.match.teamA} vs ${stored.match.teamB}**`)
+    .addFields([
+      proposal ? {
+        name: 'Time',
+        value: formatProposalTime(proposal),
+        inline: false
+      } : null,
+      {
+        name: 'Admin',
+        value: `<@${adminId}>`,
+        inline: true
+      },
+      stored.match.faceitUrl ? {
+        name: 'FACEIT Match Room',
+        value: stored.match.faceitUrl,
+        inline: false
+      } : null
+    ].filter(Boolean))
+    .setTimestamp(new Date());
+
+  if (approved) {
+    embed.setFooter({ text: 'The match channel is now marked scheduled.' });
+  }
+
+  return embed;
 }
 
 function isAdminStaff(member) {
