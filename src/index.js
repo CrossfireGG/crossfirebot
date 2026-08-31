@@ -299,42 +299,93 @@ async function syncMirroredRoleSide(oldMember, newMember, source, target) {
 
 async function handleSclDemoReady(event) {
   const matchId = String(event.match_id || '').trim();
-  if (event.provider !== 'faceit' || !matchId) {
-    console.log('Ignored SCL event without a FACEIT match id:', event);
+  const mapNumber = Number(event.map_number);
+  if (event.provider !== 'faceit' || !matchId || !Number.isInteger(mapNumber) || mapNumber < 1) {
+    console.log(`[SCL] ignored invalid demo_ready event provider=${event.provider || 'unknown'} match_id=${matchId || 'unknown'} map_number=${event.map_number ?? 'unknown'}`);
     return;
   }
 
-  const stored = await getStoredMatch(matchId);
+  const retryDelays = [30_000, 300_000];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const sclMatch = await scl.getFaceitMatch(matchId);
+      const map = (sclMatch.maps || []).find((candidate) => Number(candidate.map_number) === mapNumber);
+      if (!map || map.status !== 'ready' || !map.viewer_url) {
+        const reason = !map ? 'matching map missing' : `map status=${map.status || 'unknown'} viewer_url=${map.viewer_url ? 'present' : 'missing'}`;
+        if (attempt < 3) {
+          const delay = retryDelays[attempt - 1];
+          console.log(`[SCL] ${reason}; retrying match_id=${matchId} map_number=${mapNumber} attempt=${attempt + 1} in=${delay}ms`);
+          await sleep(delay);
+          continue;
+        }
+        console.error(`[SCL] giving up: ${reason} match_id=${matchId} map_number=${mapNumber} attempts=${attempt}`);
+        return;
+      }
+
+      await postSclMapToDiscord(matchId, mapNumber, sclMatch, map);
+      return;
+    } catch (error) {
+      if (!error.retryable || attempt >= 3) {
+        const terminalCode = error.code || error.status || 'UNKNOWN';
+        console.error(`[SCL] GET failed terminally match_id=${matchId} map_number=${mapNumber} code=${terminalCode} attempt=${attempt}: ${error.message}`);
+        return;
+      }
+
+      const delay = retryDelays[attempt - 1];
+      console.warn(`[SCL] transient GET failure match_id=${matchId} map_number=${mapNumber} code=${error.code || error.status || 'UNKNOWN'} attempt=${attempt}; retrying in=${delay}ms`);
+      await sleep(delay);
+    }
+  }
+}
+
+async function postSclMapToDiscord(matchId, mapNumber, sclMatch, map) {
+  const stored = await resolveStoredSclMatch(matchId, sclMatch);
   if (!stored?.discord?.channelId) {
-    console.log(`SCL demo ready for unsynced FACEIT match ${matchId}`);
+    console.error(`[SCL] no Discord channel found match_id=${matchId} map_number=${mapNumber}`);
     return;
   }
 
   const channel = await client.channels.fetch(stored.discord.channelId).catch(() => null);
   if (!channel?.isTextBased?.()) {
-    console.log(`SCL demo ready for ${matchId}, but Discord channel is unavailable`);
+    console.error(`[SCL] Discord channel unavailable match_id=${matchId} channel_id=${stored.discord.channelId}`);
     return;
   }
 
-  const sclMatch = await scl.getFaceitMatch(matchId);
-  const readyMaps = (sclMatch.maps || [])
-    .filter((map) => map.status === 'ready' && map.viewer_url)
-    .sort((a, b) => Number(a.map_number || 0) - Number(b.map_number || 0));
-
-  let posted = 0;
-  for (const map of readyMaps) {
-    if (await hasPostedSclDemo(matchId, map.map_number, map.viewer_url)) {
-      continue;
-    }
-
-    await channel.send({
-      embeds: [sclDemoReadyEmbed(stored, sclMatch, map)]
-    });
-    await savePostedSclDemo(matchId, map);
-    posted += 1;
+  if (await hasPostedSclDemo(matchId, map.map_number, map.viewer_url)) {
+    console.log(`[SCL] map already posted match_id=${matchId} map_number=${mapNumber} channel_id=${channel.id}`);
+    return;
   }
 
-  console.log(`SCL demo ready handled for ${matchId}: posted ${posted} new map link(s)`);
+  await channel.send({ embeds: [sclDemoReadyEmbed(stored, sclMatch, map)] });
+  await savePostedSclDemo(matchId, map);
+  console.log(`[SCL] message posted match_id=${matchId} map_number=${mapNumber} channel_id=${channel.id}`);
+}
+
+async function resolveStoredSclMatch(matchId, sclMatch) {
+  const exact = await getStoredMatch(matchId);
+  if (exact?.discord?.channelId) return exact;
+
+  const teamNames = (sclMatch.teams || []).map((team) => normalizeSclTeamName(team?.name)).filter(Boolean);
+  if (teamNames.length < 2) return exact;
+
+  const storedMatches = await listStoredMatches();
+  const fallback = storedMatches.find((entry) => {
+    if (!entry?.discord?.channelId) return false;
+    const storedNames = [entry.match?.teamA, entry.match?.teamB].map(normalizeSclTeamName).filter(Boolean);
+    return storedNames.length === 2 && storedNames.every((name) => teamNames.includes(name));
+  });
+  if (fallback) {
+    console.warn(`[SCL] resolved Discord channel by team-name fallback match_id=${matchId} channel_id=${fallback.discord.channelId}`);
+  }
+  return fallback || exact;
+}
+
+function normalizeSclTeamName(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function sclDemoReadyEmbed(stored, sclMatch, map) {

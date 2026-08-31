@@ -25,15 +25,21 @@ export function startWebhookServer(config, handlers = {}) {
       }
 
       const body = await readJsonBody(request);
+      console.log(`[SCL webhook] received event=${body.event || 'unknown'} match_id=${body.match_id || 'unknown'} map_number=${body.map_number ?? 'unknown'}`);
       verifySclWebhook(request.headers.authorization, config.sclWebhookSecret);
+      console.log(`[SCL webhook] JWT verified match_id=${body.match_id || 'unknown'} map_number=${body.map_number ?? 'unknown'}`);
 
       if (body.event !== 'demo_ready') {
         sendJson(response, 202, { ok: true, ignored: true });
         return;
       }
 
-      await handlers.onSclDemoReady?.(body);
-      sendJson(response, 200, { ok: true });
+      sendJson(response, 202, { ok: true, accepted: true });
+      setImmediate(() => {
+        Promise.resolve(handlers.onSclDemoReady?.(body)).catch((error) => {
+          console.error(`[SCL webhook] asynchronous processing failed match_id=${body.match_id || 'unknown'} map_number=${body.map_number ?? 'unknown'}`, error);
+        });
+      });
     } catch (error) {
       const status = error.statusCode || 500;
       console.error('Webhook failed:', error);
@@ -79,7 +85,7 @@ function readJsonBody(request) {
   });
 }
 
-function verifySclWebhook(authorization, secret) {
+export function verifySclWebhook(authorization, secret) {
   if (!secret) {
     const error = new Error('SCL_WEBHOOK_SECRET is not configured');
     error.statusCode = 503;
@@ -100,6 +106,22 @@ function verifySclWebhook(authorization, secret) {
     throw error;
   }
 
+  let header;
+  let payload;
+  try {
+    header = JSON.parse(Buffer.from(encodedHeader, 'base64url').toString('utf8'));
+    payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'));
+  } catch {
+    const error = new Error('Invalid SCL webhook token');
+    error.statusCode = 401;
+    throw error;
+  }
+  if (header.alg !== 'HS256') {
+    const error = new Error('Invalid SCL webhook algorithm');
+    error.statusCode = 401;
+    throw error;
+  }
+
   const signatureInput = `${encodedHeader}.${encodedPayload}`;
   const expectedSignature = base64Url(crypto
     .createHmac('sha256', secret)
@@ -111,7 +133,6 @@ function verifySclWebhook(authorization, secret) {
     throw error;
   }
 
-  const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'));
   if (payload.iss !== 'scl') {
     const error = new Error('Invalid SCL webhook issuer');
     error.statusCode = 401;
@@ -121,7 +142,7 @@ function verifySclWebhook(authorization, secret) {
   const issuedAt = Number(payload.iat || 0);
   const expiresAt = Number(payload.exp || 0);
   const now = Math.floor(Date.now() / 1000);
-  if ((issuedAt && now - issuedAt > 15) || (expiresAt && now > expiresAt)) {
+  if (!issuedAt || issuedAt > now + 5 || now - issuedAt > 15 || (expiresAt && now > expiresAt)) {
     const error = new Error('Expired SCL webhook token');
     error.statusCode = 401;
     throw error;
