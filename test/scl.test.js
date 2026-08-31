@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import test from 'node:test';
 
 import { SclApiError, SclClient } from '../src/scl.js';
+import { channelNameMatchesSclTeams, findUniqueSclMatchChannel } from '../src/sclChannelResolver.js';
 import { verifySclWebhook } from '../src/webhookServer.js';
 
 const secret = 'test-webhook-secret';
@@ -62,4 +63,28 @@ test('treats 401, 403, and 404 SCL errors as terminal', async (context) => {
     );
     context.mock.restoreAll();
   }
+});
+
+test('matches group-prefixed Discord channels to SCL team names', () => {
+  assert.equal(
+    channelNameMatchesSclTeams('a-raisedbypixels-vs-overtake', ['raisedbypixels', 'Overtake']),
+    true
+  );
+  assert.equal(
+    channelNameMatchesSclTeams('🟡-a-overtake-sector-vs-raisedbypixels', ['raisedbypixels', 'Overtake']),
+    true
+  );
+});
+
+test('uses a channel-name fallback only when the match is unique', () => {
+  const channels = [
+    { id: '1', name: 'a-raisedbypixels-vs-overtake', isTextBased: () => true },
+    { id: '2', name: 'a-other-team-vs-someone-else', isTextBased: () => true }
+  ];
+  assert.equal(findUniqueSclMatchChannel(channels, ['raisedbypixels', 'Overtake']).channel?.id, '1');
+
+  channels.push({ id: '3', name: 'b-overtake-vs-raisedbypixels', isTextBased: () => true });
+  const ambiguous = findUniqueSclMatchChannel(channels, ['raisedbypixels', 'Overtake']);
+  assert.equal(ambiguous.channel, null);
+  assert.equal(ambiguous.matchCount, 2);
 });

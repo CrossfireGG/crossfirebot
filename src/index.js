@@ -18,6 +18,7 @@ import { commands } from './commands.js';
 import { getConfig } from './config.js';
 import { FaceitClient } from './faceit.js';
 import { SclClient } from './scl.js';
+import { findUniqueSclMatchChannel } from './sclChannelResolver.js';
 import { makeMatchChannelName, provisionMatchChannel, repairMatchChannel, resolveTeamRole, updateMatchChannelName } from './discordProvision.js';
 import {
   acceptScheduleProposal,
@@ -376,8 +377,43 @@ async function resolveStoredSclMatch(matchId, sclMatch) {
   });
   if (fallback) {
     console.warn(`[SCL] resolved Discord channel by team-name fallback match_id=${matchId} channel_id=${fallback.discord.channelId}`);
+    return fallback;
   }
-  return fallback || exact;
+
+  const guild = await client.guilds.fetch(config.discordGuildId).catch(() => null);
+  if (!guild) {
+    console.error(`[SCL] configured Discord guild unavailable guild_id=${config.discordGuildId}`);
+    return exact;
+  }
+
+  const channels = await guild.channels.fetch().catch(() => null);
+  if (!channels) {
+    console.error(`[SCL] could not fetch Discord channels guild_id=${guild.id}`);
+    return exact;
+  }
+
+  const displayTeamNames = (sclMatch.teams || []).map((team) => String(team?.name || '').trim()).filter(Boolean);
+  const result = findUniqueSclMatchChannel(channels.values(), displayTeamNames);
+  if (!result.channel) {
+    if (result.matchCount > 1) {
+      console.error(`[SCL] team-name channel lookup ambiguous match_id=${matchId} teams=${displayTeamNames.join(' vs ')} matches=${result.matchCount}`);
+    }
+    return exact;
+  }
+
+  const recovered = {
+    id: matchId,
+    teamA: displayTeamNames[0],
+    teamB: displayTeamNames[1],
+    faceitUrl: `https://www.faceit.com/en/cs2/room/${matchId}`
+  };
+  const discordIds = {
+    channelId: result.channel.id,
+    categoryId: result.channel.parentId || null
+  };
+  await saveMatch(recovered, discordIds);
+  console.warn(`[SCL] resolved actual Discord channel by name and saved match mapping match_id=${matchId} channel_id=${result.channel.id} channel_name=${result.channel.name}`);
+  return { match: recovered, discord: discordIds };
 }
 
 function normalizeSclTeamName(value) {
