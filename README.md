@@ -144,10 +144,10 @@ Inside each match channel:
 
 Season 6 schedule windows and default round dates are built into the bot:
 
-- Group Stage scheduling window: August 31, 2026 - September 8, 2026
+- Group Stage scheduling window: August 31, 2026 - September 10, 2026
 - Round 1: August 31, 2026 - September 2, 2026, default September 1, 2026 at 8:00 PM EST
 - Round 2: September 3, 2026 - September 5, 2026, default September 4, 2026 at 8:00 PM EST
-- Round 3: September 6, 2026 - September 8, 2026, default September 7, 2026 at 8:00 PM EST
+- Round 3: September 6, 2026 - September 10, 2026, default September 7, 2026 at 8:00 PM EST
 - WB Round of 32: September 12, 2026 - September 14, 2026, default September 13, 2026 at 8:00 PM EST
 - WB Round of 16 + Losers Round 1: September 15, 2026 - September 17, 2026, default September 16, 2026 at 8:00 PM EST
 - WB Quarterfinals + Losers Round 2: September 18, 2026 - September 20, 2026, default September 19, 2026 at 8:00 PM EST
@@ -165,7 +165,7 @@ Reschedule rules:
 - Reschedules within 24 hours of the current match time are flagged for admin override.
 - Accepted schedules and reschedules are sent to admins to schedule manually on FACEIT.
 - When admins approve a schedule request in the staff channel, the bot reacts to that admin alert with a checkmark.
-- Group Stage teams may schedule or reschedule any Group Stage match from August 31, 2026 through September 8, 2026 by mutual agreement.
+- Group Stage teams may schedule or reschedule any Group Stage match from August 31, 2026 through September 10, 2026 by mutual agreement.
 - Roster changes should go to `#make-a-ticket`.
 - Set `ROSTER_TICKET_CHANNEL_ID=1418725495545004175` so pinned match messages link directly to the roster ticket channel.
 
