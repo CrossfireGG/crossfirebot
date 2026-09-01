@@ -31,6 +31,11 @@ export const commands = [
     )
     .addSubcommand((subcommand) =>
       subcommand
+        .setName('refresh-status')
+        .setDescription('Refresh match channel status emojis from FACEIT')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
         .setName('audit')
         .setDescription('Check match channels, team roles, and permissions without creating duplicates')
         .addIntegerOption((option) =>

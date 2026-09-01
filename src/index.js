@@ -167,6 +167,11 @@ async function handleAdminCommand(interaction) {
       return;
     }
 
+    if (subcommand === 'refresh-status') {
+      await handleRefreshMatchStatuses(interaction);
+      return;
+    }
+
     if (subcommand === 'audit') {
       await handleAuditMatches(interaction);
       return;
@@ -583,6 +588,74 @@ async function handleSyncMatches(interaction) {
   await interaction.editReply(truncateDiscordMessage([
     `Synced ${created} match channel(s) for ${roundText}. Skipped ${skipped}.`,
     coverage
+  ].filter(Boolean).join('\n')));
+}
+
+async function handleRefreshMatchStatuses(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
+  const guild = await client.guilds.fetch(config.discordGuildId);
+  await guild.channels.fetch();
+
+  const matches = await faceit.getMatches();
+  const result = {
+    checked: matches.length,
+    found: 0,
+    renamed: 0,
+    finished: 0,
+    scheduled: 0,
+    missing: 0,
+    failures: []
+  };
+
+  for (const match of matches) {
+    try {
+      const stored = await getStoredMatch(match.id);
+      let channel = stored?.discord?.channelId
+        ? await guild.channels.fetch(stored.discord.channelId).catch(() => null)
+        : null;
+      if (!channel?.isTextBased?.()) {
+        channel = findAuditMatchChannel(guild, match, makeMatchChannelName(match));
+      }
+
+      if (!channel?.isTextBased?.()) {
+        result.missing += 1;
+        continue;
+      }
+
+      result.found += 1;
+      const previousName = channel.name;
+      const nextName = makeMatchChannelName(match);
+      await updateMatchChannelName(channel, match);
+      if (previousName !== nextName && channel.name === nextName) {
+        result.renamed += 1;
+        console.log(`[FACEIT status] channel renamed match_id=${match.id} from=${previousName} to=${nextName}`);
+      }
+
+      const status = String(match.status || '').toLowerCase();
+      if (['finished', 'done', 'completed', 'cancelled'].some((value) => status.includes(value))) {
+        result.finished += 1;
+      } else if (match.scheduledAt || status.includes('scheduled')) {
+        result.scheduled += 1;
+      }
+
+      await saveMatch(match, {
+        ...(stored?.discord || {}),
+        channelId: channel.id,
+        categoryId: channel.parentId || stored?.discord?.categoryId || null
+      });
+    } catch (error) {
+      result.failures.push(`${match.teamA} vs ${match.teamB}: ${error.message}`);
+      console.error(`[FACEIT status] refresh failed match_id=${match.id}`, error);
+    }
+  }
+
+  const failureLines = result.failures.slice(0, 5).map((failure) => `- ${truncateText(failure, 180)}`);
+  await interaction.editReply(truncateDiscordMessage([
+    `Checked ${result.checked} FACEIT match(es) and found ${result.found} Discord channel(s).`,
+    `Renamed: ${result.renamed}. Finished/green: ${result.finished}. Scheduled/yellow: ${result.scheduled}. Missing channels: ${result.missing}. Failures: ${result.failures.length}.`,
+    failureLines.length ? ['Failures:', ...failureLines].join('\n') : null,
+    result.failures.length > failureLines.length ? `...and ${result.failures.length - failureLines.length} more failure(s).` : null
   ].filter(Boolean).join('\n')));
 }
 

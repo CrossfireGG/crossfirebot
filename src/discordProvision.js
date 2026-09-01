@@ -2,6 +2,9 @@ import {
   ChannelType,
   PermissionFlagsBits
 } from 'discord.js';
+import { makeBaseMatchChannelName, makeMatchChannelName } from './matchChannelName.js';
+
+export { makeMatchChannelName } from './matchChannelName.js';
 
 export async function provisionMatchChannel(guild, config, match) {
   const everyoneRole = guild.roles.everyone;
@@ -283,42 +286,6 @@ function normalizeTeamKey(value) {
     .replace(/\s+/g, ' ');
 }
 
-export function makeMatchChannelName(match) {
-  const statusPrefix = makeStatusPrefix(match);
-  const baseName = makeBaseMatchChannelName(match);
-  return [statusPrefix, baseName].filter(Boolean).join('-').slice(0, 90);
-}
-
-function makeBaseMatchChannelName(match) {
-  const groupPrefix = makeGroupPrefix(match.group);
-  const matchName = makeChannelName(`${match.teamA} vs ${match.teamB}`);
-  return [groupPrefix, matchName].filter(Boolean).join('-').slice(0, 90);
-}
-
-function makeGroupPrefix(value) {
-  const text = String(value || '');
-  const letterMatch = text.match(/\bgroup\s*([a-z])\b/i);
-  if (letterMatch) return letterMatch[1].toLowerCase();
-
-  const numberMatch = text.match(/\bgroup\s*(\d+)\b/i);
-  if (numberMatch) return numberToLetters(Number(numberMatch[1])).toLowerCase();
-
-  return '';
-}
-
-function numberToLetters(value) {
-  let number = value;
-  let letters = '';
-
-  while (number > 0) {
-    number -= 1;
-    letters = String.fromCharCode(65 + (number % 26)) + letters;
-    number = Math.floor(number / 26);
-  }
-
-  return letters;
-}
-
 async function updateChannelTopic(channel, match) {
   const topic = makeChannelTopic(match);
   if (channel.topic !== topic) {
@@ -332,19 +299,6 @@ function makeChannelTopic(match) {
     match.scheduledAt ? `FACEIT schedule: ${match.scheduledAt}` : 'FACEIT schedule: not set',
     match.faceitUrl ? `Room: ${match.faceitUrl}` : null
   ].filter(Boolean).join(' | ').slice(0, 1024);
-}
-
-function makeStatusPrefix(match) {
-  const status = String(match.status || '').toLowerCase();
-  if (['finished', 'done', 'completed', 'cancelled'].some((value) => status.includes(value))) {
-    return '🟢';
-  }
-
-  if (match.scheduledByDiscord || status === 'discord_scheduled') {
-    return '🟡';
-  }
-
-  return '';
 }
 
 function stripMatchStatusPrefix(value) {
