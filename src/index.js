@@ -624,22 +624,31 @@ async function handleRefreshMatchStatuses(interaction) {
       }
 
       result.found += 1;
+      const faceitStatus = String(match.status || '').toLowerCase();
+      const storedStatus = String(stored?.match?.status || '').toLowerCase();
+      const matchForStatus = {
+        ...match,
+        scheduledByDiscord: Boolean(stored?.match?.scheduledByDiscord),
+        status: faceitStatus === 'unknown' && storedStatus === 'discord_scheduled'
+          ? 'discord_scheduled'
+          : match.status
+      };
       const previousName = channel.name;
-      const nextName = makeMatchChannelName(match);
-      await updateMatchChannelName(channel, match);
+      const nextName = makeMatchChannelName(matchForStatus);
+      await updateMatchChannelName(channel, matchForStatus);
       if (previousName !== nextName && channel.name === nextName) {
         result.renamed += 1;
         console.log(`[FACEIT status] channel renamed match_id=${match.id} from=${previousName} to=${nextName}`);
       }
 
-      const status = String(match.status || '').toLowerCase();
+      const status = String(matchForStatus.status || '').toLowerCase();
       if (['finished', 'done', 'completed', 'cancelled'].some((value) => status.includes(value))) {
         result.finished += 1;
-      } else if (match.scheduledAt || status.includes('scheduled')) {
+      } else if (matchForStatus.scheduledByDiscord || status.includes('scheduled')) {
         result.scheduled += 1;
       }
 
-      await saveMatch(match, {
+      await saveMatch(matchForStatus, {
         ...(stored?.discord || {}),
         channelId: channel.id,
         categoryId: channel.parentId || stored?.discord?.categoryId || null

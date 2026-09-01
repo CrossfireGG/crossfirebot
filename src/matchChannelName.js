@@ -49,7 +49,7 @@ function makeStatusPrefix(match) {
     return '🟢';
   }
 
-  if (match.scheduledByDiscord || match.scheduledAt || status === 'discord_scheduled' || status.includes('scheduled')) {
+  if (match.scheduledByDiscord || status === 'discord_scheduled' || status.includes('scheduled')) {
     return '🟡';
   }
 
