@@ -61,10 +61,10 @@ const EMBED_COLORS = {
 };
 
 const SEASON_SCHEDULE = [
-  { name: 'Group Stage', start: 'August 31, 2026', end: 'September 8, 2026', defaultDate: 'September 4, 2026' },
+  { name: 'Group Stage', start: 'August 31, 2026', end: 'September 10, 2026', defaultDate: 'September 4, 2026' },
   { name: 'Round 1', start: 'August 31, 2026', end: 'September 2, 2026', defaultDate: 'September 1, 2026' },
   { name: 'Round 2', start: 'September 3, 2026', end: 'September 5, 2026', defaultDate: 'September 4, 2026' },
-  { name: 'Round 3', start: 'September 6, 2026', end: 'September 8, 2026', defaultDate: 'September 7, 2026' },
+  { name: 'Round 3', start: 'September 6, 2026', end: 'September 10, 2026', defaultDate: 'September 7, 2026' },
   { name: 'Seeding Break', start: 'September 9, 2026', end: 'September 11, 2026', defaultDate: 'September 10, 2026' },
   { name: 'Playoff Stage', start: 'September 12, 2026', end: 'October 11, 2026', defaultDate: 'September 26, 2026' },
   { name: 'WB Round of 32', start: 'September 12, 2026', end: 'September 14, 2026', defaultDate: 'September 13, 2026' },
@@ -1923,7 +1923,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     '`!reschedule July 29 8:00 PM EST` - team member requests a new time',
     'Schedules and reschedules must stay inside the scheduling window. Reschedules within 24 hours of match time require admin override.',
     isGroupStageMatch(match)
-      ? 'Group Stage note: any Group Stage match can be scheduled by mutual agreement from August 31, 2026 through September 8, 2026.'
+      ? 'Group Stage note: any Group Stage match can be scheduled by mutual agreement from August 31, 2026 through September 10, 2026.'
       : null,
     `Roster changes: go to ${ticketChannel}.`,
     '',
