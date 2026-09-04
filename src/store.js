@@ -20,7 +20,8 @@ function normalizeDb(db) {
     schedules: db.schedules || {},
     scheduleProposals: db.scheduleProposals || {},
     sheetTeamRoles: db.sheetTeamRoles || {},
-    sclDemos: db.sclDemos || {}
+    sclDemos: db.sclDemos || {},
+    sclMessages: db.sclMessages || {}
   };
 }
 
@@ -91,6 +92,11 @@ export async function saveSchedule(matchId, schedule) {
     updatedAt: new Date().toISOString()
   };
   await writeDb(db);
+}
+
+export async function getSchedule(matchId) {
+  const db = normalizeDb(await readDb());
+  return db.schedules[matchId] || null;
 }
 
 export async function saveScheduleProposal(proposal) {
@@ -206,6 +212,23 @@ export async function savePostedSclDemo(matchId, map) {
     postedAt: new Date().toISOString()
   };
   await writeDb(db);
+}
+
+export async function getSclDiscordMessage(matchId) {
+  const db = normalizeDb(await readDb());
+  return db.sclMessages[matchId] || null;
+}
+
+export async function saveSclDiscordMessage(matchId, channelId, messageId) {
+  const db = normalizeDb(await readDb());
+  db.sclMessages[matchId] = {
+    matchId,
+    channelId,
+    messageId,
+    updatedAt: new Date().toISOString()
+  };
+  await writeDb(db);
+  return db.sclMessages[matchId];
 }
 
 function sclDemoKey(matchId, mapNumber, viewerUrl) {

@@ -16,16 +16,16 @@ test('finished FACEIT matches use the green status prefix', () => {
   );
 });
 
-test('explicitly scheduled FACEIT matches use the yellow status prefix', () => {
-  assert.equal(
-    makeMatchChannelName({ ...baseMatch, status: 'SCHEDULED', scheduledAt: 'Sep 1, 2026' }),
-    '🟡-a-team-one-vs-team-two'
-  );
-});
-
 test('unscheduled FACEIT matches have no status prefix even when scheduled_at is populated', () => {
   assert.equal(
     makeMatchChannelName({ ...baseMatch, status: 'unknown', scheduledAt: 'Sep 1, 2026' }),
+    'a-team-one-vs-team-two'
+  );
+});
+
+test('generic FACEIT SCHEDULED status does not add yellow without a confirmed Discord schedule', () => {
+  assert.equal(
+    makeMatchChannelName({ ...baseMatch, status: 'SCHEDULED', scheduledAt: 'Sep 1, 2026' }),
     'a-team-one-vs-team-two'
   );
 });

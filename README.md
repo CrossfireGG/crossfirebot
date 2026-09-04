@@ -19,7 +19,7 @@ What it does:
 - Lets team members propose and confirm a scheduled match time in Discord.
 - Lets Tournament Ops schedule directly from a match channel without waiting for team acceptance.
 - Calls a FACEIT schedule adapter when a write endpoint is available.
-- Accepts SCL `demo_ready` webhooks and posts ready 2D demo links into the correct match channel.
+- Accepts SCL `demo_ready` webhooks and maintains one ordered Discord message per match with clean, hyperlinked 2D demo links for every ready map.
 
 ## What I Need From You
 

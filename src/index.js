@@ -26,13 +26,15 @@ import {
   denyScheduleProposal,
   declineScheduleProposal,
   getLatestOpenScheduleProposalForMatch,
+  getSchedule,
+  getSclDiscordMessage,
   getStoredMatch,
   getStoredMatchByChannel,
-  hasPostedSclDemo,
   listStoredMatches,
   saveMatch,
   saveMatchIntroMessageId,
   savePostedSclDemo,
+  saveSclDiscordMessage,
   saveSchedule,
   saveScheduleProposal
 } from './store.js';
@@ -49,6 +51,7 @@ const faceit = new FaceitClient(
   config.faceitSources
 );
 const scl = new SclClient(config.sclApiKey);
+const sclMessageUpdateQueues = new Map();
 let webhookServer = null;
 
 const PENDING_SCHEDULE_TOPIC_PREFIX = 'Pending schedule:';
@@ -328,7 +331,7 @@ async function handleSclDemoReady(event) {
         return;
       }
 
-      await postSclMapToDiscord(matchId, mapNumber, sclMatch, map);
+      await queueSclMessageUpdate(matchId, () => postSclMapsToDiscord(matchId, mapNumber, sclMatch));
       return;
     } catch (error) {
       if (!error.retryable || attempt >= 3) {
@@ -344,7 +347,7 @@ async function handleSclDemoReady(event) {
   }
 }
 
-async function postSclMapToDiscord(matchId, mapNumber, sclMatch, map) {
+async function postSclMapsToDiscord(matchId, mapNumber, sclMatch) {
   const stored = await resolveStoredSclMatch(matchId, sclMatch);
   if (!stored?.discord?.channelId) {
     console.error(`[SCL] no Discord channel found match_id=${matchId} map_number=${mapNumber}`);
@@ -357,14 +360,46 @@ async function postSclMapToDiscord(matchId, mapNumber, sclMatch, map) {
     return;
   }
 
-  if (await hasPostedSclDemo(matchId, map.map_number, map.viewer_url)) {
-    console.log(`[SCL] map already posted match_id=${matchId} map_number=${mapNumber} channel_id=${channel.id}`);
+  const readyMaps = (sclMatch.maps || [])
+    .filter((map) => map.status === 'ready' && map.viewer_url)
+    .sort((left, right) => Number(left.map_number) - Number(right.map_number));
+  if (!readyMaps.length) {
+    console.error(`[SCL] no ready maps to post match_id=${matchId} event_map_number=${mapNumber}`);
     return;
   }
 
-  await channel.send({ embeds: [sclDemoReadyEmbed(stored, sclMatch, map)] });
-  await savePostedSclDemo(matchId, map);
-  console.log(`[SCL] message posted match_id=${matchId} map_number=${mapNumber} channel_id=${channel.id}`);
+  const payload = { embeds: [sclDemoReadyEmbed(stored, sclMatch, readyMaps)] };
+  const savedMessage = await getSclDiscordMessage(matchId);
+  const existingMessage = savedMessage?.channelId === channel.id
+    ? await channel.messages.fetch(savedMessage.messageId).catch(() => null)
+    : null;
+
+  let message;
+  if (existingMessage) {
+    message = await existingMessage.edit(payload);
+    console.log(`[SCL] combined message updated match_id=${matchId} maps=${readyMaps.map((map) => map.map_number).join(',')} channel_id=${channel.id} message_id=${message.id}`);
+  } else {
+    message = await channel.send(payload);
+    await saveSclDiscordMessage(matchId, channel.id, message.id);
+    console.log(`[SCL] combined message posted match_id=${matchId} maps=${readyMaps.map((map) => map.map_number).join(',')} channel_id=${channel.id} message_id=${message.id}`);
+  }
+
+  for (const readyMap of readyMaps) {
+    await savePostedSclDemo(matchId, readyMap);
+  }
+}
+
+async function queueSclMessageUpdate(matchId, update) {
+  const previous = sclMessageUpdateQueues.get(matchId) || Promise.resolve();
+  const current = previous.catch(() => null).then(update);
+  sclMessageUpdateQueues.set(matchId, current);
+  try {
+    return await current;
+  } finally {
+    if (sclMessageUpdateQueues.get(matchId) === current) {
+      sclMessageUpdateQueues.delete(matchId);
+    }
+  }
 }
 
 async function resolveStoredSclMatch(matchId, sclMatch) {
@@ -429,27 +464,31 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function sclDemoReadyEmbed(stored, sclMatch, map) {
-  const score = Number.isInteger(map.team1_score) && Number.isInteger(map.team2_score)
-    ? `${map.team1_score} - ${map.team2_score}`
-    : 'Not available';
-  const expires = map.expires_at
-    ? discordTimestamp(new Date(Number(map.expires_at) * 1000).toISOString(), 'R')
-    : 'Not listed';
-
+function sclDemoReadyEmbed(stored, sclMatch, maps) {
   return new EmbedBuilder()
     .setColor(0x5865f2)
-    .setTitle(`SCL 2D Demo Ready - Map ${map.map_number}`)
+    .setTitle('SCL 2D Demo Review')
     .setDescription(`**${stored.match.teamA} vs ${stored.match.teamB}**`)
     .addFields([
-      { name: 'Map', value: map.map_name || `Map ${map.map_number}`, inline: true },
-      { name: 'Score', value: score, inline: true },
+      ...maps.map((map) => ({
+        name: `Map ${map.map_number}${map.map_name ? ` — ${map.map_name}` : ''}`,
+        value: sclMapLinkLine(map),
+        inline: false
+      })),
       { name: 'Series Status', value: sclMatch.status || 'Unknown', inline: true },
-      { name: 'SCL Viewer', value: map.viewer_url, inline: false },
-      stored.match.faceitUrl ? { name: 'FACEIT Match Room', value: stored.match.faceitUrl, inline: false } : null,
-      { name: 'Link Expires', value: expires, inline: true }
+      stored.match.faceitUrl ? { name: 'FACEIT Match Room', value: `[Open match room](${stored.match.faceitUrl})`, inline: true } : null
     ].filter(Boolean))
     .setTimestamp(new Date());
+}
+
+function sclMapLinkLine(map) {
+  const score = Number.isInteger(map.team1_score) && Number.isInteger(map.team2_score)
+    ? ` • Score: ${map.team1_score}–${map.team2_score}`
+    : '';
+  const expires = map.expires_at
+    ? ` • Expires ${discordTimestamp(new Date(Number(map.expires_at) * 1000).toISOString(), 'R')}`
+    : '';
+  return `[Watch Map ${map.map_number} in the SCL viewer](${map.viewer_url})${score}${expires}`;
 }
 
 async function handleCallAdminReaction(reaction, user) {
@@ -626,9 +665,10 @@ async function handleRefreshMatchStatuses(interaction) {
       result.found += 1;
       const faceitStatus = String(match.status || '').toLowerCase();
       const storedStatus = String(stored?.match?.status || '').toLowerCase();
+      const savedSchedule = await getSchedule(match.id);
       const matchForStatus = {
         ...match,
-        scheduledByDiscord: Boolean(stored?.match?.scheduledByDiscord),
+        scheduledByDiscord: Boolean(stored?.match?.scheduledByDiscord || savedSchedule),
         status: faceitStatus === 'unknown' && storedStatus === 'discord_scheduled'
           ? 'discord_scheduled'
           : match.status
@@ -644,7 +684,7 @@ async function handleRefreshMatchStatuses(interaction) {
       const status = String(matchForStatus.status || '').toLowerCase();
       if (['finished', 'done', 'completed', 'cancelled'].some((value) => status.includes(value))) {
         result.finished += 1;
-      } else if (matchForStatus.scheduledByDiscord || status.includes('scheduled')) {
+      } else if (matchForStatus.scheduledByDiscord || status === 'discord_scheduled') {
         result.scheduled += 1;
       }
 
