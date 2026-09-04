@@ -1320,7 +1320,7 @@ async function handleTextScheduleProposal(message, content, kind) {
   }
 
   const member = await message.guild.members.fetch(message.author.id);
-  const proposerTeam = getMemberTeam(member, stored.discord);
+  const proposerTeam = await getMemberTeamWithRecovery(member, message.channel, stored);
   const canScheduleDirectly = hasScheduleOverride(member);
   if (!proposerTeam && !canScheduleDirectly) {
     await message.reply('Only a member from one of the two teams can propose a schedule. Tournament Ops can schedule it directly.');
@@ -1422,7 +1422,7 @@ async function handleTextAccept(message) {
   }
 
   const member = await message.guild.members.fetch(message.author.id);
-  const memberTeam = getMemberTeam(member, stored.discord);
+  const memberTeam = await getMemberTeamWithRecovery(member, message.channel, stored);
   const otherTeam = proposal.proposerTeam === 'teamA' ? 'teamB' : 'teamA';
   if (memberTeam !== otherTeam) {
     await message.reply('Only a member from the other team can accept this schedule.');
@@ -1464,7 +1464,7 @@ async function handleTextDecline(message) {
   }
 
   const member = await message.guild.members.fetch(message.author.id);
-  const memberTeam = getMemberTeam(member, stored.discord);
+  const memberTeam = await getMemberTeamWithRecovery(member, message.channel, stored);
   const otherTeam = proposal.proposerTeam === 'teamA' ? 'teamB' : 'teamA';
   if (memberTeam !== otherTeam) {
     await message.reply('Only a member from the other team can decline this schedule.');
@@ -2614,9 +2614,107 @@ function callAdminClaimButton(channelId, claimed = false) {
 }
 
 function getMemberTeam(member, discordIds) {
-  if (member.roles.cache.has(discordIds.teamARoleId)) return 'teamA';
-  if (member.roles.cache.has(discordIds.teamBRoleId)) return 'teamB';
+  if (discordIds?.teamARoleId && member.roles.cache.has(discordIds.teamARoleId)) return 'teamA';
+  if (discordIds?.teamBRoleId && member.roles.cache.has(discordIds.teamBRoleId)) return 'teamB';
   return null;
+}
+
+async function getMemberTeamWithRecovery(member, channel, stored) {
+  const existingTeam = getMemberTeam(member, stored.discord);
+  if (existingTeam) return existingTeam;
+
+  await member.guild.roles.fetch().catch(() => null);
+
+  const resolvedTeamARole = await resolveTeamRole(member.guild, config, stored.match.teamA).catch(() => null);
+  const resolvedTeamBRole = await resolveTeamRole(member.guild, config, stored.match.teamB).catch(() => null);
+  if (resolvedTeamARole && resolvedTeamBRole && resolvedTeamARole.id !== resolvedTeamBRole.id) {
+    const resolvedIds = {
+      ...stored.discord,
+      teamARoleId: resolvedTeamARole.id,
+      teamBRoleId: resolvedTeamBRole.id
+    };
+    const resolvedTeam = getMemberTeam(member, resolvedIds);
+    if (resolvedTeam) {
+      stored.discord = resolvedIds;
+      await saveMatch(stored.match, resolvedIds);
+      console.warn(`[team roles] repaired mapping by team name match_id=${stored.match.id} team_a_role=${resolvedIds.teamARoleId} team_b_role=${resolvedIds.teamBRoleId}`);
+      return resolvedTeam;
+    }
+  }
+
+  const candidates = getMatchChannelTeamRoleCandidates(channel, member.guild);
+  if (candidates.length !== 2) {
+    console.warn(`[team roles] could not recover unique channel roles match_id=${stored.match.id} channel_id=${channel.id} candidates=${candidates.length}`);
+    return null;
+  }
+
+  let teamARole = findCandidateRoleForTeam(candidates, stored.match.teamA);
+  let teamBRole = findCandidateRoleForTeam(candidates, stored.match.teamB);
+  if (teamARole?.id === teamBRole?.id) {
+    teamARole = null;
+    teamBRole = null;
+  }
+
+  if (!teamARole || !teamBRole) {
+    const priorA = candidates.find((role) => role.id === stored.discord?.teamARoleId);
+    const priorB = candidates.find((role) => role.id === stored.discord?.teamBRoleId);
+    if (priorA && priorB && priorA.id !== priorB.id) {
+      teamARole = priorA;
+      teamBRole = priorB;
+    }
+  }
+
+  if (!teamARole || !teamBRole) {
+    const memberCandidate = candidates.find((role) => member.roles.cache.has(role.id));
+    if (!memberCandidate) return null;
+    teamARole = memberCandidate;
+    teamBRole = candidates.find((role) => role.id !== memberCandidate.id);
+  }
+
+  const recoveredIds = {
+    ...stored.discord,
+    teamARoleId: teamARole.id,
+    teamBRoleId: teamBRole.id
+  };
+  stored.discord = recoveredIds;
+  await saveMatch(stored.match, recoveredIds);
+  console.warn(`[team roles] repaired mapping from channel permissions match_id=${stored.match.id} channel_id=${channel.id} team_a_role=${teamARole.id} team_b_role=${teamBRole.id}`);
+  return getMemberTeam(member, recoveredIds);
+}
+
+function getMatchChannelTeamRoleCandidates(channel, guild) {
+  const excludedIds = new Set([
+    guild.roles.everyone.id,
+    config.discordStaffRoleId,
+    ...config.matchAccessRoleIds,
+    ...config.scheduleOverrideRoleIds
+  ].filter(Boolean));
+
+  return [...(channel.permissionOverwrites?.cache?.values?.() || [])]
+    .filter((overwrite) => !excludedIds.has(overwrite.id))
+    .filter((overwrite) => overwrite.allow?.has?.(PermissionFlagsBits.ViewChannel))
+    .map((overwrite) => guild.roles.cache.get(overwrite.id))
+    .filter((role) => role && !role.managed)
+    .filter((role) =>
+      !role.permissions.has(PermissionFlagsBits.Administrator) &&
+      !role.permissions.has(PermissionFlagsBits.ManageGuild)
+    );
+}
+
+function findCandidateRoleForTeam(candidates, teamName) {
+  const normalizedTeam = normalizeSclTeamName(teamName);
+  if (!normalizedTeam) return null;
+
+  const exact = candidates.find((role) => normalizeSclTeamName(role.name) === normalizedTeam);
+  if (exact) return exact;
+
+  return candidates.find((role) => {
+    const normalizedRole = normalizeSclTeamName(role.name);
+    const shorterLength = Math.min(normalizedRole.length, normalizedTeam.length);
+    return shorterLength >= 5 && (
+      normalizedRole.includes(normalizedTeam) || normalizedTeam.includes(normalizedRole)
+    );
+  }) || null;
 }
 
 function makeProposalId() {
