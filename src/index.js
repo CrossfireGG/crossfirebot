@@ -672,9 +672,17 @@ async function handleRefreshMatchStatuses(interaction) {
           ? await getSchedule(storedRecord.match.id)
           : null);
       const wasMarkedScheduled = hasScheduledChannelPrefix(channel.name);
+      const hasApprovedScheduleMessage = wasMarkedScheduled
+        ? true
+        : await channelHasApprovedScheduleMessage(channel, match);
       const matchForStatus = {
         ...match,
-        scheduledByDiscord: Boolean(storedRecord?.match?.scheduledByDiscord || savedSchedule || wasMarkedScheduled),
+        scheduledByDiscord: Boolean(
+          storedRecord?.match?.scheduledByDiscord ||
+          savedSchedule ||
+          wasMarkedScheduled ||
+          hasApprovedScheduleMessage
+        ),
         status: faceitStatus === 'unknown' && storedStatus === 'discord_scheduled'
           ? 'discord_scheduled'
           : match.status
@@ -949,6 +957,30 @@ function isScheduleProposalMessage(message, match) {
   );
 
   return plainTextProposal || embedProposal;
+}
+
+async function channelHasApprovedScheduleMessage(channel, match) {
+  const messages = await channel.messages.fetch({ limit: 75 }).catch(() => null);
+  if (!messages) return false;
+
+  return messages.some((message) => isApprovedScheduleMessage(message, match));
+}
+
+function isApprovedScheduleMessage(message, match) {
+  const matchTitle = `${match.teamA} vs ${match.teamB}`;
+  const faceitUrl = String(match.faceitUrl || '');
+  const content = String(message.content || '');
+  const plainTextApproved = /Schedule Approved By Admin/i.test(content) &&
+    (content.includes(matchTitle) || (faceitUrl && content.includes(faceitUrl)));
+  const embedApproved = (message.embeds || []).some((embed) => {
+    const title = String(embed.title || '').toLowerCase();
+    const description = String(embed.description || '');
+    const fieldsText = (embed.fields || []).map((field) => String(field.value || '')).join('\n');
+    return title.includes('schedule approved by admin') &&
+      (description.includes(matchTitle) || (faceitUrl && fieldsText.includes(faceitUrl)));
+  });
+
+  return plainTextApproved || embedApproved;
 }
 
 function buildProposalFromMessage(message, stored) {
