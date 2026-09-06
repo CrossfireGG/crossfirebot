@@ -681,10 +681,10 @@ async function handleRefreshMatchStatuses(interaction) {
       };
       const previousName = channel.name;
       const nextName = makeMatchChannelName(matchForStatus);
-      await updateMatchChannelName(channel, matchForStatus);
-      if (previousName !== nextName && channel.name === nextName) {
+      const renameResult = await updateMatchChannelName(channel, matchForStatus);
+      if (renameResult.changed) {
         result.renamed += 1;
-        console.log(`[FACEIT status] channel renamed match_id=${match.id} from=${previousName} to=${nextName}`);
+        console.log(`[FACEIT status] channel renamed match_id=${match.id} from=${previousName} to=${renameResult.name || nextName}`);
       }
 
       const status = String(matchForStatus.status || '').toLowerCase();
@@ -2164,19 +2164,23 @@ async function handleAdminScheduleDecision(interaction, approved) {
   }
 
   if (approved) {
+    let renameResult = null;
     if (matchChannel && stored) {
-      await markMatchChannelScheduled(matchChannel, stored, proposal);
+      renameResult = await markMatchChannelScheduled(matchChannel, stored, proposal);
     }
     await interaction.message.react('✅').catch(() => null);
+    const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
+    const missingChannelNote = matchChannel ? '' : ' I could not find the match channel to mark yellow.';
+    const renameFailureNote = renameResult?.error
+      ? ` Discord blocked the channel rename: ${renameResult.error.message}`
+      : '';
+    await interaction.editReply(`Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}`);
   } else {
     await interaction.message.react('❌').catch(() => null);
+    const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
+    const missingChannelNote = matchChannel ? '' : ' I could not find the match channel.';
+    await interaction.editReply(`Denied and reacted with an X.${missingProposalNote}${missingChannelNote}`);
   }
-
-  const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
-  const missingChannelNote = matchChannel ? '' : ' I could not find the match channel to mark yellow.';
-  await interaction.editReply(
-    `${approved ? 'Approved and reacted with a checkmark.' : 'Denied and reacted with an X.'}${missingProposalNote}${missingChannelNote}`
-  );
 }
 
 async function findStoredMatchFromAdminMessage(message, channelId) {
@@ -2206,8 +2210,9 @@ async function markMatchChannelScheduled(channel, stored, proposal = null) {
     scheduledByDiscord: true,
     scheduledAt: proposal?.scheduledAt || stored.match.scheduledAt || null
   };
-  await updateMatchChannelName(channel, scheduledMatch);
+  const renameResult = await updateMatchChannelName(channel, scheduledMatch);
   await saveMatch(scheduledMatch, stored.discord);
+  return renameResult;
 }
 
 function adminDecisionEmbed({ approved, stored, proposal, adminId }) {

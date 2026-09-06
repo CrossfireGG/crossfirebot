@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { makeMatchChannelName } from '../src/matchChannelName.js';
+import { updateMatchChannelName } from '../src/discordProvision.js';
 
 const baseMatch = {
   teamA: 'Team One',
@@ -35,4 +36,25 @@ test('matches scheduled through Discord use the yellow status prefix', () => {
     makeMatchChannelName({ ...baseMatch, status: 'discord_scheduled', scheduledByDiscord: true }),
     '🟡-a-team-one-vs-team-two'
   );
+});
+
+test('channel rename helper returns the updated channel name', async () => {
+  const channel = {
+    id: 'channel-1',
+    name: 'a-team-one-vs-team-two',
+    async setName(name) {
+      this.name = name;
+      return this;
+    }
+  };
+
+  const result = await updateMatchChannelName(channel, {
+    ...baseMatch,
+    status: 'discord_scheduled',
+    scheduledByDiscord: true
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.name, '🟡-a-team-one-vs-team-two');
+  assert.equal(channel.name, '🟡-a-team-one-vs-team-two');
 });

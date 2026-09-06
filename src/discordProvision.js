@@ -125,8 +125,20 @@ function makeMatchPermissionOverwrites(everyoneRole, teamARole, teamBRole, privi
 
 export async function updateMatchChannelName(channel, match) {
   const nextName = makeMatchChannelName(match);
-  if (channel.name !== nextName) {
-    await channel.setName(nextName).catch(() => null);
+  return renameMatchChannel(channel, nextName);
+}
+
+async function renameMatchChannel(channel, nextName) {
+  if (channel.name === nextName) {
+    return { changed: false, name: channel.name };
+  }
+
+  try {
+    const updated = await channel.setName(nextName);
+    return { changed: true, name: updated.name };
+  } catch (error) {
+    console.error(`[Discord] failed to rename channel ${channel.id} from=${channel.name} to=${nextName}: ${error.message}`);
+    return { changed: false, name: channel.name, error };
   }
 }
 
@@ -231,7 +243,7 @@ async function findOrCreateTextChannel(guild, category, name, permissionOverwrit
 
   if (existing) {
     if (existing.name !== name) {
-      await existing.setName(name).catch(() => null);
+      await renameMatchChannel(existing, name);
     }
     if (existing.parentId !== category.id) {
       await existing.setParent(category.id, { lockPermissions: false });
