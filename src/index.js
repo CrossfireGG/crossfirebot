@@ -970,6 +970,7 @@ function isApprovedScheduleMessage(message, match) {
   const matchTitle = `${match.teamA} vs ${match.teamB}`;
   const faceitUrl = String(match.faceitUrl || '');
   const content = String(message.content || '');
+  const legacyPlainTextApproved = /admin approved schedule request/i.test(content);
   const plainTextApproved = /Schedule Approved By Admin/i.test(content) &&
     (content.includes(matchTitle) || (faceitUrl && content.includes(faceitUrl)));
   const embedApproved = (message.embeds || []).some((embed) => {
@@ -980,7 +981,7 @@ function isApprovedScheduleMessage(message, match) {
       (description.includes(matchTitle) || (faceitUrl && fieldsText.includes(faceitUrl)));
   });
 
-  return plainTextApproved || embedApproved;
+  return legacyPlainTextApproved || plainTextApproved || embedApproved;
 }
 
 function buildProposalFromMessage(message, stored) {
