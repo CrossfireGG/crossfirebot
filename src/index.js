@@ -663,12 +663,18 @@ async function handleRefreshMatchStatuses(interaction) {
       }
 
       result.found += 1;
+      const storedByChannel = await getStoredMatchByChannel(channel.id);
+      const storedRecord = stored || storedByChannel;
       const faceitStatus = String(match.status || '').toLowerCase();
-      const storedStatus = String(stored?.match?.status || '').toLowerCase();
-      const savedSchedule = await getSchedule(match.id);
+      const storedStatus = String(storedRecord?.match?.status || '').toLowerCase();
+      const savedSchedule = await getSchedule(match.id) ||
+        (storedRecord?.match?.id && storedRecord.match.id !== match.id
+          ? await getSchedule(storedRecord.match.id)
+          : null);
+      const wasMarkedScheduled = hasScheduledChannelPrefix(channel.name);
       const matchForStatus = {
         ...match,
-        scheduledByDiscord: Boolean(stored?.match?.scheduledByDiscord || savedSchedule),
+        scheduledByDiscord: Boolean(storedRecord?.match?.scheduledByDiscord || savedSchedule || wasMarkedScheduled),
         status: faceitStatus === 'unknown' && storedStatus === 'discord_scheduled'
           ? 'discord_scheduled'
           : match.status
@@ -689,9 +695,9 @@ async function handleRefreshMatchStatuses(interaction) {
       }
 
       await saveMatch(matchForStatus, {
-        ...(stored?.discord || {}),
+        ...(storedRecord?.discord || {}),
         channelId: channel.id,
-        categoryId: channel.parentId || stored?.discord?.categoryId || null
+        categoryId: channel.parentId || storedRecord?.discord?.categoryId || null
       });
     } catch (error) {
       result.failures.push(`${match.teamA} vs ${match.teamB}: ${error.message}`);
@@ -2657,6 +2663,10 @@ function getMemberTeam(member, discordIds) {
   if (discordIds?.teamARoleId && member.roles.cache.has(discordIds.teamARoleId)) return 'teamA';
   if (discordIds?.teamBRoleId && member.roles.cache.has(discordIds.teamBRoleId)) return 'teamB';
   return null;
+}
+
+function hasScheduledChannelPrefix(channelName) {
+  return String(channelName || '').startsWith('🟡-');
 }
 
 async function getMemberTeamWithRecovery(member, channel, stored) {
