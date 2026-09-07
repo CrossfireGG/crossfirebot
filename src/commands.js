@@ -83,6 +83,11 @@ export const commands = [
     )
     .addSubcommand((subcommand) =>
       subcommand
+        .setName('commands')
+        .setDescription('Show the admin command list')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
         .setName('create')
         .setDescription('Create or update one match room from a FACEIT link')
         .addStringOption((option) =>

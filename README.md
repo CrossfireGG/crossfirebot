@@ -120,6 +120,7 @@ Then run these in Discord:
 - `/cf audit target:captains` shows which sheet team captains are missing from this Discord server.
 - `/cf refresh` checks FACEIT and refreshes existing match channel names: finished matches get `🟢-`, scheduled matches get `🟡-`, and no channels or permissions are created.
 - `/cf status` checks how many matches the bot knows about.
+- `/cf commands` shows the admin command list inside Discord.
 - `/cf create link:<FACEIT room link>` creates/updates one match chat from a FACEIT room link.
 - `/cf sample group:A round:1` creates a fake `a-team-one-vs-team-two` style match channel for testing permissions and scheduling.
 - If `!schedule`, `!propose`, `!accept`, `!decline`, `!admin`, or `!calladmin` is used in an unlinked match room, the bot tries to recover the match from the channel topic/name and reports what it could not recognize.

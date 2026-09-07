@@ -197,6 +197,11 @@ async function handleAdminCommand(interaction) {
       return;
     }
 
+    if (subcommand === 'commands') {
+      await handleCommandHelp(interaction);
+      return;
+    }
+
     if (subcommand === 'create') {
       await handleCreateMatchChat(interaction);
       return;
@@ -271,6 +276,35 @@ async function handleAdminCommand(interaction) {
 async function handleBotStatus(interaction) {
   const matches = await listStoredMatches();
   await interaction.reply({ content: `I know about ${matches.length} match(es).`, ephemeral: true });
+}
+
+async function handleCommandHelp(interaction) {
+  await interaction.reply({
+    content: [
+      '**CROSSFIRE Admin Commands**',
+      '`/cf sync target:matches` - create/update FACEIT match rooms.',
+      '`/cf sync target:matches round:1` - sync one Group Stage round only.',
+      '`/cf sync target:teams` - sync roles, captains, participants, and nicknames from the sheet.',
+      '`/cf sync target:teams notify_captains:true` - also DM captains about missing players.',
+      '`/cf audit target:matches` - check match rooms and permissions without creating channels.',
+      '`/cf audit target:matches fix:true` - repair channel names, links, pins, and permissions.',
+      '`/cf audit target:players` - show sheet players missing from Discord.',
+      '`/cf audit target:captains` - show missing captains.',
+      '`/cf refresh` - refresh status emojis on existing match channels.',
+      '`/cf status` - show how many matches the bot knows.',
+      '`/cf create link:<FACEIT room link>` - create/update one match room.',
+      '`/cf sample group:A round:1` - create a sample match room for testing.',
+      '',
+      '**Match Room Commands**',
+      '`!schedule September 1 8 PM EST` - propose a match time.',
+      '`!propose September 1 8 PM EST` - same as `!schedule`.',
+      '`!reschedule September 2 8 PM EST` - request a new time.',
+      '`!accept` - accept the open proposal from the other team.',
+      '`!decline` - decline the open proposal.',
+      '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.'
+    ].join('\n'),
+    ephemeral: true
+  });
 }
 
 client.on(Events.MessageCreate, async (message) => {
