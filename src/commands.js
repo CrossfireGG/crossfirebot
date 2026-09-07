@@ -3,64 +3,99 @@ import {
   SlashCommandBuilder
 } from 'discord.js';
 
+const roundChoices = [
+  { name: 'All detected rounds', value: 0 },
+  { name: 'Group Stage - Round 1', value: 1 },
+  { name: 'Group Stage - Round 2', value: 2 },
+  { name: 'Group Stage - Round 3', value: 3 }
+];
+
 export const commands = [
   new SlashCommandBuilder()
-    .setName('matches')
-    .setDescription('Manage FACEIT match channels')
+    .setName('cf')
+    .setDescription('CROSSFIRE bot admin tools')
     .addSubcommand((subcommand) =>
       subcommand
         .setName('sync')
-        .setDescription('Create or update Discord match channels from FACEIT')
+        .setDescription('Sync match rooms or team roles')
+        .addStringOption((option) =>
+          option
+            .setName('target')
+            .setDescription('What to sync')
+            .setRequired(true)
+            .addChoices(
+              { name: 'Match rooms from FACEIT', value: 'matches' },
+              { name: 'Team roles from Google Sheet', value: 'teams' }
+            )
+        )
         .addIntegerOption((option) =>
           option
             .setName('round')
-            .setDescription('Only sync one Group Stage round')
+            .setDescription('For match sync: only sync one Group Stage round')
             .setRequired(false)
-            .addChoices(
-              { name: 'All detected rounds', value: 0 },
-              { name: 'Group Stage - Round 1', value: 1 },
-              { name: 'Group Stage - Round 2', value: 2 },
-              { name: 'Group Stage - Round 3', value: 3 }
-            )
+            .addChoices(...roundChoices)
         )
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName('status')
-        .setDescription('Show how many FACEIT matches are stored by the bot')
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName('refresh-status')
-        .setDescription('Refresh match channel status emojis from FACEIT')
+        .addBooleanOption((option) =>
+          option
+            .setName('notify_captains')
+            .setDescription('For team sync: DM captains about missing players')
+            .setRequired(false)
+        )
     )
     .addSubcommand((subcommand) =>
       subcommand
         .setName('audit')
-        .setDescription('Check match channels, team roles, and permissions without creating duplicates')
+        .setDescription('Check match rooms or missing roster users')
+        .addStringOption((option) =>
+          option
+            .setName('target')
+            .setDescription('What to audit')
+            .setRequired(true)
+            .addChoices(
+              { name: 'Match rooms and permissions', value: 'matches' },
+              { name: 'Missing players', value: 'players' },
+              { name: 'Missing captains', value: 'captains' }
+            )
+        )
         .addIntegerOption((option) =>
           option
             .setName('round')
-            .setDescription('Only audit one Group Stage round')
+            .setDescription('For match audit: only audit one Group Stage round')
             .setRequired(false)
-            .addChoices(
-              { name: 'All detected rounds', value: 0 },
-              { name: 'Group Stage - Round 1', value: 1 },
-              { name: 'Group Stage - Round 2', value: 2 },
-              { name: 'Group Stage - Round 3', value: 3 }
-            )
+            .addChoices(...roundChoices)
         )
         .addBooleanOption((option) =>
           option
             .setName('fix')
-            .setDescription('Fix channel permissions and linked match data when possible')
+            .setDescription('For match audit: repair channel names, links, and permissions')
             .setRequired(false)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('refresh')
+        .setDescription('Refresh match channel status emojis')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('status')
+        .setDescription('Show how many matches the bot knows about')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('create')
+        .setDescription('Create or update one match room from a FACEIT link')
+        .addStringOption((option) =>
+          option
+            .setName('link')
+            .setDescription('FACEIT match room link')
+            .setRequired(true)
         )
     )
     .addSubcommand((subcommand) =>
       subcommand
         .setName('sample')
-        .setDescription('Create a sample match channel for testing')
+        .setDescription('Create a sample match room for testing')
         .addStringOption((option) =>
           option
             .setName('group')
@@ -89,47 +124,6 @@ export const commands = [
             .setName('team_b')
             .setDescription('Second sample team name')
             .setRequired(false)
-        )
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
-  new SlashCommandBuilder()
-    .setName('teams')
-    .setDescription('Manage team roles and roster checks')
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName('sync')
-        .setDescription('Update team roles, participant roles, captain roles, and nicknames from Google Sheet')
-        .addBooleanOption((option) =>
-          option
-            .setName('notify_captains')
-            .setDescription('DM captains about missing players')
-            .setRequired(false)
-        )
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName('missing-players')
-        .setDescription('Show which sheet players are missing from this Discord server')
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName('missing-captains')
-        .setDescription('Show which sheet team captains are missing from this Discord server')
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-  ,
-  new SlashCommandBuilder()
-    .setName('matchchat')
-    .setDescription('Create or update one FACEIT match chat')
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName('create')
-        .setDescription('Create one match chat from a FACEIT match room link')
-        .addStringOption((option) =>
-          option
-            .setName('link')
-            .setDescription('FACEIT match room link')
-            .setRequired(true)
         )
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)

@@ -110,19 +110,20 @@ https://discord.com/oauth2/authorize?client_id=1523887433047867423&permissions=2
 
 Then run these in Discord:
 
-- `/matches sync` creates/updates round categories and private match channels from FACEIT.
-- `/matches sync round:1` creates/updates only `Group Stage - Round 1`; use `round:2` or `round:3` for the other Group Stage rounds.
-- `/matches audit` checks FACEIT match channels, team role mappings, and permissions without creating new channels.
-- `/matches audit fix:true` repairs channel names, stored match links, pinned messages, and permissions using the same upsert logic as sync.
+- `/cf sync target:matches` creates/updates round categories and private match channels from FACEIT.
+- `/cf sync target:matches round:1` creates/updates only `Group Stage - Round 1`; use `round:2` or `round:3` for the other Group Stage rounds.
+- `/cf sync target:teams` updates team roles, participant roles, captain roles, and nicknames from the Google Sheet.
+- `/cf sync target:teams notify_captains:true` also DMs captains about missing players.
+- `/cf audit target:matches` checks FACEIT match channels, team role mappings, and permissions without creating channels.
+- `/cf audit target:matches fix:true` repairs channel names, stored match links, pinned messages, and permissions.
+- `/cf audit target:players` shows which sheet players are missing from this Discord server, grouped by team.
+- `/cf audit target:captains` shows which sheet team captains are missing from this Discord server.
+- `/cf refresh` checks FACEIT and refreshes existing match channel names: finished matches get `🟢-`, scheduled matches get `🟡-`, and no channels or permissions are created.
+- `/cf status` checks how many matches the bot knows about.
+- `/cf create link:<FACEIT room link>` creates/updates one match chat from a FACEIT room link.
+- `/cf sample group:A round:1` creates a fake `a-team-one-vs-team-two` style match channel for testing permissions and scheduling.
 - If `!schedule`, `!propose`, `!accept`, `!decline`, or `!calladmin` is used in an unlinked match room, the bot tries to recover the match from the channel topic/name and reports what it could not recognize.
-- `/matches status` checks how many matches the bot knows about.
-- `/matches refresh-status` checks FACEIT and refreshes existing match channel names: finished matches get `🟢-`, scheduled matches get `🟡-`, and no channels or permissions are created or changed.
-- `/matches sample group:A round:1` creates a fake `a-team-one-vs-team-two` style match channel in `Group Stage - Round 1` for testing permissions and scheduling.
-- `/teams sync` updates team roles, participant roles, captain roles, and nicknames from the Google Sheet.
-- `/teams sync notify_captains:true` also DMs captains about missing players.
-- After roster changes or team-name changes in the Google Sheet, run `/teams sync`; the bot fetches the latest sheet and removes stale team roles it previously managed.
-- `/teams missing-players` shows which sheet players are missing from this Discord server, grouped by team.
-- `/teams missing-captains` shows which sheet team captains are missing from this Discord server.
+- After roster changes or team-name changes in the Google Sheet, run `/cf sync target:teams`; the bot fetches the latest sheet and removes stale team roles it previously managed.
 
 These slash commands are restricted to Discord admins, users with Manage Server, or configured match staff roles.
 

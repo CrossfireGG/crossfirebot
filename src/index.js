@@ -156,6 +156,58 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 async function handleAdminCommand(interaction) {
+  if (interaction.commandName === 'cf') {
+    const subcommand = interaction.options.getSubcommand();
+
+    if (subcommand === 'sync') {
+      const target = interaction.options.getString('target', true);
+      if (target === 'matches') {
+        await handleSyncMatches(interaction);
+        return;
+      }
+      if (target === 'teams') {
+        await handleSyncTeamRoles(interaction);
+        return;
+      }
+    }
+
+    if (subcommand === 'audit') {
+      const target = interaction.options.getString('target', true);
+      if (target === 'matches') {
+        await handleAuditMatches(interaction);
+        return;
+      }
+      if (target === 'players') {
+        await handleMissingPlayers(interaction);
+        return;
+      }
+      if (target === 'captains') {
+        await handleMissingCaptains(interaction);
+        return;
+      }
+    }
+
+    if (subcommand === 'refresh') {
+      await handleRefreshMatchStatuses(interaction);
+      return;
+    }
+
+    if (subcommand === 'status') {
+      await handleBotStatus(interaction);
+      return;
+    }
+
+    if (subcommand === 'create') {
+      await handleCreateMatchChat(interaction);
+      return;
+    }
+
+    if (subcommand === 'sample') {
+      await handleSampleMatch(interaction);
+      return;
+    }
+  }
+
   if (interaction.commandName === 'matches') {
     const subcommand = interaction.options.getSubcommand();
 
@@ -165,8 +217,7 @@ async function handleAdminCommand(interaction) {
     }
 
     if (subcommand === 'status') {
-      const matches = await listStoredMatches();
-      await interaction.reply({ content: `I know about ${matches.length} match(es).`, ephemeral: true });
+      await handleBotStatus(interaction);
       return;
     }
 
@@ -215,6 +266,11 @@ async function handleAdminCommand(interaction) {
   }
 
   await interaction.reply({ content: 'Unknown command.', ephemeral: true });
+}
+
+async function handleBotStatus(interaction) {
+  const matches = await listStoredMatches();
+  await interaction.reply({ content: `I know about ${matches.length} match(es).`, ephemeral: true });
 }
 
 client.on(Events.MessageCreate, async (message) => {
@@ -779,7 +835,7 @@ async function handleAuditMatches(interaction) {
     if (shouldFix) {
       try {
         if (audit.missingChannel) {
-          result.problems.push(`${match.teamA} vs ${match.teamB}: missing channel; run /matches sync to create it`);
+          result.problems.push(`${match.teamA} vs ${match.teamB}: missing channel; run /cf sync target:matches to create it`);
           continue;
         }
 
@@ -809,7 +865,7 @@ async function handleAuditMatches(interaction) {
     `OK: ${result.ok}. Missing channels: ${result.missingChannel}. Missing mapped roles: ${result.missingRoles}. Bad permissions: ${result.badPermissions}. Fixed: ${result.fixed}.`,
     problemLines.length ? ['Problems:', ...problemLines].join('\n') : null,
     hiddenCount ? `...and ${hiddenCount} more problem(s).` : null,
-    shouldFix ? 'Run `/matches audit` again without fix to verify everything is clean.' : 'Use `/matches audit fix:true` to repair channel names, links, and permissions without intentionally duplicating existing match rooms.'
+    shouldFix ? 'Run `/cf audit target:matches` again without fix to verify everything is clean.' : 'Use `/cf audit target:matches fix:true` to repair channel names, links, and permissions without intentionally duplicating existing match rooms.'
   ].filter(Boolean).join('\n')));
 }
 
@@ -1413,7 +1469,7 @@ async function handleTextScheduleProposal(message, content, kind) {
       kind === 'reschedule'
         ? 'Use `!reschedule` inside a match channel created by the bot.'
         : 'Use `!schedule` or `!propose` inside a match channel created by the bot.',
-      'If this should be a match room, run `/matches audit fix:true` to repair missing links, names, and permissions.'
+      'If this should be a match room, run `/cf audit target:matches fix:true` to repair missing links, names, and permissions.'
     ]));
     return;
   }
@@ -1509,7 +1565,7 @@ async function handleTextAccept(message) {
   if (!stored) {
     await message.reply(await buildUnlinkedMatchChannelMessage(message.channel, [
       'Use `!accept` inside a match channel created by the bot.',
-      'If this is a match room, run `/matches audit fix:true` so I can relink it.'
+      'If this is a match room, run `/cf audit target:matches fix:true` so I can relink it.'
     ]));
     return;
   }
@@ -1551,7 +1607,7 @@ async function handleTextDecline(message) {
   if (!stored) {
     await message.reply(await buildUnlinkedMatchChannelMessage(message.channel, [
       'Use `!decline` inside a match channel created by the bot.',
-      'If this is a match room, run `/matches audit fix:true` so I can relink it.'
+      'If this is a match room, run `/cf audit target:matches fix:true` so I can relink it.'
     ]));
     return;
   }
@@ -1597,7 +1653,7 @@ async function handleCallAdmin(message, content) {
   if (!stored) {
     await message.reply(await buildUnlinkedMatchChannelMessage(message.channel, [
       'Use `!calladmin` inside a match channel created by the bot.',
-      'If this is a match room, run `/matches audit fix:true` so I can relink it.'
+      'If this is a match room, run `/cf audit target:matches fix:true` so I can relink it.'
     ]));
     return;
   }
@@ -1743,7 +1799,7 @@ async function buildUnlinkedMatchChannelMessage(channel, baseLines) {
     topicStatus,
     ...likelyLines,
     '',
-    'Admin fix: run the real slash command `/matches audit`, then `/matches audit fix:true` if it reports missing links or permissions.'
+    'Admin fix: run `/cf audit target:matches`, then `/cf audit target:matches fix:true` if it reports missing links or permissions.'
   ].join('\n');
 }
 
