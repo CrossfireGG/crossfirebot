@@ -362,11 +362,15 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
   for (const guildId of config.commandGuildIds) {
-    await rest.put(
-      Routes.applicationGuildCommands(config.discordClientId, guildId),
-      { body: commands }
-    );
-    console.log(`Slash commands registered for guild ${guildId}`);
+    try {
+      await rest.put(
+        Routes.applicationGuildCommands(config.discordClientId, guildId),
+        { body: commands }
+      );
+      console.log(`Slash commands registered for guild ${guildId}`);
+    } catch (error) {
+      console.error(`Could not register slash commands for guild ${guildId}:`, error);
+    }
   }
 }
 

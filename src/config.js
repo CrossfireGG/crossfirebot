@@ -101,7 +101,7 @@ export function getConfig() {
 
   const commandGuildIds = [
     process.env.DISCORD_GUILD_ID,
-    ...parseCsvValue(process.env.DISCORD_COMMAND_GUILD_IDS || '')
+    ...parseSnowflakeList(process.env.DISCORD_COMMAND_GUILD_IDS || '')
   ].filter((value, index, values) => value && values.indexOf(value) === index);
 
   return {
@@ -195,6 +195,13 @@ function parseCsvValue(value) {
     .split(',')
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function parseSnowflakeList(value) {
+  return String(value || '')
+    .split(/[\s,;]+/)
+    .map((part) => part.trim())
+    .filter((part) => /^\d{15,25}$/.test(part));
 }
 
 function parseRoundWindows(value) {
