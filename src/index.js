@@ -300,7 +300,7 @@ client.on(Events.MessageCreate, async (message) => {
       await handleTextDecline(message);
     }
 
-    if (content.toLowerCase().startsWith('!calladmin')) {
+    if (/^!(calladmin|admin)\b/i.test(content)) {
       await handleCallAdmin(message, content);
     }
   } catch (error) {
@@ -1652,13 +1652,13 @@ async function handleCallAdmin(message, content) {
   const stored = await getStoredMatchForChannel(message.channel);
   if (!stored) {
     await message.reply(await buildUnlinkedMatchChannelMessage(message.channel, [
-      'Use `!calladmin` inside a match channel created by the bot.',
+      'Use `!admin` or `!calladmin` inside a match channel created by the bot.',
       'If this is a match room, run `/cf audit target:matches fix:true` so I can relink it.'
     ]));
     return;
   }
 
-  const reason = content.replace(/^!calladmin\s*/i, '').trim() || 'No reason given';
+  const reason = content.replace(/^!(?:calladmin|admin)\s*/i, '').trim() || 'No reason given';
   const adminChannel = await getCallAdminChannel();
   const staffMentions = getStaffMentions(message.guild);
   const allowedMentions = getAdminAllowedMentions(message.guild);
@@ -2083,7 +2083,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     `Roster changes: go to ${ticketChannel}.`,
     '',
     '**Admin Help**',
-    '`!calladmin reason here` - alerts admins with this match channel and FACEIT link'
+    '`!admin reason here` or `!calladmin reason here` - alerts admins with this match channel and FACEIT link'
   ].filter((line) => line !== null).join('\n');
 }
 

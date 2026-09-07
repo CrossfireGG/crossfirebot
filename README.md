@@ -63,7 +63,7 @@ git commit -m "Update bot"
 git push
 ```
 
-For text commands like `!schedule`, `!propose`, `!reschedule`, `!accept`, `!decline`, and `!calladmin`, enable **Message Content Intent** in Discord Developer Portal > Bot.
+For text commands like `!schedule`, `!propose`, `!reschedule`, `!accept`, `!decline`, `!admin`, and `!calladmin`, enable **Message Content Intent** in Discord Developer Portal > Bot.
 
 For nickname updates, the bot needs **Manage Nicknames**, and its role must be above the players it is renaming.
 
@@ -78,7 +78,7 @@ SCHEDULE_OVERRIDE_ROLE_IDS=1128907825167482900
 MATCH_ACCESS_ROLE_NAMES=
 ```
 
-When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!calladmin` posts in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server.
+When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!admin` and `!calladmin` post in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server.
 
 For SCL 2D demo posting, set these Railway variables after SCL issues them:
 
@@ -122,7 +122,7 @@ Then run these in Discord:
 - `/cf status` checks how many matches the bot knows about.
 - `/cf create link:<FACEIT room link>` creates/updates one match chat from a FACEIT room link.
 - `/cf sample group:A round:1` creates a fake `a-team-one-vs-team-two` style match channel for testing permissions and scheduling.
-- If `!schedule`, `!propose`, `!accept`, `!decline`, or `!calladmin` is used in an unlinked match room, the bot tries to recover the match from the channel topic/name and reports what it could not recognize.
+- If `!schedule`, `!propose`, `!accept`, `!decline`, `!admin`, or `!calladmin` is used in an unlinked match room, the bot tries to recover the match from the channel topic/name and reports what it could not recognize.
 - After roster changes or team-name changes in the Google Sheet, run `/cf sync target:teams`; the bot fetches the latest sheet and removes stale team roles it previously managed.
 
 These slash commands are restricted to Discord admins, users with Manage Server, or configured match staff roles.
@@ -140,7 +140,7 @@ Inside each match channel:
 - `!accept` lets a member from the other team accept it.
 - `!decline` lets a member from the other team decline it.
 - Users with a role in `SCHEDULE_OVERRIDE_ROLE_IDS` can run `!schedule` in a match room to set the schedule directly without both teams accepting.
-- `!calladmin reason here` alerts admins with the match channel and FACEIT link.
+- `!admin reason here` or `!calladmin reason here` alerts admins with the match channel and FACEIT link.
 - Old schedule buttons are disabled. Scheduling is command-only inside match rooms.
 
 Season 6 schedule windows and default round dates are built into the bot:
