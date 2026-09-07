@@ -387,6 +387,8 @@ async function postSclMapsToDiscord(matchId, mapNumber, sclMatch) {
   for (const readyMap of readyMaps) {
     await savePostedSclDemo(matchId, readyMap);
   }
+
+  await markMatchChannelFinishedFromScl(channel, stored, sclMatch);
 }
 
 async function queueSclMessageUpdate(matchId, update) {
@@ -489,6 +491,25 @@ function sclMapLinkLine(map) {
     ? ` • Expires ${discordTimestamp(new Date(Number(map.expires_at) * 1000).toISOString(), 'R')}`
     : '';
   return `[Watch Map ${map.map_number} in the SCL viewer](${map.viewer_url})${score}${expires}`;
+}
+
+async function markMatchChannelFinishedFromScl(channel, stored, sclMatch) {
+  const finishedMatch = {
+    ...stored.match,
+    status: 'scl_demo_ready',
+    scheduledByDiscord: false
+  };
+  const renameResult = await updateMatchChannelName(channel, finishedMatch);
+  if (renameResult.error) {
+    console.error(`[SCL] failed to mark Discord channel green match_id=${stored.match.id} channel_id=${channel.id}: ${renameResult.error.message}`);
+  } else if (renameResult.changed) {
+    console.log(`[SCL] marked Discord channel green match_id=${stored.match.id} channel_id=${channel.id} name=${renameResult.name}`);
+  }
+
+  await saveMatch({
+    ...finishedMatch,
+    sclStatus: sclMatch.status || null
+  }, stored.discord);
 }
 
 async function handleCallAdminReaction(reaction, user) {
@@ -672,6 +693,7 @@ async function handleRefreshMatchStatuses(interaction) {
           ? await getSchedule(storedRecord.match.id)
           : null);
       const wasMarkedScheduled = hasScheduledChannelPrefix(channel.name);
+      const wasMarkedFinished = hasFinishedChannelPrefix(channel.name);
       const hasApprovedScheduleMessage = wasMarkedScheduled
         ? true
         : await channelHasApprovedScheduleMessage(channel, match);
@@ -683,9 +705,7 @@ async function handleRefreshMatchStatuses(interaction) {
           wasMarkedScheduled ||
           hasApprovedScheduleMessage
         ),
-        status: faceitStatus === 'unknown' && storedStatus === 'discord_scheduled'
-          ? 'discord_scheduled'
-          : match.status
+        status: refreshStatusWithStoredState(match.status, storedStatus, wasMarkedFinished)
       };
       const previousName = channel.name;
       const nextName = makeMatchChannelName(matchForStatus);
@@ -2705,6 +2725,24 @@ function getMemberTeam(member, discordIds) {
 
 function hasScheduledChannelPrefix(channelName) {
   return String(channelName || '').startsWith('🟡-');
+}
+
+function hasFinishedChannelPrefix(channelName) {
+  return String(channelName || '').startsWith('🟢-');
+}
+
+function refreshStatusWithStoredState(faceitStatus, storedStatus, wasMarkedFinished) {
+  const normalizedFaceitStatus = String(faceitStatus || '').toLowerCase();
+  if (isFinishedStatus(normalizedFaceitStatus)) return faceitStatus;
+  if (wasMarkedFinished || storedStatus === 'scl_demo_ready') return 'scl_demo_ready';
+  if (normalizedFaceitStatus === 'unknown' && storedStatus === 'discord_scheduled') return 'discord_scheduled';
+  return faceitStatus;
+}
+
+function isFinishedStatus(status) {
+  return ['finished', 'done', 'completed', 'cancelled', 'scl_demo_ready'].some((value) =>
+    String(status || '').toLowerCase().includes(value)
+  );
 }
 
 async function getMemberTeamWithRecovery(member, channel, stored) {

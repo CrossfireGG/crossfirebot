@@ -45,7 +45,7 @@ function makeChannelName(value) {
 
 function makeStatusPrefix(match) {
   const status = String(match.status || '').toLowerCase();
-  if (['finished', 'done', 'completed', 'cancelled'].some((value) => status.includes(value))) {
+  if (['finished', 'done', 'completed', 'cancelled', 'scl_demo_ready'].some((value) => status.includes(value))) {
     return '🟢';
   }
 

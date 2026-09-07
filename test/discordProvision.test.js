@@ -38,6 +38,13 @@ test('matches scheduled through Discord use the yellow status prefix', () => {
   );
 });
 
+test('matches with SCL demo links use the green status prefix', () => {
+  assert.equal(
+    makeMatchChannelName({ ...baseMatch, status: 'scl_demo_ready' }),
+    '🟢-a-team-one-vs-team-two'
+  );
+});
+
 test('channel rename helper returns the updated channel name', async () => {
   const channel = {
     id: 'channel-1',
