@@ -361,10 +361,13 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
-  await rest.put(
-    Routes.applicationGuildCommands(config.discordClientId, config.discordGuildId),
-    { body: commands }
-  );
+  for (const guildId of config.commandGuildIds) {
+    await rest.put(
+      Routes.applicationGuildCommands(config.discordClientId, guildId),
+      { body: commands }
+    );
+    console.log(`Slash commands registered for guild ${guildId}`);
+  }
 }
 
 async function syncMirroredRoles(oldMember, newMember) {

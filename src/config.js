@@ -99,10 +99,16 @@ export function getConfig() {
     throw new Error('FACEIT_SOURCES must include at least one source');
   }
 
+  const commandGuildIds = [
+    process.env.DISCORD_GUILD_ID,
+    ...parseCsvValue(process.env.DISCORD_COMMAND_GUILD_IDS || '')
+  ].filter((value, index, values) => value && values.indexOf(value) === index);
+
   return {
     discordToken: process.env.DISCORD_TOKEN,
     discordClientId: process.env.DISCORD_CLIENT_ID,
     discordGuildId: process.env.DISCORD_GUILD_ID,
+    commandGuildIds,
     discordStaffRoleId: process.env.DISCORD_STAFF_ROLE_ID || null,
     adminScheduleChannelId: process.env.ADMIN_SCHEDULE_CHANNEL_ID || null,
     callAdminChannelId: process.env.CALL_ADMIN_CHANNEL_ID || process.env.ADMIN_SCHEDULE_CHANNEL_ID || null,

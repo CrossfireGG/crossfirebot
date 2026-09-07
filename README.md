@@ -73,12 +73,13 @@ For admin schedule alerts, set:
 ADMIN_SCHEDULE_CHANNEL_ID=1541647371405107232
 CALL_ADMIN_CHANNEL_ID=1541647392447664158
 ADMIN_ALERT_ROLE_IDS=1474118305169019163
+DISCORD_COMMAND_GUILD_IDS=1128905368018354277,1473173377005912074
 MATCH_ACCESS_ROLE_IDS=1128907825167482900,1353921199016644700
 SCHEDULE_OVERRIDE_ROLE_IDS=1128907825167482900
 MATCH_ACCESS_ROLE_NAMES=
 ```
 
-When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!admin` and `!calladmin` post in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server.
+When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!admin` and `!calladmin` post in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server. `DISCORD_COMMAND_GUILD_IDS` controls which Discord servers receive the `/cf` slash commands.
 
 For SCL 2D demo posting, set these Railway variables after SCL issues them:
 
