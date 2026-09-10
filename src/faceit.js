@@ -32,6 +32,11 @@ export class FaceitClient {
     return all;
   }
 
+  async getMatch(matchId, source = null) {
+    const raw = await this.request(`/matches/${encodeURIComponent(matchId)}`);
+    return normalizeMatch(raw, source || raw.source || { type: 'match', id: matchId, name: '' });
+  }
+
   async getMatchesForSource(source) {
     const sourcePath = source.type === 'championship'
       ? `/championships/${source.id}/matches`
@@ -82,6 +87,7 @@ function normalizeMatch(raw, source) {
   const id = raw.match_id || raw.id;
   if (!id || !teamA || !teamB) return null;
   const categoryName = extractCategoryName(raw, source);
+  const score = extractMatchScore(raw);
 
   return {
     id,
@@ -92,10 +98,86 @@ function normalizeMatch(raw, source) {
     source,
     teamA,
     teamB,
+    teamAScore: score?.teamAScore ?? null,
+    teamBScore: score?.teamBScore ?? null,
+    resultScore: score ? `${score.teamAScore}-${score.teamBScore}` : null,
     faceitUrl: normalizeFaceitUrl(raw.faceit_url || raw.match_url),
     scheduledAt: raw.scheduled_at ? formatFaceitSchedule(raw.scheduled_at) : null,
     raw
   };
+}
+
+function extractMatchScore(raw) {
+  const scorePair = [
+    extractScorePair(raw.results?.score),
+    extractScorePair(raw.results?.scores),
+    extractScorePair(raw.score),
+    extractScorePair(raw.scores)
+  ].find(Boolean);
+  if (scorePair) return scorePair;
+
+  const mapScorePair = extractMapWinScore(raw);
+  if (mapScorePair) return mapScorePair;
+
+  return null;
+}
+
+function extractScorePair(value) {
+  if (!value || typeof value !== 'object') return null;
+
+  const teamAScore = firstNumber(
+    value.faction1,
+    value.faction_1,
+    value.faction_a,
+    value.team1,
+    value.team_1
+  );
+  const teamBScore = firstNumber(
+    value.faction2,
+    value.faction_2,
+    value.faction_b,
+    value.team2,
+    value.team_2
+  );
+
+  return Number.isInteger(teamAScore) && Number.isInteger(teamBScore)
+    ? { teamAScore, teamBScore }
+    : null;
+}
+
+function extractMapWinScore(raw) {
+  const maps = [
+    raw.maps,
+    raw.results?.maps,
+    raw.results?.map_results,
+    raw.detailed_results?.maps,
+    raw.detailed_results?.map_results
+  ].find((value) => Array.isArray(value));
+
+  if (!maps?.length) return null;
+
+  let teamAScore = 0;
+  let teamBScore = 0;
+  for (const map of maps) {
+    const mapTeamAScore = firstNumber(map.faction1_score, map.faction_1_score, map.team1_score, map.team_1_score);
+    const mapTeamBScore = firstNumber(map.faction2_score, map.faction_2_score, map.team2_score, map.team_2_score);
+    if (!Number.isInteger(mapTeamAScore) || !Number.isInteger(mapTeamBScore) || mapTeamAScore === mapTeamBScore) continue;
+    if (mapTeamAScore > mapTeamBScore) {
+      teamAScore += 1;
+    } else {
+      teamBScore += 1;
+    }
+  }
+
+  return teamAScore || teamBScore ? { teamAScore, teamBScore } : null;
+}
+
+function firstNumber(...values) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isInteger(number)) return number;
+  }
+  return null;
 }
 
 function normalizeFaceitUrl(url) {

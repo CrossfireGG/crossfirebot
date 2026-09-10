@@ -1,146 +1,75 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { upsertAndSortScheduleRows } from '../src/googleSheets.js';
+import { buildScheduleSheetRows } from '../src/googleSheets.js';
 
-test('adds approved schedule rows and sorts them by scheduled time', () => {
-  const existingRows = [
-    [
-      '2026-09-10T01:00:00.000Z',
-      'Later Team vs Other Team',
-      'Later Team',
-      'Other Team',
-      'Group Stage',
-      '1',
-      'A',
-      'September 6, 2026 at 8:00 PM EST',
-      '2026-09-07T00:00:00.000Z',
-      'America/New_York',
-      'https://www.faceit.com/en/cs2/room/1-later',
-      '222',
-      'https://discord.com/channels/1/222',
-      '1',
-      '2',
-      '3',
-      'schedule'
-    ],
-    [
-      '2026-09-10T00:00:00.000Z',
-      'Team One vs Team Two',
-      'Team One',
-      'Team Two',
-      'Group Stage',
-      '1',
-      'A',
-      'September 4, 2026 at 9:00 PM EST',
-      '2026-09-05T01:00:00.000Z',
-      'America/New_York',
-      'https://www.faceit.com/en/cs2/room/1-old',
-      '111',
-      'https://discord.com/channels/1/111',
-      '1',
-      '2',
-      '3',
-      'schedule'
-    ]
-  ];
-
-  const rows = upsertAndSortScheduleRows(existingRows, {
-    approvedAt: '2026-09-10T02:00:00.000Z',
-    matchName: 'Team Three vs Team Four',
-    teamA: 'Team Three',
-    teamB: 'Team Four',
-    stage: 'Group Stage',
+test('adds approved schedules under date sections sorted by time', () => {
+  const rows = buildScheduleSheetRows([], {
+    teamA: 'Team One',
+    teamB: 'Team Two',
     round: '1',
     group: 'A',
     scheduledAt: 'September 5, 2026 at 8:00 PM EST',
     scheduledAtIso: '2026-09-06T00:00:00.000Z',
     timezone: 'America/New_York',
-    faceitUrl: 'https://www.faceit.com/en/cs2/room/1-new',
-    discordChannelId: '333',
-    discordChannelUrl: 'https://discord.com/channels/1/333',
-    proposedBy: '4',
-    acceptedBy: '5',
-    approvedBy: '6',
+    faceitUrl: 'https://www.faceit.com/en/cs2/room/1-one',
     kind: 'schedule'
   });
 
-  assert.equal(rows.length, 3);
-  assert.deepEqual(rows.map((row) => row[1]), [
-    'Team One vs Team Two',
-    'Team Three vs Team Four',
-    'Later Team vs Other Team'
+  assert.deepEqual(rows, [
+    ['Saturday, September 5, 2026', '', '', '', '', ''],
+    ['8:00 PM EDT', 'Team One', 'Team Two', 'https://www.faceit.com/en/cs2/room/1-one', '1', 'A']
   ]);
 });
 
-test('replaces old approved schedule row only when the match is rescheduled', () => {
+test('approved schedule updates an already scheduled match instead of duplicating it', () => {
   const existingRows = [
-    [
-      '2026-09-10T01:00:00.000Z',
-      'Later Team vs Other Team',
-      'Later Team',
-      'Other Team',
-      'Group Stage',
-      '1',
-      'A',
-      'September 6, 2026 at 8:00 PM EST',
-      '2026-09-07T00:00:00.000Z',
-      'America/New_York',
-      'https://www.faceit.com/en/cs2/room/1-later',
-      '222',
-      'https://discord.com/channels/1/222',
-      '1',
-      '2',
-      '3',
-      'schedule'
-    ],
-    [
-      '2026-09-10T00:00:00.000Z',
-      'Team One vs Team Two',
-      'Team One',
-      'Team Two',
-      'Group Stage',
-      '1',
-      'A',
-      'September 4, 2026 at 9:00 PM EST',
-      '2026-09-05T01:00:00.000Z',
-      'America/New_York',
-      'https://www.faceit.com/en/cs2/room/1-old',
-      '111',
-      'https://discord.com/channels/1/111',
-      '1',
-      '2',
-      '3',
-      'schedule'
-    ]
+    ['Friday, September 4, 2026', '', '', '', '', ''],
+    ['9:00 PM EDT', 'Team One', 'Team Two', 'https://www.faceit.com/en/cs2/room/1-one', '1', 'A'],
+    ['', '', '', '', '', ''],
+    ['Sunday, September 6, 2026', '', '', '', '', ''],
+    ['8:00 PM EDT', 'Later Team', 'Other Team', 'https://www.faceit.com/en/cs2/room/1-later', '1', 'B']
   ];
 
-  const rows = upsertAndSortScheduleRows(existingRows, {
-    approvedAt: '2026-09-10T02:00:00.000Z',
-    matchName: 'Team One vs Team Two',
+  const rows = buildScheduleSheetRows(existingRows, {
     teamA: 'Team One',
     teamB: 'Team Two',
-    stage: 'Group Stage',
     round: '1',
     group: 'A',
     scheduledAt: 'September 5, 2026 at 8:00 PM EST',
     scheduledAtIso: '2026-09-06T00:00:00.000Z',
     timezone: 'America/New_York',
-    faceitUrl: 'https://www.faceit.com/en/cs2/room/1-new',
-    discordChannelId: '111',
-    discordChannelUrl: 'https://discord.com/channels/1/111',
-    proposedBy: '4',
-    acceptedBy: '5',
-    approvedBy: '6',
-    kind: 'reschedule'
+    faceitUrl: 'https://www.faceit.com/en/cs2/room/1-one',
+    kind: 'schedule'
   });
 
-  assert.equal(rows.length, 2);
-  assert.deepEqual(rows.map((row) => row[1]), [
-    'Team One vs Team Two',
-    'Later Team vs Other Team'
+  const matchRows = rows.filter((row) => row[3]?.includes('faceit.com'));
+  assert.equal(matchRows.length, 2);
+  assert.deepEqual(matchRows.map((row) => row[1]), ['Team One', 'Later Team']);
+  assert.equal(matchRows[0][0], '8:00 PM EDT');
+});
+
+test('writes FACEIT map result scores into the team columns when available', () => {
+  const rows = buildScheduleSheetRows([], {
+    teamA: 'Team One',
+    teamB: 'Team Two',
+    teamAScore: 2,
+    teamBScore: 1,
+    round: '2',
+    group: 'C',
+    scheduledAt: 'September 5, 2026 at 8:00 PM EST',
+    scheduledAtIso: '2026-09-06T00:00:00.000Z',
+    timezone: 'America/New_York',
+    faceitUrl: 'https://www.faceit.com/en/cs2/room/1-score',
+    kind: 'schedule'
+  });
+
+  assert.deepEqual(rows[1], [
+    '8:00 PM EDT',
+    'Team One (2)',
+    'Team Two (1)',
+    'https://www.faceit.com/en/cs2/room/1-score',
+    '2',
+    'C'
   ]);
-  assert.equal(rows[0][7], 'September 5, 2026 at 8:00 PM EST');
-  assert.equal(rows[0][15], '6');
-  assert.equal(rows[0][16], 'reschedule');
 });

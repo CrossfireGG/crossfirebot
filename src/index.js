@@ -2320,14 +2320,20 @@ async function handleAdminScheduleDecision(interaction, approved) {
     if (matchChannel && stored) {
       renameResult = await markMatchChannelScheduled(matchChannel, stored, proposal);
     }
-    if (stored) {
+    if (stored && isScheduleAdminChannelInteraction(interaction)) {
+      const storedForSheet = await getFreshStoredMatchForSheet(stored);
       sheetResult = await appendApprovedScheduleToSheet(config, buildApprovedScheduleSheetRow({
-        stored,
+        stored: storedForSheet,
         proposal,
         approvedBy: interaction.user.id,
         acceptedBy: proposal?.acceptedBy,
         channel: matchChannel
       })).catch((error) => ({ error }));
+    } else if (stored) {
+      sheetResult = {
+        skipped: true,
+        reason: 'approval was not clicked in ADMIN_SCHEDULE_CHANNEL_ID'
+      };
     }
     await interaction.message.react('✅').catch(() => null);
     const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
@@ -2347,6 +2353,27 @@ async function handleAdminScheduleDecision(interaction, approved) {
     const missingChannelNote = matchChannel ? '' : ' I could not find the match channel.';
     await interaction.editReply(`Denied and reacted with an X.${missingProposalNote}${missingChannelNote}`);
   }
+}
+
+function isScheduleAdminChannelInteraction(interaction) {
+  return Boolean(config.adminScheduleChannelId && interaction.channelId === config.adminScheduleChannelId);
+}
+
+async function getFreshStoredMatchForSheet(stored) {
+  const freshMatch = await faceit.getMatch(stored.match.id, stored.match.source)
+    .catch((error) => {
+      console.error(`Could not refresh FACEIT match before Google Sheets update match_id=${stored.match.id}:`, error);
+      return null;
+    });
+
+  if (!freshMatch) return stored;
+  return {
+    ...stored,
+    match: {
+      ...stored.match,
+      ...freshMatch
+    }
+  };
 }
 
 async function findStoredMatchFromAdminMessage(message, channelId) {
@@ -2390,6 +2417,8 @@ function buildApprovedScheduleSheetRow({ stored, proposal, approvedBy, acceptedB
     matchName: `${match.teamA} vs ${match.teamB}`,
     teamA: match.teamA || '',
     teamB: match.teamB || '',
+    teamAScore: match.teamAScore,
+    teamBScore: match.teamBScore,
     stage: details.stage || '',
     round: details.round || '',
     group: details.group || '',

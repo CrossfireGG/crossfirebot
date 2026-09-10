@@ -136,7 +136,7 @@ export function getConfig() {
     googleServiceAccountJsonBase64: process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 || null,
     googleScheduleSheetId: process.env.GOOGLE_SCHEDULE_SHEET_ID || null,
     googleScheduleSheetGid: process.env.GOOGLE_SCHEDULE_SHEET_GID || null,
-    googleScheduleSheetTab: process.env.GOOGLE_SCHEDULE_SHEET_TAB || 'Scheduled Matches',
+    googleScheduleSheetTab: process.env.GOOGLE_SCHEDULE_SHEET_TAB || 'Game Schedule',
     seasonParticipantRoleId: process.env.SEASON_PARTICIPANT_ROLE_ID || null,
     seasonParticipantRoleName: process.env.SEASON_PARTICIPANT_ROLE_NAME || 'Season Participant',
     teamCaptainRoleId: process.env.TEAM_CAPTAIN_ROLE_ID || null,

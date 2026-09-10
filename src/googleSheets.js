@@ -3,24 +3,14 @@ import crypto from 'node:crypto';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 const SCHEDULE_HEADERS = [
-  'Approved At',
-  'Match',
-  'Team A',
-  'Team B',
-  'Stage',
-  'Round',
-  'Group',
-  'Scheduled Time',
-  'Scheduled ISO',
-  'Timezone',
-  'FACEIT URL',
-  'Discord Channel ID',
-  'Discord Channel URL',
-  'Proposed By Discord ID',
-  'Accepted By Discord ID',
-  'Approved By Discord ID',
-  'Kind'
+  'TIME',
+  'TEAM 1',
+  'TEAM 2',
+  'FACEIT LINK',
+  'ROUND',
+  'GROUP:'
 ];
+const SCHEDULE_COLUMN_COUNT = SCHEDULE_HEADERS.length;
 
 let cachedToken = null;
 
@@ -39,14 +29,14 @@ export async function appendApprovedScheduleToSheet(config, row) {
   await ensureScheduleHeaders(accessToken, config.googleScheduleSheetId, sheetName);
 
   const existingRows = await readScheduleRows(accessToken, config.googleScheduleSheetId, sheetName);
-  const nextRows = upsertAndSortScheduleRows(existingRows, row);
+  const nextRows = buildScheduleSheetRows(existingRows, row, config.defaultTimezone);
 
   await clearScheduleRows(accessToken, config.googleScheduleSheetId, sheetName);
   if (!nextRows.length) {
     return { skipped: false, rows: 0 };
   }
 
-  const range = `${escapeSheetName(sheetName)}!A2:Q${nextRows.length + 1}`;
+  const range = `${escapeSheetName(sheetName)}!A2:F${nextRows.length + 1}`;
   const url = `${valuesUrl(config.googleScheduleSheetId, range)}?valueInputOption=USER_ENTERED`;
   const response = await fetch(url, {
     method: 'PUT',
@@ -68,7 +58,7 @@ export async function appendApprovedScheduleToSheet(config, row) {
 }
 
 async function ensureScheduleHeaders(accessToken, spreadsheetId, sheetName) {
-  const headerRange = `${escapeSheetName(sheetName)}!A1:Q1`;
+  const headerRange = `${escapeSheetName(sheetName)}!A1:F1`;
   const getUrl = valuesUrl(spreadsheetId, headerRange);
   const current = await fetch(getUrl, {
     headers: { Authorization: `Bearer ${accessToken}` }
@@ -117,11 +107,11 @@ async function resolveScheduleSheetName(accessToken, config) {
     if (sheet?.properties?.title) return sheet.properties.title;
   }
 
-  return config.googleScheduleSheetTab || 'Scheduled Matches';
+  return config.googleScheduleSheetTab || 'Game Schedule';
 }
 
 async function readScheduleRows(accessToken, spreadsheetId, sheetName) {
-  const range = `${escapeSheetName(sheetName)}!A2:Q`;
+  const range = `${escapeSheetName(sheetName)}!A2:F`;
   const response = await fetch(valuesUrl(spreadsheetId, range), {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
@@ -136,7 +126,7 @@ async function readScheduleRows(accessToken, spreadsheetId, sheetName) {
 }
 
 async function clearScheduleRows(accessToken, spreadsheetId, sheetName) {
-  const range = `${escapeSheetName(sheetName)}!A2:Q`;
+  const range = `${escapeSheetName(sheetName)}!A2:F`;
   const response = await fetch(`${valuesUrl(spreadsheetId, range)}:clear`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessToken}` }
@@ -148,72 +138,173 @@ async function clearScheduleRows(accessToken, spreadsheetId, sheetName) {
   }
 }
 
+export function buildScheduleSheetRows(existingRows, row, timezone = 'America/New_York') {
+  const nextEntry = scheduleEntry(row, timezone);
+  const entries = [
+    ...parseScheduleSheetRows(existingRows).filter((entry) => !isSameScheduledMatch(entry, nextEntry)),
+    nextEntry
+  ].sort(compareScheduleEntries);
+
+  return groupScheduleEntriesByDate(entries);
+}
+
 export function upsertAndSortScheduleRows(existingRows, row) {
-  const nextRow = scheduleRowValues(row);
-  const shouldReplaceExisting = normalizeCell(row.kind) === 'reschedule';
-  return [
-    ...existingRows.filter((existingRow) =>
-      !shouldReplaceExisting || !isSameScheduledMatchRow(existingRow, nextRow)
-    ),
-    nextRow
-  ]
-    .filter((existingRow) => existingRow.some((value) => String(value || '').trim()))
-    .sort(compareScheduleRows);
+  return buildScheduleSheetRows(existingRows, row);
 }
 
-function scheduleRowValues(row) {
-  return [
-    row.approvedAt,
-    row.matchName,
-    row.teamA,
-    row.teamB,
-    row.stage,
-    row.round,
-    row.group,
-    row.scheduledAt,
-    row.scheduledAtIso,
-    row.timezone,
-    row.faceitUrl,
-    row.discordChannelId,
-    row.discordChannelUrl,
-    row.proposedBy,
-    row.acceptedBy,
-    row.approvedBy,
-    row.kind
-  ];
+function parseScheduleSheetRows(rows) {
+  const entries = [];
+  let currentDateLabel = '';
+
+  for (const row of rows) {
+    const cells = padRow(row);
+    if (isBlankRow(cells) || isScheduleHeaderRow(cells)) continue;
+
+    if (isDateSectionRow(cells)) {
+      currentDateLabel = String(cells[0] || '').trim();
+      continue;
+    }
+
+    if (!cells[0] || !cells[1] || !cells[2]) continue;
+
+    const scheduledAtIso = parseExistingScheduleTime(currentDateLabel, cells[0]);
+    entries.push({
+      dateLabel: currentDateLabel || dateLabelFromIso(scheduledAtIso),
+      timeLabel: String(cells[0] || '').trim(),
+      teamA: String(cells[1] || '').trim(),
+      teamB: String(cells[2] || '').trim(),
+      faceitUrl: String(cells[3] || '').trim(),
+      round: String(cells[4] || '').trim(),
+      group: String(cells[5] || '').trim(),
+      scheduledAtIso,
+      matchKey: matchKeyFromValues(cells[3], cells[1], cells[2])
+    });
+  }
+
+  return entries;
 }
 
-function isSameScheduledMatchRow(existingRow, nextRow) {
-  const existingFaceitUrl = normalizeCell(existingRow[10]);
-  const nextFaceitUrl = normalizeCell(nextRow[10]);
-  if (existingFaceitUrl && nextFaceitUrl && existingFaceitUrl === nextFaceitUrl) return true;
-
-  const existingChannelId = normalizeCell(existingRow[11]);
-  const nextChannelId = normalizeCell(nextRow[11]);
-  if (existingChannelId && nextChannelId && existingChannelId === nextChannelId) return true;
-
-  const existingMatch = normalizeCell(existingRow[1]);
-  const nextMatch = normalizeCell(nextRow[1]);
-  return Boolean(existingMatch && nextMatch && existingMatch === nextMatch);
+function scheduleEntry(row, timezone) {
+  const scheduledAtIso = row.scheduledAtIso || parseExistingScheduleTime('', row.scheduledAt);
+  return {
+    dateLabel: dateLabelFromIso(scheduledAtIso, timezone),
+    timeLabel: timeLabelFromIso(scheduledAtIso, timezone) || row.scheduledAt || '',
+    teamA: formatTeamScore(row.teamA, row.teamAScore),
+    teamB: formatTeamScore(row.teamB, row.teamBScore),
+    faceitUrl: row.faceitUrl || '',
+    round: row.round || '',
+    group: row.group || '',
+    scheduledAtIso,
+    matchKey: matchKeyFromValues(row.faceitUrl, row.teamA, row.teamB)
+  };
 }
 
-function compareScheduleRows(left, right) {
-  const leftTime = sortableScheduleTime(left);
-  const rightTime = sortableScheduleTime(right);
-  if (leftTime !== rightTime) return leftTime - rightTime;
-  return String(left[1] || '').localeCompare(String(right[1] || ''));
+function groupScheduleEntriesByDate(entries) {
+  const rows = [];
+  let currentDateLabel = null;
+
+  for (const entry of entries) {
+    if (entry.dateLabel !== currentDateLabel) {
+      if (rows.length) rows.push(blankScheduleRow());
+      currentDateLabel = entry.dateLabel;
+      rows.push([entry.dateLabel, '', '', '', '', '']);
+    }
+
+    rows.push([
+      entry.timeLabel,
+      entry.teamA,
+      entry.teamB,
+      entry.faceitUrl,
+      entry.round,
+      entry.group
+    ]);
+  }
+
+  return rows;
 }
 
-function sortableScheduleTime(row) {
-  const isoTime = Date.parse(row[8] || '');
-  if (Number.isFinite(isoTime)) return isoTime;
+function compareScheduleEntries(left, right) {
+  const leftTime = Date.parse(left.scheduledAtIso || '');
+  const rightTime = Date.parse(right.scheduledAtIso || '');
+  const normalizedLeft = Number.isFinite(leftTime) ? leftTime : Number.MAX_SAFE_INTEGER;
+  const normalizedRight = Number.isFinite(rightTime) ? rightTime : Number.MAX_SAFE_INTEGER;
+  if (normalizedLeft !== normalizedRight) return normalizedLeft - normalizedRight;
+  return `${left.teamA} ${left.teamB}`.localeCompare(`${right.teamA} ${right.teamB}`);
+}
 
-  const displayTime = Date.parse(row[7] || '');
-  return Number.isFinite(displayTime) ? displayTime : Number.MAX_SAFE_INTEGER;
+function isSameScheduledMatch(left, right) {
+  return Boolean(left.matchKey && right.matchKey && left.matchKey === right.matchKey);
+}
+
+function matchKeyFromValues(faceitUrl, teamA, teamB) {
+  const normalizedFaceitUrl = normalizeCell(faceitUrl);
+  if (normalizedFaceitUrl) return `faceit:${normalizedFaceitUrl}`;
+  return `teams:${normalizeTeamCell(teamA)}:${normalizeTeamCell(teamB)}`;
+}
+
+function formatTeamScore(teamName, score) {
+  return Number.isInteger(score) ? `${teamName} (${score})` : teamName;
+}
+
+function parseExistingScheduleTime(dateLabel, timeLabel) {
+  const combined = [dateLabel, timeLabel].filter(Boolean).join(' ');
+  const parsed = Date.parse(combined);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : '';
+}
+
+function dateLabelFromIso(value, timezone = 'America/New_York') {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unscheduled Date';
+
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric'
+  }).format(date);
+}
+
+function timeLabelFromIso(value, timezone = 'America/New_York') {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  }).format(date);
+}
+
+function isDateSectionRow(row) {
+  return Boolean(row[0] && row.slice(1).every((value) => !String(value || '').trim()));
+}
+
+function isScheduleHeaderRow(row) {
+  return normalizeCell(row[0]) === 'time' &&
+    normalizeCell(row[1]) === 'team 1' &&
+    normalizeCell(row[2]) === 'team 2';
+}
+
+function isBlankRow(row) {
+  return row.every((value) => !String(value || '').trim());
+}
+
+function padRow(row) {
+  return Array.from({ length: SCHEDULE_COLUMN_COUNT }, (_, index) => row[index] || '');
+}
+
+function blankScheduleRow() {
+  return Array.from({ length: SCHEDULE_COLUMN_COUNT }, () => '');
 }
 
 function normalizeCell(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function normalizeTeamCell(value) {
+  return normalizeCell(value).replace(/\s*\(\d+\)\s*$/g, '');
 }
 
 function getServiceAccountCredentials(config) {
