@@ -84,7 +84,7 @@ GOOGLE_SCHEDULE_SHEET_GID=optional_tab_gid_from_the_sheet_url
 GOOGLE_SCHEDULE_SHEET_TAB=Game Schedule
 ```
 
-When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!admin` and `!calladmin` post in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server. `DISCORD_COMMAND_GUILD_IDS` controls which Discord servers receive the `/cf` slash commands. When an admin approves a schedule, the bot reads the configured schedule Sheet, removes any old row for the same match, adds the approved schedule, and rewrites the rows sorted by scheduled time.
+When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!admin` and `!calladmin` post in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server. `DISCORD_COMMAND_GUILD_IDS` controls which Discord servers receive the `/cf` slash commands. When an admin approves a schedule, the bot reads the configured schedule Sheet, adds the approved schedule, and rewrites the rows sorted by scheduled time. If the approval is for a reschedule, it removes the old row for that same match before adding the new one.
 
 To set the Google service account JSON in Railway from PowerShell:
 

@@ -150,8 +150,11 @@ async function clearScheduleRows(accessToken, spreadsheetId, sheetName) {
 
 export function upsertAndSortScheduleRows(existingRows, row) {
   const nextRow = scheduleRowValues(row);
+  const shouldReplaceExisting = normalizeCell(row.kind) === 'reschedule';
   return [
-    ...existingRows.filter((existingRow) => !isSameScheduledMatchRow(existingRow, nextRow)),
+    ...existingRows.filter((existingRow) =>
+      !shouldReplaceExisting || !isSameScheduledMatchRow(existingRow, nextRow)
+    ),
     nextRow
   ]
     .filter((existingRow) => existingRow.some((value) => String(value || '').trim()))
