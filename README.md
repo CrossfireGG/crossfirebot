@@ -80,16 +80,20 @@ SCHEDULE_OVERRIDE_ROLE_IDS=1128907825167482900
 MATCH_ACCESS_ROLE_NAMES=
 GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=base64_encoded_service_account_json
 GOOGLE_SCHEDULE_SHEET_ID=spreadsheet_id_from_the_sheet_url
-GOOGLE_SCHEDULE_SHEET_TAB=Scheduled Matches
+GOOGLE_SCHEDULE_SHEET_GID=optional_tab_gid_from_the_sheet_url
+GOOGLE_SCHEDULE_SHEET_TAB=Game Schedule
 ```
 
-When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!admin` and `!calladmin` post in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server. `DISCORD_COMMAND_GUILD_IDS` controls which Discord servers receive the `/cf` slash commands. When an admin approves a schedule, the bot appends it to `GOOGLE_SCHEDULE_SHEET_TAB` if Google Sheets write access is configured.
+When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!admin` and `!calladmin` post in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server. `DISCORD_COMMAND_GUILD_IDS` controls which Discord servers receive the `/cf` slash commands. When an admin approves a schedule, the bot reads the configured schedule Sheet, removes any old row for the same match, adds the approved schedule, and rewrites the rows sorted by scheduled time.
 
 To set the Google service account JSON in Railway from PowerShell:
 
 ```powershell
 $json = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content "C:\Users\zibry\Downloads\crossfireggs-fbaf3a1a5873.json" -Raw)))
 railway variable set GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=$json
+railway variable set GOOGLE_SCHEDULE_SHEET_ID=1I4lcVFTOG9C1ju_50YJHVi3TCe_694_vkKCxzIXeIso
+railway variable set GOOGLE_SCHEDULE_SHEET_GID=1146613139
+railway variable set GOOGLE_SCHEDULE_SHEET_TAB="Game Schedule"
 ```
 
 Share the schedule Sheet with the service account email as Editor before testing:

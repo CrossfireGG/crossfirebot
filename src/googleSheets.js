@@ -35,52 +35,41 @@ export async function appendApprovedScheduleToSheet(config, row) {
   }
 
   const accessToken = await getAccessToken(credentials);
-  const sheetName = config.googleScheduleSheetTab || 'Scheduled Matches';
+  const sheetName = await resolveScheduleSheetName(accessToken, config);
   await ensureScheduleHeaders(accessToken, config.googleScheduleSheetId, sheetName);
 
-  const range = `${escapeSheetName(sheetName)}!A:Q`;
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(config.googleScheduleSheetId)}/values/${encodeURIComponent(range)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+  const existingRows = await readScheduleRows(accessToken, config.googleScheduleSheetId, sheetName);
+  const nextRows = upsertAndSortScheduleRows(existingRows, row);
 
+  await clearScheduleRows(accessToken, config.googleScheduleSheetId, sheetName);
+  if (!nextRows.length) {
+    return { skipped: false, rows: 0 };
+  }
+
+  const range = `${escapeSheetName(sheetName)}!A2:Q${nextRows.length + 1}`;
+  const url = `${valuesUrl(config.googleScheduleSheetId, range)}?valueInputOption=USER_ENTERED`;
   const response = await fetch(url, {
-    method: 'POST',
+    method: 'PUT',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      values: [[
-        row.approvedAt,
-        row.matchName,
-        row.teamA,
-        row.teamB,
-        row.stage,
-        row.round,
-        row.group,
-        row.scheduledAt,
-        row.scheduledAtIso,
-        row.timezone,
-        row.faceitUrl,
-        row.discordChannelId,
-        row.discordChannelUrl,
-        row.proposedBy,
-        row.acceptedBy,
-        row.approvedBy,
-        row.kind
-      ]]
+      values: nextRows
     })
   });
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(`Google Sheets append failed: ${response.status} ${body}`);
+    throw new Error(`Google Sheets schedule update failed: ${response.status} ${body}`);
   }
 
-  return { skipped: false };
+  return { skipped: false, rows: nextRows.length };
 }
 
 async function ensureScheduleHeaders(accessToken, spreadsheetId, sheetName) {
   const headerRange = `${escapeSheetName(sheetName)}!A1:Q1`;
-  const getUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(headerRange)}`;
+  const getUrl = valuesUrl(spreadsheetId, headerRange);
   const current = await fetch(getUrl, {
     headers: { Authorization: `Bearer ${accessToken}` }
   });
@@ -107,6 +96,121 @@ async function ensureScheduleHeaders(accessToken, spreadsheetId, sheetName) {
     const body = await updated.text().catch(() => '');
     throw new Error(`Google Sheets header update failed: ${updated.status} ${body}`);
   }
+}
+
+async function resolveScheduleSheetName(accessToken, config) {
+  if (config.googleScheduleSheetGid) {
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(config.googleScheduleSheetId)}?fields=sheets.properties`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`Google Sheets tab lookup failed: ${response.status} ${body}`);
+    }
+
+    const body = await response.json();
+    const sheet = body.sheets?.find((candidate) =>
+      String(candidate.properties?.sheetId) === String(config.googleScheduleSheetGid)
+    );
+    if (sheet?.properties?.title) return sheet.properties.title;
+  }
+
+  return config.googleScheduleSheetTab || 'Scheduled Matches';
+}
+
+async function readScheduleRows(accessToken, spreadsheetId, sheetName) {
+  const range = `${escapeSheetName(sheetName)}!A2:Q`;
+  const response = await fetch(valuesUrl(spreadsheetId, range), {
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Google Sheets schedule read failed: ${response.status} ${body}`);
+  }
+
+  const body = await response.json();
+  return body.values || [];
+}
+
+async function clearScheduleRows(accessToken, spreadsheetId, sheetName) {
+  const range = `${escapeSheetName(sheetName)}!A2:Q`;
+  const response = await fetch(`${valuesUrl(spreadsheetId, range)}:clear`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` }
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Google Sheets schedule clear failed: ${response.status} ${body}`);
+  }
+}
+
+export function upsertAndSortScheduleRows(existingRows, row) {
+  const nextRow = scheduleRowValues(row);
+  return [
+    ...existingRows.filter((existingRow) => !isSameScheduledMatchRow(existingRow, nextRow)),
+    nextRow
+  ]
+    .filter((existingRow) => existingRow.some((value) => String(value || '').trim()))
+    .sort(compareScheduleRows);
+}
+
+function scheduleRowValues(row) {
+  return [
+    row.approvedAt,
+    row.matchName,
+    row.teamA,
+    row.teamB,
+    row.stage,
+    row.round,
+    row.group,
+    row.scheduledAt,
+    row.scheduledAtIso,
+    row.timezone,
+    row.faceitUrl,
+    row.discordChannelId,
+    row.discordChannelUrl,
+    row.proposedBy,
+    row.acceptedBy,
+    row.approvedBy,
+    row.kind
+  ];
+}
+
+function isSameScheduledMatchRow(existingRow, nextRow) {
+  const existingFaceitUrl = normalizeCell(existingRow[10]);
+  const nextFaceitUrl = normalizeCell(nextRow[10]);
+  if (existingFaceitUrl && nextFaceitUrl && existingFaceitUrl === nextFaceitUrl) return true;
+
+  const existingChannelId = normalizeCell(existingRow[11]);
+  const nextChannelId = normalizeCell(nextRow[11]);
+  if (existingChannelId && nextChannelId && existingChannelId === nextChannelId) return true;
+
+  const existingMatch = normalizeCell(existingRow[1]);
+  const nextMatch = normalizeCell(nextRow[1]);
+  return Boolean(existingMatch && nextMatch && existingMatch === nextMatch);
+}
+
+function compareScheduleRows(left, right) {
+  const leftTime = sortableScheduleTime(left);
+  const rightTime = sortableScheduleTime(right);
+  if (leftTime !== rightTime) return leftTime - rightTime;
+  return String(left[1] || '').localeCompare(String(right[1] || ''));
+}
+
+function sortableScheduleTime(row) {
+  const isoTime = Date.parse(row[8] || '');
+  if (Number.isFinite(isoTime)) return isoTime;
+
+  const displayTime = Date.parse(row[7] || '');
+  return Number.isFinite(displayTime) ? displayTime : Number.MAX_SAFE_INTEGER;
+}
+
+function normalizeCell(value) {
+  return String(value || '').trim().toLowerCase();
 }
 
 function getServiceAccountCredentials(config) {
@@ -179,4 +283,8 @@ function base64UrlJson(value) {
 
 function escapeSheetName(name) {
   return `'${String(name).replace(/'/g, "''")}'`;
+}
+
+function valuesUrl(spreadsheetId, range) {
+  return `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}`;
 }
