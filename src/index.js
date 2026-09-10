@@ -2325,7 +2325,7 @@ async function handleAdminScheduleDecision(interaction, approved) {
       sheetResult = await appendApprovedScheduleToSheet(config, buildApprovedScheduleSheetRow({
         stored: storedForSheet,
         proposal,
-        approvedBy: interaction.user.id,
+        approvedBy: interaction.member?.displayName || interaction.user.globalName || interaction.user.username || interaction.user.id,
         acceptedBy: proposal?.acceptedBy,
         channel: matchChannel
       })).catch((error) => ({ error }));
