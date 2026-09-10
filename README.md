@@ -32,7 +32,8 @@ What it does:
 7. Confirmation that Discord roles already exist with the exact team names, or permission for the bot to create missing roles.
 8. The FACEIT write/schedule endpoint or docs, if your API account has one.
 9. Optional Google Sheet CSV export URL with `Team Name`, starter/sub/coach Discord ID columns, and `Team Captain Discord ID`.
-10. Optional SCL API key and SCL webhook secret if you want automatic 2D demo posts.
+10. Optional Google service account JSON and schedule Sheet ID if you want admin-approved schedules written to Google Sheets.
+11. Optional SCL API key and SCL webhook secret if you want automatic 2D demo posts.
 
 Do not paste secrets in public channels. Put them in `.env`.
 
@@ -77,9 +78,25 @@ DISCORD_COMMAND_GUILD_IDS=1128905368018354277,1473173377005912074
 MATCH_ACCESS_ROLE_IDS=1128907825167482900,1353921199016644700
 SCHEDULE_OVERRIDE_ROLE_IDS=1128907825167482900
 MATCH_ACCESS_ROLE_NAMES=
+GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=base64_encoded_service_account_json
+GOOGLE_SCHEDULE_SHEET_ID=spreadsheet_id_from_the_sheet_url
+GOOGLE_SCHEDULE_SHEET_TAB=Scheduled Matches
 ```
 
-When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!admin` and `!calladmin` post in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server. `DISCORD_COMMAND_GUILD_IDS` controls which Discord servers receive the `/cf` slash commands.
+When a team member runs `!accept`, the bot posts the admin schedule alert in `ADMIN_SCHEDULE_CHANNEL_ID` and pings `ADMIN_ALERT_ROLE_IDS`. `!admin` and `!calladmin` post in `CALL_ADMIN_CHANNEL_ID`. These channels can be in a private staff Discord server as long as the bot has joined that server. `DISCORD_COMMAND_GUILD_IDS` controls which Discord servers receive the `/cf` slash commands. When an admin approves a schedule, the bot appends it to `GOOGLE_SCHEDULE_SHEET_TAB` if Google Sheets write access is configured.
+
+To set the Google service account JSON in Railway from PowerShell:
+
+```powershell
+$json = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content "C:\Users\zibry\Downloads\crossfireggs-fbaf3a1a5873.json" -Raw)))
+railway variable set GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=$json
+```
+
+Share the schedule Sheet with the service account email as Editor before testing:
+
+```text
+crossfire-sheets@crossfireggs.iam.gserviceaccount.com
+```
 
 For SCL 2D demo posting, set these Railway variables after SCL issues them:
 

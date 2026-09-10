@@ -39,6 +39,7 @@ import {
   saveScheduleProposal
 } from './store.js';
 import { scheduleFaceitMatch } from './faceitSchedule.js';
+import { appendApprovedScheduleToSheet } from './googleSheets.js';
 import { auditMissingCaptains, auditMissingPlayers, syncRolesFromSheet } from './sheetRoles.js';
 import { startWebhookServer } from './webhookServer.js';
 
@@ -2315,8 +2316,18 @@ async function handleAdminScheduleDecision(interaction, approved) {
 
   if (approved) {
     let renameResult = null;
+    let sheetResult = { skipped: true };
     if (matchChannel && stored) {
       renameResult = await markMatchChannelScheduled(matchChannel, stored, proposal);
+    }
+    if (stored) {
+      sheetResult = await appendApprovedScheduleToSheet(config, buildApprovedScheduleSheetRow({
+        stored,
+        proposal,
+        approvedBy: interaction.user.id,
+        acceptedBy: proposal?.acceptedBy,
+        channel: matchChannel
+      })).catch((error) => ({ error }));
     }
     await interaction.message.react('✅').catch(() => null);
     const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
@@ -2324,7 +2335,12 @@ async function handleAdminScheduleDecision(interaction, approved) {
     const renameFailureNote = renameResult?.error
       ? ` Discord blocked the channel rename: ${renameResult.error.message}`
       : '';
-    await interaction.editReply(`Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}`);
+    const sheetNote = sheetResult?.error
+      ? ` Google Sheets update failed: ${sheetResult.error.message}`
+      : sheetResult?.skipped
+        ? ` Google Sheets update skipped: ${sheetResult.reason || 'not configured'}`
+        : ' Google Sheets updated.';
+    await interaction.editReply(`Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}${sheetNote}`);
   } else {
     await interaction.message.react('❌').catch(() => null);
     const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
@@ -2363,6 +2379,31 @@ async function markMatchChannelScheduled(channel, stored, proposal = null) {
   const renameResult = await updateMatchChannelName(channel, scheduledMatch);
   await saveMatch(scheduledMatch, stored.discord);
   return renameResult;
+}
+
+function buildApprovedScheduleSheetRow({ stored, proposal, approvedBy, acceptedBy, channel }) {
+  const match = stored.match;
+  const details = getMatchDisplayDetails(match);
+  const discordChannelId = channel?.id || stored.discord?.channelId || '';
+  return {
+    approvedAt: new Date().toISOString(),
+    matchName: `${match.teamA} vs ${match.teamB}`,
+    teamA: match.teamA || '',
+    teamB: match.teamB || '',
+    stage: details.stage || '',
+    round: details.round || '',
+    group: details.group || '',
+    scheduledAt: proposal?.scheduledAt || match.scheduledAt || '',
+    scheduledAtIso: proposal?.scheduledAtIso || '',
+    timezone: proposal?.timezone || config.defaultTimezone,
+    faceitUrl: match.faceitUrl || '',
+    discordChannelId,
+    discordChannelUrl: discordChannelId ? `https://discord.com/channels/${stored.discord?.guildId || config.discordGuildId}/${discordChannelId}` : '',
+    proposedBy: proposal?.proposedBy || '',
+    acceptedBy: acceptedBy || proposal?.acceptedBy || '',
+    approvedBy,
+    kind: proposal?.kind || 'schedule'
+  };
 }
 
 function adminDecisionEmbed({ approved, stored, proposal, adminId }) {
