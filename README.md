@@ -5,9 +5,9 @@ This bot creates private Discord match channels from a FACEIT Crossfire bracket.
 What it does:
 
 - Reads matches from a FACEIT championship or tournament.
-- Creates one Discord category per FACEIT round, such as `Group Stage - Round 1`.
-- Creates one private channel per match inside the matching group category.
-- Names group-stage match channels with the group letter, such as `a-team-one-vs-team-two`.
+- Creates one Discord category per FACEIT playoff round, such as `WB Round of 32` or `Losers Round 1`.
+- Creates one private channel per match inside the matching round category.
+- Names match channels from the teams, preserving group-letter prefixes only for old group-stage matches.
 - Adds `🟡-` to a match channel name when it is scheduled and `🟢-` when FACEIT reports it finished.
 - Gives channel access to exact configured team role IDs first, then falls back to Discord roles whose names match the FACEIT team names.
 - Gives match channel access to the two teams, Tournament Ops, and Producer.
@@ -112,7 +112,7 @@ https://discord.com/oauth2/authorize?client_id=1523887433047867423&permissions=2
 Then run these in Discord:
 
 - `/cf sync target:matches` creates/updates round categories and private match channels from FACEIT.
-- `/cf sync target:matches round:1` creates/updates only `Group Stage - Round 1`; use `round:2` or `round:3` for the other Group Stage rounds.
+- `/cf sync target:matches round:WB Round of 32` creates/updates only that playoff round window.
 - `/cf sync target:teams` updates team roles, participant roles, captain roles, and nicknames from the Google Sheet.
 - `/cf sync target:teams notify_captains:true` also DMs captains about missing players.
 - `/cf audit target:matches` checks FACEIT match channels, team role mappings, and permissions without creating channels.
@@ -123,7 +123,7 @@ Then run these in Discord:
 - `/cf status` checks how many matches the bot knows about.
 - `/cf commands` shows the admin command list inside Discord.
 - `/cf create link:<FACEIT room link>` creates/updates one match chat from a FACEIT room link.
-- `/cf sample group:A round:1` creates a fake `a-team-one-vs-team-two` style match channel for testing permissions and scheduling.
+- `/cf sample` creates a fake match channel for testing permissions and scheduling.
 - If `!schedule`, `!propose`, `!accept`, `!decline`, `!admin`, or `!calladmin` is used in an unlinked match room, the bot tries to recover the match from the channel topic/name and reports what it could not recognize.
 - After roster changes or team-name changes in the Google Sheet, run `/cf sync target:teams`; the bot fetches the latest sheet and removes stale team roles it previously managed.
 
@@ -132,13 +132,13 @@ These slash commands are restricted to Discord admins, users with Manage Server,
 Inside each match channel:
 
 - The pinned first message pings both team roles, shows the FACEIT room, the scheduling window, and the default round date at 8:00 PM EST.
-- Group Stage match messages show `Stage: Group Stage`, `Round: 1`, and `Group: A` instead of repeating the category name.
+- Playoff match messages use the FACEIT playoff round name, including WB/LB bracket labels when FACEIT provides them.
 - If FACEIT already has a scheduled time, the pinned message shows that below the FACEIT room link.
 - The pinned first message explains the full schedule flow: one team member proposes with `!schedule`, a member from the other team confirms with `!accept`, then admins are alerted to schedule it on FACEIT.
 - Scheduling is command-only in match rooms; the bot does not add a propose-time button.
-- `!schedule 8/24/2026 3 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 1 8 PM EST` proposes a match time, detects the timezone, and pings the other team to confirm.
-- `!propose July 28 8:00 PM EST` also proposes a match time.
-- `!reschedule July 29 8:00 PM EST` requests a reschedule.
+- `!schedule September 13 8 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 14 9 PM EST` proposes a match time, detects the timezone, and pings the other team to confirm.
+- `!propose September 13 8:00 PM EST` also proposes a match time.
+- `!reschedule September 14 8:00 PM EST` requests a reschedule.
 - `!accept` lets a member from the other team accept it.
 - `!decline` lets a member from the other team decline it.
 - Users with a role in `SCHEDULE_OVERRIDE_ROLE_IDS` can run `!schedule` in a match room to set the schedule directly without both teams accepting.
@@ -147,10 +147,10 @@ Inside each match channel:
 
 Season 6 schedule windows and default round dates are built into the bot:
 
-- Group Stage scheduling window: August 31, 2026 - September 10, 2026
+- Group Stage scheduling window: August 31, 2026 - September 8, 2026
 - Round 1: August 31, 2026 - September 2, 2026, default September 1, 2026 at 8:00 PM EST
 - Round 2: September 3, 2026 - September 5, 2026, default September 4, 2026 at 8:00 PM EST
-- Round 3: September 6, 2026 - September 10, 2026, default September 7, 2026 at 8:00 PM EST
+- Round 3: September 6, 2026 - September 8, 2026, default September 7, 2026 at 8:00 PM EST
 - WB Round of 32: September 12, 2026 - September 14, 2026, default September 13, 2026 at 8:00 PM EST
 - WB Round of 16 + Losers Round 1: September 15, 2026 - September 17, 2026, default September 16, 2026 at 8:00 PM EST
 - WB Quarterfinals + Losers Round 2: September 18, 2026 - September 20, 2026, default September 19, 2026 at 8:00 PM EST
@@ -168,7 +168,7 @@ Reschedule rules:
 - Reschedules within 24 hours of the current match time are flagged for admin override.
 - Accepted schedules and reschedules are sent to admins to schedule manually on FACEIT.
 - When admins approve a schedule request in the staff channel, the bot reacts to that admin alert with a checkmark.
-- Group Stage teams may schedule or reschedule any Group Stage match from August 31, 2026 through September 10, 2026 by mutual agreement.
+- Playoff teams may schedule or reschedule during their assigned three-day round window by mutual agreement.
 - Roster changes should go to `#make-a-ticket`.
 - Set `ROSTER_TICKET_CHANNEL_ID=1418725495545004175` so pinned match messages link directly to the roster ticket channel.
 

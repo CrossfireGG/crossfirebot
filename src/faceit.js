@@ -200,7 +200,7 @@ function formatFaceitSchedule(value) {
   }).format(date);
 }
 
-function extractRound(raw) {
+function extractRound(raw, source = {}) {
   const textCandidates = [
     raw.round_name,
     raw.round_label,
@@ -213,10 +213,12 @@ function extractRound(raw) {
     raw.competition_name
   ];
 
-  const explicitBracketLabel = textCandidates.find(isUsefulBracketLabel);
-  if (explicitBracketLabel) return cleanName(explicitBracketLabel);
+  const explicitBracketLabel = textCandidates
+    .map((candidate) => normalizePlayoffRoundLabel(candidate, raw))
+    .find(Boolean);
+  if (explicitBracketLabel) return explicitBracketLabel;
 
-  const bracketRound = bracketRoundName(raw.round ?? raw.round_number);
+  const bracketRound = bracketRoundName(raw.round ?? raw.round_number, raw, source);
   if (bracketRound) return bracketRound;
 
   const fallback = textCandidates.find((candidate) => typeof candidate === 'string' && candidate.trim());
@@ -319,9 +321,86 @@ function isUsefulBracketLabel(value) {
   return usefulWords.some((word) => normalized.includes(word));
 }
 
-function bracketRoundName(value) {
+function normalizePlayoffRoundLabel(value, raw = {}) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  if (!isUsefulBracketLabel(value)) return null;
+
+  const text = cleanName(value);
+  const normalized = text.toLowerCase();
+  const context = [
+    raw.bracket_name,
+    raw.stage_name,
+    raw.group_name,
+    raw.round_name,
+    raw.round_label,
+    raw.bracket_round,
+    raw.bracket_round_name
+  ].map((candidate) => String(candidate || '').toLowerCase()).join(' ');
+  const bracket = bracketSide(context || normalized);
+
+  const losersRound = normalized.match(/\b(?:losers?|lower|lb)\s*round\s*(\d+)\b/);
+  if (losersRound) return `Losers Round ${losersRound[1]}`;
+
+  if (normalized.includes('losers final') || normalized.includes('lower final') || normalized.includes('lb final')) {
+    return 'Losers Final';
+  }
+
+  if (normalized.includes('grand final')) return 'Grand Final (BO5)';
+
+  if ((normalized.includes('winner') || normalized.includes('upper') || normalized.includes('wb')) && normalized.includes('final')) {
+    return 'WB Final';
+  }
+
+  if (normalized.includes('round of 32')) return bracket === 'losers' ? 'Losers Round 1' : 'WB Round of 32';
+  if (normalized.includes('round of 16')) return bracket === 'losers' ? 'Losers Round 1' : 'WB Round of 16';
+  if (normalized.includes('quarter')) return bracket === 'losers' ? 'Losers Round 2' : 'WB Quarterfinals';
+  if (normalized.includes('semi')) return bracket === 'losers' ? 'Losers Round 4' : 'WB Semifinals';
+  if (normalized.includes('final')) return bracket === 'losers' ? 'Losers Final' : 'WB Final';
+
+  return text;
+}
+
+function bracketRoundName(value, raw = {}, source = {}) {
   const round = Number(value);
   if (!Number.isInteger(round)) return null;
+
+  const sourceText = String(source?.name || '').toLowerCase();
+  const context = [
+    raw.bracket_name,
+    raw.stage_name,
+    raw.group_name,
+    raw.round_name,
+    raw.round_label,
+    raw.bracket_round,
+    raw.bracket_round_name
+  ].map((candidate) => String(candidate || '').toLowerCase()).join(' ');
+  const bracket = bracketSide(context);
+
+  if (sourceText.includes('playoff')) {
+    if (bracket === 'losers') {
+      const losersNames = {
+        1: 'Losers Round 1',
+        2: 'Losers Round 2',
+        3: 'Losers Round 3',
+        4: 'Losers Round 4',
+        5: 'Losers Round 5',
+        6: 'Losers Round 6',
+        7: 'Losers Round 7',
+        8: 'Losers Final'
+      };
+      return losersNames[round] || `Losers Round ${round}`;
+    }
+
+    const winnersNames = {
+      1: 'WB Round of 32',
+      2: 'WB Round of 16',
+      3: 'WB Quarterfinals',
+      4: 'WB Semifinals',
+      5: 'WB Final',
+      6: 'Grand Final (BO5)'
+    };
+    return winnersNames[round] || `WB Round ${round}`;
+  }
 
   const names = {
     1: 'Round of 16',
@@ -332,6 +411,13 @@ function bracketRoundName(value) {
   };
 
   return names[round] || `Round ${round}`;
+}
+
+function bracketSide(value) {
+  const text = String(value || '').toLowerCase();
+  if (/\b(?:losers?|lower|lb)\b/.test(text)) return 'losers';
+  if (/\b(?:winners?|winner|upper|wb)\b/.test(text)) return 'winners';
+  return '';
 }
 
 function cleanName(value) {

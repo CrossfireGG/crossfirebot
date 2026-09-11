@@ -64,10 +64,10 @@ const EMBED_COLORS = {
 };
 
 const SEASON_SCHEDULE = [
-  { name: 'Group Stage', start: 'August 31, 2026', end: 'September 10, 2026', defaultDate: 'September 4, 2026' },
+  { name: 'Group Stage', start: 'August 31, 2026', end: 'September 8, 2026', defaultDate: 'September 4, 2026' },
   { name: 'Round 1', start: 'August 31, 2026', end: 'September 2, 2026', defaultDate: 'September 1, 2026' },
   { name: 'Round 2', start: 'September 3, 2026', end: 'September 5, 2026', defaultDate: 'September 4, 2026' },
-  { name: 'Round 3', start: 'September 6, 2026', end: 'September 10, 2026', defaultDate: 'September 7, 2026' },
+  { name: 'Round 3', start: 'September 6, 2026', end: 'September 8, 2026', defaultDate: 'September 7, 2026' },
   { name: 'Seeding Break', start: 'September 9, 2026', end: 'September 11, 2026', defaultDate: 'September 10, 2026' },
   { name: 'Playoff Stage', start: 'September 12, 2026', end: 'October 11, 2026', defaultDate: 'September 26, 2026' },
   { name: 'WB Round of 32', start: 'September 12, 2026', end: 'September 14, 2026', defaultDate: 'September 13, 2026' },
@@ -81,6 +81,49 @@ const SEASON_SCHEDULE = [
   { name: 'Losers Final', start: 'October 6, 2026', end: 'October 8, 2026', defaultDate: 'October 7, 2026' },
   { name: 'Grand Final (BO5)', start: 'October 9, 2026', end: 'October 11, 2026', defaultDate: 'October 10, 2026' }
 ];
+
+const PLAYOFF_ROUND_FILTERS = {
+  'wb-r32': {
+    label: 'WB Round of 32',
+    categories: ['WB Round of 32']
+  },
+  'wb-r16-lb-r1': {
+    label: 'WB Round of 16 + Losers Round 1',
+    categories: ['WB Round of 16', 'Losers Round 1']
+  },
+  'wb-qf-lb-r2': {
+    label: 'WB Quarterfinals + Losers Round 2',
+    categories: ['WB Quarterfinals', 'Losers Round 2']
+  },
+  'lb-r3': {
+    label: 'Losers Round 3',
+    categories: ['Losers Round 3']
+  },
+  'wb-sf-lb-r4': {
+    label: 'WB Semifinals + Losers Round 4',
+    categories: ['WB Semifinals', 'Losers Round 4']
+  },
+  'lb-r5': {
+    label: 'Losers Round 5',
+    categories: ['Losers Round 5']
+  },
+  'wb-final-lb-r6': {
+    label: 'WB Final + Losers Round 6',
+    categories: ['WB Final', 'Losers Round 6']
+  },
+  'lb-r7': {
+    label: 'Losers Round 7',
+    categories: ['Losers Round 7']
+  },
+  'lb-final': {
+    label: 'Losers Final',
+    categories: ['Losers Final']
+  },
+  'grand-final': {
+    label: 'Grand Final (BO5)',
+    categories: ['Grand Final', 'Grand Final (BO5)']
+  }
+};
 
 const client = new Client({
   intents: [
@@ -283,7 +326,7 @@ async function handleCommandHelp(interaction) {
     content: [
       '**CROSSFIRE Admin Commands**',
       '`/cf sync target:matches` - create/update FACEIT match rooms.',
-      '`/cf sync target:matches round:1` - sync one Group Stage round only.',
+      '`/cf sync target:matches round:WB Round of 32` - sync one playoff round window only.',
       '`/cf sync target:teams` - sync roles, captains, participants, and nicknames from the sheet.',
       '`/cf sync target:teams notify_captains:true` - also DM captains about missing players.',
       '`/cf audit target:matches` - check match rooms and permissions without creating channels.',
@@ -293,12 +336,12 @@ async function handleCommandHelp(interaction) {
       '`/cf refresh` - refresh status emojis on existing match channels.',
       '`/cf status` - show how many matches the bot knows.',
       '`/cf create link:<FACEIT room link>` - create/update one match room.',
-      '`/cf sample group:A round:1` - create a sample match room for testing.',
+      '`/cf sample` - create a sample match room for testing.',
       '',
       '**Match Room Commands**',
-      '`!schedule September 1 8 PM EST` - propose a match time.',
-      '`!propose September 1 8 PM EST` - same as `!schedule`.',
-      '`!reschedule September 2 8 PM EST` - request a new time.',
+      '`!schedule September 13 8 PM EST` - propose a match time.',
+      '`!propose September 13 8 PM EST` - same as `!schedule`.',
+      '`!reschedule September 14 8 PM EST` - request a new time.',
       '`!accept` - accept the open proposal from the other team.',
       '`!decline` - decline the open proposal.',
       '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.'
@@ -711,14 +754,14 @@ function isCallAdminAlertMessage(message) {
 
 async function handleSyncMatches(interaction) {
   await interaction.deferReply({ ephemeral: true });
-  const requestedRound = interaction.options.getInteger('round') || 0;
+  const roundFilter = getRequestedRoundFilter(interaction);
 
   const guild = await client.guilds.fetch(config.discordGuildId);
   await guild.channels.fetch();
   await guild.roles.fetch();
 
   const allMatches = await faceit.getMatches();
-  const matches = filterAndSortMatchesForSync(allMatches, requestedRound);
+  const matches = filterAndSortMatchesForSync(allMatches, roundFilter);
   let created = 0;
   let skipped = 0;
 
@@ -738,9 +781,7 @@ async function handleSyncMatches(interaction) {
     created += 1;
   }
 
-  const roundText = requestedRound
-    ? `Group Stage - Round ${requestedRound}`
-    : 'all detected rounds';
+  const roundText = roundFilter?.label || 'all detected rounds';
   const coverage = summarizeSyncCoverage(matches);
   await interaction.editReply(truncateDiscordMessage([
     `Synced ${created} match channel(s) for ${roundText}. Skipped ${skipped}.`,
@@ -842,13 +883,13 @@ async function handleRefreshMatchStatuses(interaction) {
 async function handleAuditMatches(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
-  const requestedRound = interaction.options.getInteger('round') || 0;
+  const roundFilter = getRequestedRoundFilter(interaction);
   const shouldFix = interaction.options.getBoolean('fix') || false;
   const guild = await client.guilds.fetch(config.discordGuildId);
   await guild.channels.fetch();
   await guild.roles.fetch();
 
-  const matches = filterAndSortMatchesForSync(await faceit.getMatches(), requestedRound);
+  const matches = filterAndSortMatchesForSync(await faceit.getMatches(), roundFilter);
   const result = {
     checked: 0,
     ok: 0,
@@ -892,9 +933,7 @@ async function handleAuditMatches(interaction) {
     }
   }
 
-  const roundText = requestedRound
-    ? `Group Stage - Round ${requestedRound}`
-    : 'all detected rounds';
+  const roundText = roundFilter?.label || 'all detected rounds';
   const maxProblemLines = 6;
   const problemLines = result.problems
     .slice(0, maxProblemLines)
@@ -922,7 +961,7 @@ async function handleCreateMatchChat(interaction) {
 
   const match = await findFaceitMatchForLink(link, matchId);
   if (!match) {
-    await interaction.editReply('I could not find that match in the configured FACEIT Season 6 sources. Make sure `FACEIT_SOURCES` includes the right group-stage championship.');
+    await interaction.editReply('I could not find that match in the configured FACEIT Season 6 sources. Make sure `FACEIT_SOURCES` includes the Season 6 playoff championship.');
     return;
   }
 
@@ -1234,20 +1273,84 @@ function findAuditMatchChannel(guild, match, expectedName) {
   }) || null;
 }
 
-function filterAndSortMatchesForSync(matches, requestedRound) {
+function getRequestedRoundFilter(interaction) {
+  const rawValue = interaction.options.get('round')?.value;
+  const value = String(rawValue || 'all').toLowerCase();
+  if (!value || value === 'all' || value === '0') return null;
+
+  if (PLAYOFF_ROUND_FILTERS[value]) return PLAYOFF_ROUND_FILTERS[value];
+
+  const legacyRoundNumber = Number(value);
+  if ([1, 2, 3].includes(legacyRoundNumber)) {
+    return {
+      label: `Group Stage - Round ${legacyRoundNumber}`,
+      legacyGroupStageRound: legacyRoundNumber
+    };
+  }
+
+  return {
+    label: String(rawValue),
+    categories: [String(rawValue)]
+  };
+}
+
+function filterAndSortMatchesForSync(matches, roundFilter) {
   return matches
     .filter((match) => {
-      if (!requestedRound) return true;
-      return getGroupStageRoundNumber(match) === requestedRound;
+      if (!roundFilter) return true;
+      if (roundFilter.legacyGroupStageRound) {
+        return getGroupStageRoundNumber(match) === roundFilter.legacyGroupStageRound;
+      }
+      return roundFilter.categories.some((category) =>
+        normalizeRoundCategory(match.round) === normalizeRoundCategory(category) ||
+        normalizeRoundCategory(match.categoryName) === normalizeRoundCategory(category)
+      );
     })
     .sort(compareMatchesForChannelOrder);
 }
 
 function compareMatchesForChannelOrder(a, b) {
-  return getGroupStageRoundNumber(a) - getGroupStageRoundNumber(b) ||
+  return getPlayoffRoundSortIndex(a) - getPlayoffRoundSortIndex(b) ||
+    getGroupStageRoundNumber(a) - getGroupStageRoundNumber(b) ||
     getGroupSortIndex(a) - getGroupSortIndex(b) ||
     String(a.teamA || '').localeCompare(String(b.teamA || ''), undefined, { sensitivity: 'base' }) ||
     String(a.teamB || '').localeCompare(String(b.teamB || ''), undefined, { sensitivity: 'base' });
+}
+
+function getPlayoffRoundSortIndex(match) {
+  const round = normalizeRoundCategory(match.categoryName || match.round);
+  const order = [
+    ['wb round of 32'],
+    ['wb round of 16'],
+    ['losers round 1'],
+    ['wb quarterfinals'],
+    ['losers round 2'],
+    ['losers round 3'],
+    ['wb semifinals'],
+    ['losers round 4'],
+    ['losers round 5'],
+    ['wb final'],
+    ['losers round 6'],
+    ['losers round 7'],
+    ['losers final'],
+    ['grand final', 'grand final bo5']
+  ];
+  const index = order.findIndex((aliases) => aliases.includes(round));
+  return index >= 0 ? index : 999;
+}
+
+function normalizeRoundCategory(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/\bupper\b/g, 'wb')
+    .replace(/\bwinners?\b/g, 'wb')
+    .replace(/\blower\b/g, 'losers')
+    .replace(/\blb\b/g, 'losers')
+    .replace(/\bquarter finals\b/g, 'quarterfinals')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
 }
 
 function getGroupStageRoundNumber(match) {
@@ -2102,7 +2205,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     `Round: **${matchDetails.round}**`,
     matchDetails.group ? `Group: **${matchDetails.group}**` : null,
     scheduleWindow ? `${scheduleWindow.label}: **${scheduleWindow.start} - ${scheduleWindow.end}**` : 'Scheduling window: **not configured yet**',
-    roundInfo ? `Default round date/time: **${roundInfo.defaultDate} at 8:00 PM EST**` : 'Default round date/time: **admins will announce**',
+    roundInfo ? `Default match date/time: **${roundInfo.defaultDate} at 8:00 PM EST**` : 'Default match date/time: **admins will announce**',
     `Discord match chat: <#${channel.id}>`,
     faceitRoomLine(match),
     getFaceitScheduledTimeLine(match),
@@ -2112,15 +2215,15 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     '2. The bot detects the timezone, records the proposed time, and pings the other team role.',
     '3. A member from the other team posts `!accept` to confirm or `!decline` to reject.',
     `4. After \`!accept\`, ${adminNotificationLine}`,
-    'Tournament Ops can use `!schedule September 1 8 PM EST` to set the time directly without team approval.',
+    'Tournament Ops can use `!schedule September 13 8 PM EST` to set the time directly without team approval.',
     '',
     '**Other commands**',
-    '`!propose July 28 8:00 PM EST` - same as `!schedule`',
-    '`!reschedule July 29 8:00 PM EST` - team member requests a new time',
-    'Schedules and reschedules must stay inside the scheduling window. Reschedules within 24 hours of match time require admin override.',
+    '`!propose September 13 8:00 PM EST` - same as `!schedule`',
+    '`!reschedule September 14 8:00 PM EST` - team member requests a new time',
+    'Schedules and reschedules must stay inside this match window. Reschedules within 24 hours of match time require admin override.',
     isGroupStageMatch(match)
-      ? 'Group Stage note: any Group Stage match can be scheduled by mutual agreement from August 31, 2026 through September 10, 2026.'
-      : null,
+      ? 'Group Stage note: any Group Stage match can be scheduled by mutual agreement from August 31, 2026 through September 8, 2026.'
+      : 'Playoff note: teams may agree to schedule their match any time during the assigned three-day window.',
     `Roster changes: go to ${ticketChannel}.`,
     '',
     '**Admin Help**',
