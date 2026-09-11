@@ -39,7 +39,6 @@ import {
   saveScheduleProposal
 } from './store.js';
 import { scheduleFaceitMatch } from './faceitSchedule.js';
-import { appendApprovedScheduleToSheet } from './googleSheets.js';
 import { auditMissingCaptains, auditMissingPlayers, syncRolesFromSheet } from './sheetRoles.js';
 import { startWebhookServer } from './webhookServer.js';
 
@@ -2316,24 +2315,8 @@ async function handleAdminScheduleDecision(interaction, approved) {
 
   if (approved) {
     let renameResult = null;
-    let sheetResult = { skipped: true };
     if (matchChannel && stored) {
       renameResult = await markMatchChannelScheduled(matchChannel, stored, proposal);
-    }
-    if (stored && isScheduleAdminChannelInteraction(interaction)) {
-      const storedForSheet = await getFreshStoredMatchForSheet(stored);
-      sheetResult = await appendApprovedScheduleToSheet(config, buildApprovedScheduleSheetRow({
-        stored: storedForSheet,
-        proposal,
-        approvedBy: interaction.member?.displayName || interaction.user.globalName || interaction.user.username || interaction.user.id,
-        acceptedBy: proposal?.acceptedBy,
-        channel: matchChannel
-      })).catch((error) => ({ error }));
-    } else if (stored) {
-      sheetResult = {
-        skipped: true,
-        reason: 'approval was not clicked in ADMIN_SCHEDULE_CHANNEL_ID'
-      };
     }
     await interaction.message.react('✅').catch(() => null);
     const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
@@ -2341,39 +2324,13 @@ async function handleAdminScheduleDecision(interaction, approved) {
     const renameFailureNote = renameResult?.error
       ? ` Discord blocked the channel rename: ${renameResult.error.message}`
       : '';
-    const sheetNote = sheetResult?.error
-      ? ` Google Sheets update failed: ${sheetResult.error.message}`
-      : sheetResult?.skipped
-        ? ` Google Sheets update skipped: ${sheetResult.reason || 'not configured'}`
-        : ' Google Sheets updated.';
-    await interaction.editReply(`Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}${sheetNote}`);
+    await interaction.editReply(`Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}`);
   } else {
     await interaction.message.react('❌').catch(() => null);
     const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
     const missingChannelNote = matchChannel ? '' : ' I could not find the match channel.';
     await interaction.editReply(`Denied and reacted with an X.${missingProposalNote}${missingChannelNote}`);
   }
-}
-
-function isScheduleAdminChannelInteraction(interaction) {
-  return Boolean(config.adminScheduleChannelId && interaction.channelId === config.adminScheduleChannelId);
-}
-
-async function getFreshStoredMatchForSheet(stored) {
-  const freshMatch = await faceit.getMatch(stored.match.id, stored.match.source)
-    .catch((error) => {
-      console.error(`Could not refresh FACEIT match before Google Sheets update match_id=${stored.match.id}:`, error);
-      return null;
-    });
-
-  if (!freshMatch) return stored;
-  return {
-    ...stored,
-    match: {
-      ...stored.match,
-      ...freshMatch
-    }
-  };
 }
 
 async function findStoredMatchFromAdminMessage(message, channelId) {
