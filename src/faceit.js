@@ -213,6 +213,11 @@ function extractRound(raw, source = {}) {
     raw.competition_name
   ];
 
+  if (String(source?.name || '').toLowerCase().includes('playoff')) {
+    const bracketRound = bracketRoundName(raw.round ?? raw.round_number, raw, source);
+    if (bracketRound) return bracketRound;
+  }
+
   const explicitBracketLabel = textCandidates
     .map((candidate) => normalizePlayoffRoundLabel(candidate, raw))
     .find(Boolean);
@@ -233,7 +238,7 @@ function extractCategoryName(raw, source) {
     return 'Group Stage';
   }
 
-  return extractRound(raw);
+  return extractRound(raw, source);
 }
 
 function extractGroupStageRoundNumber(raw) {

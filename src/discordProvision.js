@@ -34,6 +34,7 @@ export async function provisionMatchChannel(guild, config, match) {
   const channelName = makeMatchChannelName(match);
   const channel = await findOrCreateTextChannel(
     guild,
+    config,
     category,
     channelName,
     makeMatchPermissionOverwrites(everyoneRole, teamARole, teamBRole, privilegedRoles),
@@ -238,8 +239,8 @@ async function findOrCreateCategory(guild, roundName, everyoneRole, privilegedRo
   });
 }
 
-async function findOrCreateTextChannel(guild, category, name, permissionOverwrites, match) {
-  const existing = findExistingMatchChannel(guild, category, name, match);
+async function findOrCreateTextChannel(guild, config, category, name, permissionOverwrites, match) {
+  const existing = findExistingMatchChannel(guild, config, category, name, match);
 
   if (existing) {
     if (existing.name !== name) {
@@ -263,7 +264,11 @@ async function findOrCreateTextChannel(guild, category, name, permissionOverwrit
   return created;
 }
 
-function findExistingMatchChannel(guild, category, name, match) {
+function findExistingMatchChannel(guild, config, category, name, match) {
+  const mappedChannelId = config.matchChannelIds?.get(matchPairKey(match.teamA, match.teamB));
+  const mappedChannel = mappedChannelId ? guild.channels.cache.get(mappedChannelId) : null;
+  if (mappedChannel?.type === ChannelType.GuildText) return mappedChannel;
+
   const exactName = name.toLowerCase();
   const legacyName = makeChannelName(`${match.teamA} vs ${match.teamB}`).toLowerCase();
   const baseName = makeBaseMatchChannelName(match).toLowerCase();
@@ -296,6 +301,10 @@ function normalizeTeamKey(value) {
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
     .replace(/\s+/g, ' ');
+}
+
+function matchPairKey(teamA, teamB) {
+  return [normalizeTeamKey(teamA), normalizeTeamKey(teamB)].sort().join('|');
 }
 
 async function updateChannelTopic(channel, match) {

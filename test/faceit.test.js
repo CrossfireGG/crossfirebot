@@ -52,6 +52,7 @@ test('keeps winners bracket playoff round names distinct', async (context) => {
   context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
     match_id: 'match-1',
     status: 'SCHEDULED',
+    round: 1,
     round_name: 'Round of 16',
     bracket_name: 'Winners Bracket',
     teams: {
@@ -66,8 +67,8 @@ test('keeps winners bracket playoff round names distinct', async (context) => {
     name: 'Playoff - CROSSFIRE Season 6'
   });
 
-  assert.equal(match.categoryName, 'WB Round of 16');
-  assert.equal(match.round, 'WB Round of 16');
+  assert.equal(match.categoryName, 'WB Round of 32');
+  assert.equal(match.round, 'WB Round of 32');
 });
 
 test('keeps losers bracket playoff round names distinct', async (context) => {

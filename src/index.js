@@ -125,6 +125,31 @@ const PLAYOFF_ROUND_FILTERS = {
   }
 };
 
+const SEASON6_WB_ROUND_OF_32_PAIRS = new Set([
+  matchPairKey('Chicken Coop Esports', 'Mylifebelike'),
+  matchPairKey('Chicken Coop', 'my life be like'),
+  matchPairKey('Detonate', 'Arctic Ace'),
+  matchPairKey('Zomblers', 'Olympus'),
+  matchPairKey('EMPIRE', 'BucketJonsBoys'),
+  matchPairKey('Empire', 'Bucket Jon Boys'),
+  matchPairKey('LAG', 'Overtake Sector'),
+  matchPairKey('F5 Esports', 'Atlantis Esports'),
+  matchPairKey('Villainous', 'New Legends'),
+  matchPairKey('Wanted Goons', 'Unreal Nightmare'),
+  matchPairKey('Marsborne', 'Fathom Gaming'),
+  matchPairKey('Marsborne', 'Team Fathom Gaming'),
+  matchPairKey('Club 333', 'KODEX Esports'),
+  matchPairKey('Club 333', 'Kodex Esports'),
+  matchPairKey('Iowa Stormboar', 'Omen Esports'),
+  matchPairKey('Farmville', 'Celestial Esports'),
+  matchPairKey('Regain', 'Addice'),
+  matchPairKey('BabaG', 'FlyQuest Red'),
+  matchPairKey('Nutorious', 'North Forge'),
+  matchPairKey('NuTorious', 'North Forge'),
+  matchPairKey('Without a Roof', 'Beyond Limits'),
+  matchPairKey('Without A Roof', 'Beyond Limits')
+]);
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -760,7 +785,7 @@ async function handleSyncMatches(interaction) {
   await guild.channels.fetch();
   await guild.roles.fetch();
 
-  const allMatches = await faceit.getMatches();
+  const allMatches = (await faceit.getMatches()).map(normalizeSeason6PlayoffMatch);
   const matches = filterAndSortMatchesForSync(allMatches, roundFilter);
   let created = 0;
   let skipped = 0;
@@ -795,7 +820,7 @@ async function handleRefreshMatchStatuses(interaction) {
   const guild = await client.guilds.fetch(config.discordGuildId);
   await guild.channels.fetch();
 
-  const matches = await faceit.getMatches();
+  const matches = (await faceit.getMatches()).map(normalizeSeason6PlayoffMatch);
   const result = {
     checked: matches.length,
     found: 0,
@@ -889,7 +914,7 @@ async function handleAuditMatches(interaction) {
   await guild.channels.fetch();
   await guild.roles.fetch();
 
-  const matches = filterAndSortMatchesForSync(await faceit.getMatches(), roundFilter);
+  const matches = filterAndSortMatchesForSync((await faceit.getMatches()).map(normalizeSeason6PlayoffMatch), roundFilter);
   const result = {
     checked: 0,
     ok: 0,
@@ -993,7 +1018,7 @@ async function handleCreateMatchChat(interaction) {
 async function findFaceitMatchForLink(link, matchId) {
   const normalizedLink = normalizeSubmittedFaceitLink(link).toLowerCase();
   const normalizedMatchId = matchId.toLowerCase();
-  const matches = await faceit.getMatches();
+  const matches = (await faceit.getMatches()).map(normalizeSeason6PlayoffMatch);
 
   return matches.find((match) => {
     const faceitUrl = String(match.faceitUrl || '').toLowerCase();
@@ -1294,6 +1319,18 @@ function getRequestedRoundFilter(interaction) {
   };
 }
 
+function normalizeSeason6PlayoffMatch(match) {
+  if (!match || !isPlayoffMatch(match)) return match;
+  if (!SEASON6_WB_ROUND_OF_32_PAIRS.has(matchPairKey(match.teamA, match.teamB))) return match;
+
+  return {
+    ...match,
+    round: 'WB Round of 32',
+    categoryName: 'WB Round of 32',
+    group: ''
+  };
+}
+
 function filterAndSortMatchesForSync(matches, roundFilter) {
   return matches
     .filter((match) => {
@@ -1307,6 +1344,10 @@ function filterAndSortMatchesForSync(matches, roundFilter) {
       );
     })
     .sort(compareMatchesForChannelOrder);
+}
+
+function isPlayoffMatch(match) {
+  return String(match.source?.name || '').toLowerCase().includes('playoff');
 }
 
 function compareMatchesForChannelOrder(a, b) {
@@ -1353,7 +1394,22 @@ function normalizeRoundCategory(value) {
     .replace(/\s+/g, ' ');
 }
 
+function matchPairKey(teamA, teamB) {
+  return [normalizeTeamKey(teamA), normalizeTeamKey(teamB)].sort().join('|');
+}
+
+function normalizeTeamKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
 function getGroupStageRoundNumber(match) {
+  if (!isGroupStageMatch(match)) return 999;
+
   const categoryMatch = String(match.categoryName || match.round || '').match(/\b(?:group stage\s*-\s*round|round)\s*(\d+)(?:\s+group stage)?\b/i);
   if (categoryMatch) return Number(categoryMatch[1]);
 
@@ -1920,7 +1976,7 @@ async function getStoredMatchForChannel(channel) {
 }
 
 async function buildUnlinkedMatchChannelMessage(channel, baseLines) {
-  const matches = await faceit.getMatches().catch(() => []);
+  const matches = (await faceit.getMatches().catch(() => [])).map(normalizeSeason6PlayoffMatch);
   const likelyMatches = matches
     .filter((match) => channelLooksLikeMatch(channel, match))
     .slice(0, 5);
@@ -1950,7 +2006,7 @@ async function buildUnlinkedMatchChannelMessage(channel, baseLines) {
 async function recoverStoredMatchFromChannel(channel) {
   if (!channel.guild) return null;
 
-  const matches = await faceit.getMatches().catch(() => []);
+  const matches = (await faceit.getMatches().catch(() => [])).map(normalizeSeason6PlayoffMatch);
   const match = matches.find((candidate) => channelMatchesFaceitMatch(channel, candidate));
   if (!match) return null;
 

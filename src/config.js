@@ -32,6 +32,7 @@ const defaultTeamRoleIds = {
   'HPLAT': '1531189451802415114',
   'Aura': '1531189502708682753',
   'NuTorious': '1531189557465186462',
+  'Nutorious': '1531189557465186462',
   'Team Amplus': '1531189637035458747',
   'Empire': '1531189683101503618',
   'Arctic Ace': '1531189718929379430',
@@ -41,9 +42,12 @@ const defaultTeamRoleIds = {
   'F5 Esports': '1531189851750269068',
   'Atlantis Esports': '1531189895152795769',
   'Without a Roof': '1531189911779282994',
+  'Without A Roof': '1531189911779282994',
   'Chicken Coop': '1531189942728785990',
+  'Chicken Coop Esports': '1531189942728785990',
   'Farmville': '1531189990405439549',
   'Kodex Esports': '1531190039491510377',
+  'KODEX Esports': '1531190039491510377',
   "O'Fire Esports": '1531190083758329972',
   'OFire Esports': '1531190083758329972',
   'O Fire': '1531190083758329972',
@@ -65,6 +69,8 @@ const defaultTeamRoleIds = {
   'deez': '1533984391758479380',
   'Demolition': '1533984393700315226',
   'my life be like': '1533984394593959957',
+  'Mylifebelike': '1533984394593959957',
+  'MyLifeBeLike': '1533984394593959957',
   'Enigma': '1533984395298476195',
   'VerhovnaRada': '1538326444604788836',
   'FlyQuest Red': '1538326445657428119',
@@ -74,6 +80,31 @@ const defaultTeamRoleIds = {
   'Bucketjonboys': '1538326449076047942',
   'BucketJonsBoys': '1538326449076047942',
   'ThirdSite': '1538326449982013572'
+};
+
+const defaultMatchChannelIds = {
+  'Chicken Coop Esports|Mylifebelike': '1548122005134381267',
+  'Chicken Coop|my life be like': '1548122005134381267',
+  'Detonate|Arctic Ace': '1548120903424938015',
+  'Zomblers|Olympus': '1548121098242236476',
+  'EMPIRE|BucketJonsBoys': '1548121208472477726',
+  'Empire|Bucket Jon Boys': '1548121208472477726',
+  'LAG|Overtake Sector': '1548121258888274030',
+  'F5 Esports|Atlantis Esports': '1548121310956359811',
+  'Villainous|New Legends': '1548121385254133770',
+  'Wanted Goons|Unreal Nightmare': '1548121505051836476',
+  'Marsborne|Fathom Gaming': '1548121531044069437',
+  'Marsborne|Team Fathom Gaming': '1548121531044069437',
+  'Club 333|KODEX Esports': '1548121557316931727',
+  'Club 333|Kodex Esports': '1548121557316931727',
+  'Iowa Stormboar|Omen Esports': '1548121655103193251',
+  'Farmville|Celestial Esports': '1548121691203436554',
+  'Regain|Addice': '1548121709196873801',
+  'BabaG|FlyQuest Red': '1548121727123324948',
+  'Nutorious|North Forge': '1548121742034079755',
+  'NuTorious|North Forge': '1548121742034079755',
+  'Without a Roof|Beyond Limits': '1548121758643789904',
+  'Without A Roof|Beyond Limits': '1548121758643789904'
 };
 
 const required = [
@@ -122,6 +153,7 @@ export function getConfig() {
       '1128905368018354277:1128907940720562296=1473173377005912074:1474117290600562920'
     ),
     teamRoleIds: parseTeamRoleIds(process.env.TEAM_ROLE_IDS || ''),
+    matchChannelIds: parseMatchChannelIds(process.env.MATCH_CHANNEL_IDS || ''),
     createMissingMatchTeamRoles: process.env.CREATE_MISSING_MATCH_TEAM_ROLES === 'true',
     createMissingTeamRoles: process.env.CREATE_MISSING_TEAM_ROLES === 'true',
     faceitApiKey: process.env.FACEIT_API_KEY,
@@ -179,6 +211,28 @@ function parseTeamRoleIds(value) {
   }
 
   return roles;
+}
+
+function parseMatchChannelIds(value) {
+  const channels = new Map();
+  for (const [pair, channelId] of Object.entries(defaultMatchChannelIds)) {
+    const [teamA, teamB] = pair.split('|');
+    channels.set(matchPairKey(teamA, teamB), channelId);
+  }
+
+  for (const entry of value.split(';').map((part) => part.trim()).filter(Boolean)) {
+    const [pair, channelId] = entry.split('=').map((part) => part.trim());
+    const [teamA, teamB] = String(pair || '').split('|').map((part) => part.trim());
+    if (teamA && teamB && /^\d{15,25}$/.test(channelId || '')) {
+      channels.set(matchPairKey(teamA, teamB), channelId);
+    }
+  }
+
+  return channels;
+}
+
+function matchPairKey(teamA, teamB) {
+  return [normalizeTeamKey(teamA), normalizeTeamKey(teamB)].sort().join('|');
 }
 
 function normalizeTeamKey(value) {

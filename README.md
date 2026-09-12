@@ -100,7 +100,13 @@ SCL sends `demo_ready` once per map. The bot verifies the SCL JWT, calls SCL for
 Optional round windows:
 
 ```env
-ROUND_WINDOWS=Round of 16=2026-07-28..2026-07-30;Quarter Finals=2026-07-31..2026-08-02
+ROUND_WINDOWS=WB Round of 32=2026-09-12..2026-09-14;Losers Round 1=2026-09-15..2026-09-17
+```
+
+Optional manually-created match channel mapping:
+
+```env
+MATCH_CHANNEL_IDS=Team A|Team B=channel_id;Other Team A|Other Team B=channel_id
 ```
 
 ## Invite Link
