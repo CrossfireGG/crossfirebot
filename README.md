@@ -109,6 +109,12 @@ Optional manually-created match channel mapping:
 MATCH_CHANNEL_IDS=Team A|Team B=channel_id;Other Team A|Other Team B=channel_id
 ```
 
+Optional manually-created round category mapping:
+
+```env
+ROUND_CATEGORY_IDS=WB Round of 32=1548120902154068039;Losers Round 1=channel_category_id
+```
+
 ## Invite Link
 
 Use this link to invite the bot:

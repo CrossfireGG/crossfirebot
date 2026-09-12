@@ -30,7 +30,7 @@ export async function provisionMatchChannel(guild, config, match) {
     throw new Error(`Missing Discord role(s): ${missing.join(', ')}`);
   }
 
-  const category = await findOrCreateCategory(guild, match.categoryName || match.round, everyoneRole, privilegedRoles);
+  const category = await findOrCreateCategory(guild, config, match.categoryName || match.round, everyoneRole, privilegedRoles);
   const channelName = makeMatchChannelName(match);
   const channel = await findOrCreateTextChannel(
     guild,
@@ -72,7 +72,7 @@ export async function repairMatchChannel(guild, config, channel, match) {
     throw new Error(`Missing Discord role(s): ${missing.join(', ')}`);
   }
 
-  const category = await findOrCreateCategory(guild, match.categoryName || match.round, everyoneRole, privilegedRoles);
+  const category = await findOrCreateCategory(guild, config, match.categoryName || match.round, everyoneRole, privilegedRoles);
   if (channel.parentId !== category.id) {
     await channel.setParent(category.id, { lockPermissions: false });
   }
@@ -210,7 +210,7 @@ async function findOrCreateNamedRole(guild, name, shouldCreate) {
   });
 }
 
-async function findOrCreateCategory(guild, roundName, everyoneRole, privilegedRoles) {
+async function findOrCreateCategory(guild, config, roundName, everyoneRole, privilegedRoles) {
   const categoryName = String(roundName || 'FACEIT Matches').slice(0, 100);
   const permissionOverwrites = [
     {
@@ -222,6 +222,13 @@ async function findOrCreateCategory(guild, roundName, everyoneRole, privilegedRo
       allow: [PermissionFlagsBits.ViewChannel]
     }))
   ];
+  const mappedCategoryId = config.roundCategoryIds?.get(normalizeTeamKey(roundName));
+  const mappedCategory = mappedCategoryId ? guild.channels.cache.get(mappedCategoryId) : null;
+  if (mappedCategory?.type === ChannelType.GuildCategory) {
+    await mappedCategory.permissionOverwrites.set(permissionOverwrites);
+    return mappedCategory;
+  }
+
   const existing = guild.channels.cache.find((channel) =>
     channel.type === ChannelType.GuildCategory &&
     channel.name.toLowerCase() === categoryName.toLowerCase()

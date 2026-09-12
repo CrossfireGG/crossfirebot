@@ -107,6 +107,10 @@ const defaultMatchChannelIds = {
   'Without A Roof|Beyond Limits': '1548121758643789904'
 };
 
+const defaultRoundCategoryIds = {
+  'WB Round of 32': '1548120902154068039'
+};
+
 const required = [
   'DISCORD_TOKEN',
   'DISCORD_CLIENT_ID',
@@ -154,6 +158,7 @@ export function getConfig() {
     ),
     teamRoleIds: parseTeamRoleIds(process.env.TEAM_ROLE_IDS || ''),
     matchChannelIds: parseMatchChannelIds(process.env.MATCH_CHANNEL_IDS || ''),
+    roundCategoryIds: parseRoundCategoryIds(process.env.ROUND_CATEGORY_IDS || ''),
     createMissingMatchTeamRoles: process.env.CREATE_MISSING_MATCH_TEAM_ROLES === 'true',
     createMissingTeamRoles: process.env.CREATE_MISSING_TEAM_ROLES === 'true',
     faceitApiKey: process.env.FACEIT_API_KEY,
@@ -229,6 +234,22 @@ function parseMatchChannelIds(value) {
   }
 
   return channels;
+}
+
+function parseRoundCategoryIds(value) {
+  const categories = new Map();
+  for (const [roundName, categoryId] of Object.entries(defaultRoundCategoryIds)) {
+    categories.set(normalizeTeamKey(roundName), categoryId);
+  }
+
+  for (const entry of value.split(';').map((part) => part.trim()).filter(Boolean)) {
+    const [roundName, categoryId] = entry.split('=').map((part) => part.trim());
+    if (roundName && /^\d{15,25}$/.test(categoryId || '')) {
+      categories.set(normalizeTeamKey(roundName), categoryId);
+    }
+  }
+
+  return categories;
 }
 
 function matchPairKey(teamA, teamB) {
