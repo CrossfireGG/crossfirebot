@@ -31,8 +31,8 @@ export const commands = [
             .setDescription('What to sync')
             .setRequired(true)
             .addChoices(
-              { name: 'Match rooms from FACEIT', value: 'matches' },
-              { name: 'Team roles from Google Sheet', value: 'teams' }
+              { name: 'matches', value: 'matches' },
+              { name: 'teams', value: 'teams' }
             )
         )
         .addStringOption((option) =>
@@ -59,9 +59,9 @@ export const commands = [
             .setDescription('What to audit')
             .setRequired(true)
             .addChoices(
-              { name: 'Match rooms and permissions', value: 'matches' },
-              { name: 'Missing players', value: 'players' },
-              { name: 'Missing captains', value: 'captains' }
+              { name: 'matches', value: 'matches' },
+              { name: 'players', value: 'players' },
+              { name: 'captains', value: 'captains' }
             )
         )
         .addStringOption((option) =>
