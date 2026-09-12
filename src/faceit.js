@@ -72,12 +72,12 @@ export class FaceitClient {
         : offset + items.length;
     }
 
-    return all.map((raw) => normalizeMatch(raw, source)).filter(Boolean);
+    return all.map((raw, index) => normalizeMatch(raw, source, index)).filter(Boolean);
   }
 
 }
 
-function normalizeMatch(raw, source) {
+function normalizeMatch(raw, source, sourceOrder = 0) {
   const teams = raw.teams || {};
   const faction1 = teams.faction1 || teams.faction_a || {};
   const faction2 = teams.faction2 || teams.faction_b || {};
@@ -103,8 +103,23 @@ function normalizeMatch(raw, source) {
     resultScore: score ? `${score.teamAScore}-${score.teamBScore}` : null,
     faceitUrl: normalizeFaceitUrl(raw.faceit_url || raw.match_url),
     scheduledAt: raw.scheduled_at ? formatFaceitSchedule(raw.scheduled_at) : null,
+    bracketOrder: extractBracketOrder(raw, sourceOrder),
     raw
   };
+}
+
+function extractBracketOrder(raw, sourceOrder) {
+  const explicitOrder = firstNumber(
+    raw.bracket_position,
+    raw.bracket_pos,
+    raw.match_position,
+    raw.position,
+    raw.order,
+    raw.sort_order,
+    raw.seed,
+    raw.match_number
+  );
+  return Number.isInteger(explicitOrder) ? explicitOrder : sourceOrder;
 }
 
 function extractMatchScore(raw) {

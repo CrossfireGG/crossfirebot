@@ -125,30 +125,28 @@ const PLAYOFF_ROUND_FILTERS = {
   }
 };
 
-const SEASON6_WB_ROUND_OF_32_PAIRS = new Set([
-  matchPairKey('Chicken Coop Esports', 'Mylifebelike'),
-  matchPairKey('Chicken Coop', 'my life be like'),
-  matchPairKey('Detonate', 'Arctic Ace'),
-  matchPairKey('Zomblers', 'Olympus'),
-  matchPairKey('EMPIRE', 'BucketJonsBoys'),
-  matchPairKey('Empire', 'Bucket Jon Boys'),
-  matchPairKey('LAG', 'Overtake Sector'),
-  matchPairKey('F5 Esports', 'Atlantis Esports'),
-  matchPairKey('Villainous', 'New Legends'),
-  matchPairKey('Wanted Goons', 'Unreal Nightmare'),
-  matchPairKey('Marsborne', 'Fathom Gaming'),
-  matchPairKey('Marsborne', 'Team Fathom Gaming'),
-  matchPairKey('Club 333', 'KODEX Esports'),
-  matchPairKey('Club 333', 'Kodex Esports'),
-  matchPairKey('Iowa Stormboar', 'Omen Esports'),
-  matchPairKey('Farmville', 'Celestial Esports'),
-  matchPairKey('Regain', 'Addice'),
-  matchPairKey('BabaG', 'FlyQuest Red'),
-  matchPairKey('Nutorious', 'North Forge'),
-  matchPairKey('NuTorious', 'North Forge'),
-  matchPairKey('Without a Roof', 'Beyond Limits'),
-  matchPairKey('Without A Roof', 'Beyond Limits')
-]);
+const SEASON6_WB_ROUND_OF_32_MATCHES = [
+  ['Chicken Coop Esports', 'Mylifebelike'],
+  ['Detonate', 'Arctic Ace'],
+  ['Zomblers', 'Olympus'],
+  ['EMPIRE', 'BucketJonsBoys'],
+  ['LAG', 'Overtake Sector'],
+  ['F5 Esports', 'Atlantis Esports'],
+  ['Villainous', 'New Legends'],
+  ['Wanted Goons', 'Unreal Nightmare'],
+  ['Marsborne', 'Fathom Gaming'],
+  ['Club 333', 'KODEX Esports'],
+  ['Iowa Stormboar', 'Omen Esports'],
+  ['Farmville', 'Celestial Esports'],
+  ['Regain', 'Addice'],
+  ['BabaG', 'FlyQuest Red'],
+  ['Nutorious', 'North Forge'],
+  ['Without a Roof', 'Beyond Limits']
+];
+const SEASON6_WB_ROUND_OF_32_PAIR_ORDER = new Map(
+  SEASON6_WB_ROUND_OF_32_MATCHES.map(([teamA, teamB], index) => [matchPairKey(teamA, teamB), index])
+);
+const SEASON6_WB_ROUND_OF_32_PAIRS = new Set(SEASON6_WB_ROUND_OF_32_PAIR_ORDER.keys());
 
 const client = new Client({
   intents: [
@@ -1354,8 +1352,17 @@ function compareMatchesForChannelOrder(a, b) {
   return getPlayoffRoundSortIndex(a) - getPlayoffRoundSortIndex(b) ||
     getGroupStageRoundNumber(a) - getGroupStageRoundNumber(b) ||
     getGroupSortIndex(a) - getGroupSortIndex(b) ||
+    getBracketSortIndex(a) - getBracketSortIndex(b) ||
     String(a.teamA || '').localeCompare(String(b.teamA || ''), undefined, { sensitivity: 'base' }) ||
     String(a.teamB || '').localeCompare(String(b.teamB || ''), undefined, { sensitivity: 'base' });
+}
+
+function getBracketSortIndex(match) {
+  const manualOrder = SEASON6_WB_ROUND_OF_32_PAIR_ORDER.get(matchPairKey(match.teamA, match.teamB));
+  if (Number.isInteger(manualOrder)) return manualOrder;
+
+  const bracketOrder = Number(match.bracketOrder ?? match.raw?.bracket_position ?? match.raw?.match_position);
+  return Number.isFinite(bracketOrder) ? bracketOrder : 999;
 }
 
 function getPlayoffRoundSortIndex(match) {

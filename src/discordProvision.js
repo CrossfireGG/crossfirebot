@@ -77,9 +77,11 @@ export async function repairMatchChannel(guild, config, channel, match) {
     await channel.setParent(category.id, { lockPermissions: false });
   }
   await updateMatchChannelName(channel, match);
-  await channel.permissionOverwrites.set(
-    makeMatchPermissionOverwrites(everyoneRole, teamARole, teamBRole, privilegedRoles)
-  );
+  if (!isMappedMatchChannel(config, match, channel.id)) {
+    await channel.permissionOverwrites.set(
+      makeMatchPermissionOverwrites(everyoneRole, teamARole, teamBRole, privilegedRoles)
+    );
+  }
   await updateChannelTopic(channel, match);
 
   return {
@@ -225,7 +227,6 @@ async function findOrCreateCategory(guild, config, roundName, everyoneRole, priv
   const mappedCategoryId = config.roundCategoryIds?.get(normalizeTeamKey(roundName));
   const mappedCategory = mappedCategoryId ? guild.channels.cache.get(mappedCategoryId) : null;
   if (mappedCategory?.type === ChannelType.GuildCategory) {
-    await mappedCategory.permissionOverwrites.set(permissionOverwrites);
     return mappedCategory;
   }
 
@@ -247,7 +248,19 @@ async function findOrCreateCategory(guild, config, roundName, everyoneRole, priv
 }
 
 async function findOrCreateTextChannel(guild, config, category, name, permissionOverwrites, match) {
-  const existing = findExistingMatchChannel(guild, config, category, name, match);
+  const mappedExisting = findMappedMatchChannel(guild, config, match);
+  if (mappedExisting) {
+    if (mappedExisting.name !== name) {
+      await renameMatchChannel(mappedExisting, name);
+    }
+    if (mappedExisting.parentId !== category.id) {
+      await mappedExisting.setParent(category.id, { lockPermissions: false });
+    }
+    await updateChannelTopic(mappedExisting, match);
+    return mappedExisting;
+  }
+
+  const existing = findExistingMatchChannel(guild, category, name, match);
 
   if (existing) {
     if (existing.name !== name) {
@@ -271,11 +284,17 @@ async function findOrCreateTextChannel(guild, config, category, name, permission
   return created;
 }
 
-function findExistingMatchChannel(guild, config, category, name, match) {
+function findMappedMatchChannel(guild, config, match) {
   const mappedChannelId = config.matchChannelIds?.get(matchPairKey(match.teamA, match.teamB));
   const mappedChannel = mappedChannelId ? guild.channels.cache.get(mappedChannelId) : null;
-  if (mappedChannel?.type === ChannelType.GuildText) return mappedChannel;
+  return mappedChannel?.type === ChannelType.GuildText ? mappedChannel : null;
+}
 
+function isMappedMatchChannel(config, match, channelId) {
+  return config.matchChannelIds?.get(matchPairKey(match.teamA, match.teamB)) === channelId;
+}
+
+function findExistingMatchChannel(guild, category, name, match) {
   const exactName = name.toLowerCase();
   const legacyName = makeChannelName(`${match.teamA} vs ${match.teamB}`).toLowerCase();
   const baseName = makeBaseMatchChannelName(match).toLowerCase();
