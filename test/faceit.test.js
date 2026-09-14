@@ -136,3 +136,25 @@ test('uses lower bracket round 8 instead of lower bracket final', async (context
   assert.equal(match.categoryName, 'Lower Bracket - Round 8');
   assert.equal(match.round, 'Lower Bracket - Round 8');
 });
+
+test('uses scheduled playoff window when bracket side is missing', async (context) => {
+  context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+    match_id: 'match-1',
+    status: 'SCHEDULED',
+    round: 1,
+    scheduled_at: 1789593600,
+    teams: {
+      faction1: { name: 'Celestial Esports' },
+      faction2: { name: 'Omen Esports' }
+    }
+  }), { status: 200 }));
+
+  const match = await new FaceitClient('api-key', []).getMatch('match-1', {
+    type: 'championship',
+    id: 'playoffs',
+    name: 'CROSSFIRE Season 6 - Playoffs'
+  });
+
+  assert.equal(match.categoryName, 'Lower Bracket - Round 1');
+  assert.equal(match.round, 'Lower Bracket - Round 1');
+});

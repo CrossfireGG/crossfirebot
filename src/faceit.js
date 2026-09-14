@@ -407,7 +407,8 @@ function bracketRoundName(value, raw = {}, source = {}) {
   const bracket = bracketSide(context);
 
   if (sourceText.includes('playoff')) {
-    if (bracket === 'losers') {
+    const effectiveBracket = bracket || inferPlayoffBracketFromSchedule(round, raw);
+    if (effectiveBracket === 'losers') {
       const losersNames = {
         1: 'Lower Bracket - Round 1',
         2: 'Lower Bracket - Round 2',
@@ -421,15 +422,17 @@ function bracketRoundName(value, raw = {}, source = {}) {
       return losersNames[round] || `Lower Bracket - Round ${round}`;
     }
 
-    const winnersNames = {
-      1: 'Upper Bracket - Round 1',
-      2: 'Upper Bracket - Round 2',
-      3: 'Upper Bracket - Round 3',
-      4: 'Upper Bracket - Round 4',
-      5: 'Upper Bracket - Round 5',
-      6: 'Grand Final (BO5)'
-    };
-    return winnersNames[round] || `Upper Bracket - Round ${round}`;
+    if (effectiveBracket === 'winners' || !effectiveBracket) {
+      const winnersNames = {
+        1: 'Upper Bracket - Round 1',
+        2: 'Upper Bracket - Round 2',
+        3: 'Upper Bracket - Round 3',
+        4: 'Upper Bracket - Round 4',
+        5: 'Upper Bracket - Round 5',
+        6: 'Grand Final (BO5)'
+      };
+      return winnersNames[round] || `Upper Bracket - Round ${round}`;
+    }
   }
 
   const names = {
@@ -441,6 +444,51 @@ function bracketRoundName(value, raw = {}, source = {}) {
   };
 
   return names[round] || `Round ${round}`;
+}
+
+function inferPlayoffBracketFromSchedule(round, raw = {}) {
+  const timestamp = Number(raw.scheduled_at);
+  if (!Number.isFinite(timestamp)) return '';
+
+  const date = new Date(timestamp * 1000);
+  if (Number.isNaN(date.getTime())) return '';
+
+  const dateKey = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(date);
+
+  const lowerWindows = {
+    1: ['2026-09-15', '2026-09-17'],
+    2: ['2026-09-18', '2026-09-20'],
+    3: ['2026-09-21', '2026-09-23'],
+    4: ['2026-09-24', '2026-09-26'],
+    5: ['2026-09-27', '2026-09-29'],
+    6: ['2026-09-30', '2026-10-02'],
+    7: ['2026-10-03', '2026-10-05'],
+    8: ['2026-10-06', '2026-10-08']
+  };
+  const upperWindows = {
+    1: ['2026-09-12', '2026-09-14'],
+    2: ['2026-09-15', '2026-09-17'],
+    3: ['2026-09-18', '2026-09-20'],
+    4: ['2026-09-24', '2026-09-26'],
+    5: ['2026-09-30', '2026-10-02']
+  };
+
+  const inLowerWindow = isDateInRange(dateKey, lowerWindows[round]);
+  const inUpperWindow = isDateInRange(dateKey, upperWindows[round]);
+  if (inLowerWindow && !inUpperWindow) return 'losers';
+  if (inUpperWindow && !inLowerWindow) return 'winners';
+  return '';
+}
+
+function isDateInRange(dateKey, range) {
+  if (!range) return false;
+  const [start, end] = range;
+  return dateKey >= start && dateKey <= end;
 }
 
 function bracketSide(value) {

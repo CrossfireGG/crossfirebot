@@ -190,7 +190,6 @@ const SEASON6_WB_ROUND_OF_32_MATCHES = [
 const SEASON6_WB_ROUND_OF_32_PAIR_ORDER = new Map(
   SEASON6_WB_ROUND_OF_32_MATCHES.map(([teamA, teamB], index) => [matchPairKey(teamA, teamB), index])
 );
-const SEASON6_WB_ROUND_OF_32_PAIRS = new Set(SEASON6_WB_ROUND_OF_32_PAIR_ORDER.keys());
 
 const client = new Client({
   intents: [
@@ -1367,12 +1366,10 @@ function getRequestedRoundFilter(interaction) {
 
 function normalizeSeason6PlayoffMatch(match) {
   if (!match || !isPlayoffMatch(match)) return match;
-  if (!SEASON6_WB_ROUND_OF_32_PAIRS.has(matchPairKey(match.teamA, match.teamB))) return match;
-
   return {
     ...match,
-    round: 'Upper Bracket - Round 1',
-    categoryName: 'Upper Bracket - Round 1',
+    round: canonicalPlayoffRoundName(match.round || match.categoryName),
+    categoryName: canonicalPlayoffRoundName(match.categoryName || match.round),
     group: ''
   };
 }
