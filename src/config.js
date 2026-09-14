@@ -108,6 +108,7 @@ const defaultMatchChannelIds = {
 };
 
 const defaultRoundCategoryIds = {
+  'Upper Bracket - Round 1': '1548120902154068039',
   'WB Round of 32': '1548120902154068039'
 };
 

@@ -227,6 +227,9 @@ async function findOrCreateCategory(guild, config, roundName, everyoneRole, priv
   const mappedCategoryId = config.roundCategoryIds?.get(normalizeTeamKey(roundName));
   const mappedCategory = mappedCategoryId ? guild.channels.cache.get(mappedCategoryId) : null;
   if (mappedCategory?.type === ChannelType.GuildCategory) {
+    if (mappedCategory.name !== categoryName) {
+      await mappedCategory.setName(categoryName).catch(() => null);
+    }
     return mappedCategory;
   }
 

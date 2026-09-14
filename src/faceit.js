@@ -231,6 +231,9 @@ function extractRound(raw, source = {}) {
   if (String(source?.name || '').toLowerCase().includes('playoff')) {
     const bracketRound = bracketRoundName(raw.round ?? raw.round_number, raw, source);
     if (bracketRound) return bracketRound;
+
+    const combinedBracketLabel = normalizePlayoffRoundLabel(textCandidates.filter(Boolean).join(' '), raw);
+    if (combinedBracketLabel) return combinedBracketLabel;
   }
 
   const explicitBracketLabel = textCandidates
@@ -359,23 +362,30 @@ function normalizePlayoffRoundLabel(value, raw = {}) {
   const bracket = bracketSide(context || normalized);
 
   const losersRound = normalized.match(/\b(?:losers?|lower|lb)\s*round\s*(\d+)\b/);
-  if (losersRound) return `Losers Round ${losersRound[1]}`;
+  if (losersRound) return `Lower Bracket - Round ${losersRound[1]}`;
+
+  const genericBracketRound = normalized.match(/\bround\s*(\d+)\b/);
+  if (genericBracketRound && bracket) {
+    return bracket === 'losers'
+      ? `Lower Bracket - Round ${genericBracketRound[1]}`
+      : `Upper Bracket - Round ${genericBracketRound[1]}`;
+  }
 
   if (normalized.includes('losers final') || normalized.includes('lower final') || normalized.includes('lb final')) {
-    return 'Losers Final';
+    return 'Lower Bracket - Final';
   }
 
   if (normalized.includes('grand final')) return 'Grand Final (BO5)';
 
   if ((normalized.includes('winner') || normalized.includes('upper') || normalized.includes('wb')) && normalized.includes('final')) {
-    return 'WB Final';
+    return 'Upper Bracket - Round 5';
   }
 
-  if (normalized.includes('round of 32')) return bracket === 'losers' ? 'Losers Round 1' : 'WB Round of 32';
-  if (normalized.includes('round of 16')) return bracket === 'losers' ? 'Losers Round 1' : 'WB Round of 16';
-  if (normalized.includes('quarter')) return bracket === 'losers' ? 'Losers Round 2' : 'WB Quarterfinals';
-  if (normalized.includes('semi')) return bracket === 'losers' ? 'Losers Round 4' : 'WB Semifinals';
-  if (normalized.includes('final')) return bracket === 'losers' ? 'Losers Final' : 'WB Final';
+  if (normalized.includes('round of 32')) return bracket === 'losers' ? 'Lower Bracket - Round 1' : 'Upper Bracket - Round 1';
+  if (normalized.includes('round of 16')) return bracket === 'losers' ? 'Lower Bracket - Round 1' : 'Upper Bracket - Round 2';
+  if (normalized.includes('quarter')) return bracket === 'losers' ? 'Lower Bracket - Round 2' : 'Upper Bracket - Round 3';
+  if (normalized.includes('semi')) return bracket === 'losers' ? 'Lower Bracket - Round 4' : 'Upper Bracket - Round 4';
+  if (normalized.includes('final')) return bracket === 'losers' ? 'Lower Bracket - Final' : 'Upper Bracket - Round 5';
 
   return text;
 }
@@ -399,27 +409,27 @@ function bracketRoundName(value, raw = {}, source = {}) {
   if (sourceText.includes('playoff')) {
     if (bracket === 'losers') {
       const losersNames = {
-        1: 'Losers Round 1',
-        2: 'Losers Round 2',
-        3: 'Losers Round 3',
-        4: 'Losers Round 4',
-        5: 'Losers Round 5',
-        6: 'Losers Round 6',
-        7: 'Losers Round 7',
-        8: 'Losers Final'
+        1: 'Lower Bracket - Round 1',
+        2: 'Lower Bracket - Round 2',
+        3: 'Lower Bracket - Round 3',
+        4: 'Lower Bracket - Round 4',
+        5: 'Lower Bracket - Round 5',
+        6: 'Lower Bracket - Round 6',
+        7: 'Lower Bracket - Round 7',
+        8: 'Lower Bracket - Final'
       };
-      return losersNames[round] || `Losers Round ${round}`;
+      return losersNames[round] || `Lower Bracket - Round ${round}`;
     }
 
     const winnersNames = {
-      1: 'WB Round of 32',
-      2: 'WB Round of 16',
-      3: 'WB Quarterfinals',
-      4: 'WB Semifinals',
-      5: 'WB Final',
+      1: 'Upper Bracket - Round 1',
+      2: 'Upper Bracket - Round 2',
+      3: 'Upper Bracket - Round 3',
+      4: 'Upper Bracket - Round 4',
+      5: 'Upper Bracket - Round 5',
       6: 'Grand Final (BO5)'
     };
-    return winnersNames[round] || `WB Round ${round}`;
+    return winnersNames[round] || `Upper Bracket - Round ${round}`;
   }
 
   const names = {

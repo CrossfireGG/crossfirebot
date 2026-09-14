@@ -70,54 +70,94 @@ const SEASON_SCHEDULE = [
   { name: 'Round 3', start: 'September 6, 2026', end: 'September 8, 2026', defaultDate: 'September 7, 2026' },
   { name: 'Seeding Break', start: 'September 9, 2026', end: 'September 11, 2026', defaultDate: 'September 10, 2026' },
   { name: 'Playoff Stage', start: 'September 12, 2026', end: 'October 11, 2026', defaultDate: 'September 26, 2026' },
-  { name: 'WB Round of 32', start: 'September 12, 2026', end: 'September 14, 2026', defaultDate: 'September 13, 2026' },
-  { name: 'WB Round of 16 + Losers Round 1', start: 'September 15, 2026', end: 'September 17, 2026', defaultDate: 'September 16, 2026' },
-  { name: 'WB Quarterfinals + Losers Round 2', start: 'September 18, 2026', end: 'September 20, 2026', defaultDate: 'September 19, 2026' },
-  { name: 'Losers Round 3', start: 'September 21, 2026', end: 'September 23, 2026', defaultDate: 'September 22, 2026' },
-  { name: 'WB Semifinals + Losers Round 4', start: 'September 24, 2026', end: 'September 26, 2026', defaultDate: 'September 25, 2026' },
-  { name: 'Losers Round 5', start: 'September 27, 2026', end: 'September 29, 2026', defaultDate: 'September 28, 2026' },
-  { name: 'WB Final + Losers Round 6', start: 'September 30, 2026', end: 'October 2, 2026', defaultDate: 'October 1, 2026' },
-  { name: 'Losers Round 7', start: 'October 3, 2026', end: 'October 5, 2026', defaultDate: 'October 4, 2026' },
-  { name: 'Losers Final', start: 'October 6, 2026', end: 'October 8, 2026', defaultDate: 'October 7, 2026' },
+  { name: 'Upper Bracket - Round 1', start: 'September 12, 2026', end: 'September 14, 2026', defaultDate: 'September 13, 2026' },
+  { name: 'Upper Bracket - Round 2', start: 'September 15, 2026', end: 'September 17, 2026', defaultDate: 'September 16, 2026' },
+  { name: 'Lower Bracket - Round 1', start: 'September 15, 2026', end: 'September 17, 2026', defaultDate: 'September 16, 2026' },
+  { name: 'Upper Bracket - Round 3', start: 'September 18, 2026', end: 'September 20, 2026', defaultDate: 'September 19, 2026' },
+  { name: 'Lower Bracket - Round 2', start: 'September 18, 2026', end: 'September 20, 2026', defaultDate: 'September 19, 2026' },
+  { name: 'Lower Bracket - Round 3', start: 'September 21, 2026', end: 'September 23, 2026', defaultDate: 'September 22, 2026' },
+  { name: 'Upper Bracket - Round 4', start: 'September 24, 2026', end: 'September 26, 2026', defaultDate: 'September 25, 2026' },
+  { name: 'Lower Bracket - Round 4', start: 'September 24, 2026', end: 'September 26, 2026', defaultDate: 'September 25, 2026' },
+  { name: 'Lower Bracket - Round 5', start: 'September 27, 2026', end: 'September 29, 2026', defaultDate: 'September 28, 2026' },
+  { name: 'Upper Bracket - Round 5', start: 'September 30, 2026', end: 'October 2, 2026', defaultDate: 'October 1, 2026' },
+  { name: 'Lower Bracket - Round 6', start: 'September 30, 2026', end: 'October 2, 2026', defaultDate: 'October 1, 2026' },
+  { name: 'Lower Bracket - Round 7', start: 'October 3, 2026', end: 'October 5, 2026', defaultDate: 'October 4, 2026' },
+  { name: 'Lower Bracket - Final', start: 'October 6, 2026', end: 'October 8, 2026', defaultDate: 'October 7, 2026' },
   { name: 'Grand Final (BO5)', start: 'October 9, 2026', end: 'October 11, 2026', defaultDate: 'October 10, 2026' }
 ];
 
 const PLAYOFF_ROUND_FILTERS = {
+  'upper-r1': {
+    label: 'Upper Bracket - Round 1',
+    categories: ['Upper Bracket - Round 1', 'WB Round of 32']
+  },
+  'upper-r2-lower-r1': {
+    label: 'Upper Bracket - Round 2 + Lower Bracket - Round 1',
+    categories: ['Upper Bracket - Round 2', 'Lower Bracket - Round 1', 'WB Round of 16', 'Losers Round 1']
+  },
+  'upper-r3-lower-r2': {
+    label: 'Upper Bracket - Round 3 + Lower Bracket - Round 2',
+    categories: ['Upper Bracket - Round 3', 'Lower Bracket - Round 2', 'WB Quarterfinals', 'Losers Round 2']
+  },
+  'lower-r3': {
+    label: 'Lower Bracket - Round 3',
+    categories: ['Lower Bracket - Round 3', 'Losers Round 3']
+  },
+  'upper-r4-lower-r4': {
+    label: 'Upper Bracket - Round 4 + Lower Bracket - Round 4',
+    categories: ['Upper Bracket - Round 4', 'Lower Bracket - Round 4', 'WB Semifinals', 'Losers Round 4']
+  },
+  'lower-r5': {
+    label: 'Lower Bracket - Round 5',
+    categories: ['Lower Bracket - Round 5', 'Losers Round 5']
+  },
+  'upper-r5-lower-r6': {
+    label: 'Upper Bracket - Round 5 + Lower Bracket - Round 6',
+    categories: ['Upper Bracket - Round 5', 'Lower Bracket - Round 6', 'WB Final', 'Losers Round 6']
+  },
+  'lower-r7': {
+    label: 'Lower Bracket - Round 7',
+    categories: ['Lower Bracket - Round 7', 'Losers Round 7']
+  },
+  'lower-final': {
+    label: 'Lower Bracket - Final',
+    categories: ['Lower Bracket - Final', 'Losers Final']
+  },
   'wb-r32': {
-    label: 'WB Round of 32',
-    categories: ['WB Round of 32']
+    label: 'Upper Bracket - Round 1',
+    categories: ['Upper Bracket - Round 1', 'WB Round of 32']
   },
   'wb-r16-lb-r1': {
-    label: 'WB Round of 16 + Losers Round 1',
-    categories: ['WB Round of 16', 'Losers Round 1']
+    label: 'Upper Bracket - Round 2 + Lower Bracket - Round 1',
+    categories: ['Upper Bracket - Round 2', 'Lower Bracket - Round 1', 'WB Round of 16', 'Losers Round 1']
   },
   'wb-qf-lb-r2': {
-    label: 'WB Quarterfinals + Losers Round 2',
-    categories: ['WB Quarterfinals', 'Losers Round 2']
+    label: 'Upper Bracket - Round 3 + Lower Bracket - Round 2',
+    categories: ['Upper Bracket - Round 3', 'Lower Bracket - Round 2', 'WB Quarterfinals', 'Losers Round 2']
   },
   'lb-r3': {
-    label: 'Losers Round 3',
-    categories: ['Losers Round 3']
+    label: 'Lower Bracket - Round 3',
+    categories: ['Lower Bracket - Round 3', 'Losers Round 3']
   },
   'wb-sf-lb-r4': {
-    label: 'WB Semifinals + Losers Round 4',
-    categories: ['WB Semifinals', 'Losers Round 4']
+    label: 'Upper Bracket - Round 4 + Lower Bracket - Round 4',
+    categories: ['Upper Bracket - Round 4', 'Lower Bracket - Round 4', 'WB Semifinals', 'Losers Round 4']
   },
   'lb-r5': {
-    label: 'Losers Round 5',
-    categories: ['Losers Round 5']
+    label: 'Lower Bracket - Round 5',
+    categories: ['Lower Bracket - Round 5', 'Losers Round 5']
   },
   'wb-final-lb-r6': {
-    label: 'WB Final + Losers Round 6',
-    categories: ['WB Final', 'Losers Round 6']
+    label: 'Upper Bracket - Round 5 + Lower Bracket - Round 6',
+    categories: ['Upper Bracket - Round 5', 'Lower Bracket - Round 6', 'WB Final', 'Losers Round 6']
   },
   'lb-r7': {
-    label: 'Losers Round 7',
-    categories: ['Losers Round 7']
+    label: 'Lower Bracket - Round 7',
+    categories: ['Lower Bracket - Round 7', 'Losers Round 7']
   },
   'lb-final': {
-    label: 'Losers Final',
-    categories: ['Losers Final']
+    label: 'Lower Bracket - Final',
+    categories: ['Lower Bracket - Final', 'Losers Final']
   },
   'grand-final': {
     label: 'Grand Final (BO5)',
@@ -349,7 +389,7 @@ async function handleCommandHelp(interaction) {
     content: [
       '**CROSSFIRE Admin Commands**',
       '`/cf sync target:matches` - create/update FACEIT match rooms.',
-      '`/cf sync target:matches round:WB Round of 32` - sync one playoff round window only.',
+      '`/cf sync target:matches round:Upper Bracket - Round 1` - sync one playoff round window only.',
       '`/cf sync target:teams` - sync roles, captains, participants, and nicknames from the sheet.',
       '`/cf sync target:teams notify_captains:true` - also DM captains about missing players.',
       '`/cf audit target:matches` - check match rooms and permissions without creating channels.',
@@ -1323,8 +1363,8 @@ function normalizeSeason6PlayoffMatch(match) {
 
   return {
     ...match,
-    round: 'WB Round of 32',
-    categoryName: 'WB Round of 32',
+    round: 'Upper Bracket - Round 1',
+    categoryName: 'Upper Bracket - Round 1',
     group: ''
   };
 }
@@ -1368,19 +1408,19 @@ function getBracketSortIndex(match) {
 function getPlayoffRoundSortIndex(match) {
   const round = normalizeRoundCategory(match.categoryName || match.round);
   const order = [
-    ['wb round of 32'],
-    ['wb round of 16'],
-    ['losers round 1'],
-    ['wb quarterfinals'],
-    ['losers round 2'],
-    ['losers round 3'],
-    ['wb semifinals'],
-    ['losers round 4'],
-    ['losers round 5'],
-    ['wb final'],
-    ['losers round 6'],
-    ['losers round 7'],
-    ['losers final'],
+    ['upper bracket round 1', 'wb round of 32'],
+    ['upper bracket round 2', 'wb round of 16'],
+    ['lower bracket round 1', 'losers round 1'],
+    ['upper bracket round 3', 'wb quarterfinals'],
+    ['lower bracket round 2', 'losers round 2'],
+    ['lower bracket round 3', 'losers round 3'],
+    ['upper bracket round 4', 'wb semifinals'],
+    ['lower bracket round 4', 'losers round 4'],
+    ['lower bracket round 5', 'losers round 5'],
+    ['upper bracket round 5', 'wb final'],
+    ['lower bracket round 6', 'losers round 6'],
+    ['lower bracket round 7', 'losers round 7'],
+    ['lower bracket final', 'losers final'],
     ['grand final', 'grand final bo5']
   ];
   const index = order.findIndex((aliases) => aliases.includes(round));
@@ -1391,10 +1431,6 @@ function normalizeRoundCategory(value) {
   return String(value || '')
     .toLowerCase()
     .replace(/&/g, 'and')
-    .replace(/\bupper\b/g, 'wb')
-    .replace(/\bwinners?\b/g, 'wb')
-    .replace(/\blower\b/g, 'losers')
-    .replace(/\blb\b/g, 'losers')
     .replace(/\bquarter finals\b/g, 'quarterfinals')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
@@ -2360,16 +2396,19 @@ function getSeasonRoundInfo(match) {
 
   const text = `${stageName} ${roundName}`;
   if (text.includes('grand final')) return seasonWindow('Grand Final (BO5)');
-  if (text.includes('losers final') || text.includes('lower final')) return seasonWindow('Losers Final');
-  if (text.includes('losers round 7') || text.includes('lower round 7')) return seasonWindow('Losers Round 7');
-  if ((text.includes('winner') && text.includes('final')) || text.includes('wb final') || text.includes('upper final')) return seasonWindow('WB Final + Losers Round 6');
-  if (text.includes('losers round 6') || text.includes('lower round 6')) return seasonWindow('WB Final + Losers Round 6');
-  if (text.includes('losers round 5') || text.includes('lower round 5')) return seasonWindow('Losers Round 5');
-  if (text.includes('semi') || text.includes('losers round 4') || text.includes('lower round 4')) return seasonWindow('WB Semifinals + Losers Round 4');
-  if (text.includes('losers round 3') || text.includes('lower round 3')) return seasonWindow('Losers Round 3');
-  if (text.includes('quarter') || text.includes('losers round 2') || text.includes('lower round 2')) return seasonWindow('WB Quarterfinals + Losers Round 2');
-  if (text.includes('round of 16') || text.includes('losers round 1') || text.includes('lower round 1')) return seasonWindow('WB Round of 16 + Losers Round 1');
-  if (text.includes('round of 32')) return seasonWindow('WB Round of 32');
+  if (text.includes('lower bracket final') || text.includes('losers final') || text.includes('lower final')) return seasonWindow('Lower Bracket - Final');
+  if (text.includes('lower bracket round 7') || text.includes('losers round 7') || text.includes('lower round 7')) return seasonWindow('Lower Bracket - Round 7');
+  if (text.includes('upper bracket round 5') || (text.includes('winner') && text.includes('final')) || text.includes('wb final') || text.includes('upper final')) return seasonWindow('Upper Bracket - Round 5');
+  if (text.includes('lower bracket round 6') || text.includes('losers round 6') || text.includes('lower round 6')) return seasonWindow('Lower Bracket - Round 6');
+  if (text.includes('lower bracket round 5') || text.includes('losers round 5') || text.includes('lower round 5')) return seasonWindow('Lower Bracket - Round 5');
+  if (text.includes('lower bracket round 4') || text.includes('losers round 4') || text.includes('lower round 4')) return seasonWindow('Lower Bracket - Round 4');
+  if (text.includes('upper bracket round 4') || text.includes('semi')) return seasonWindow('Upper Bracket - Round 4');
+  if (text.includes('lower bracket round 3') || text.includes('losers round 3') || text.includes('lower round 3')) return seasonWindow('Lower Bracket - Round 3');
+  if (text.includes('lower bracket round 2') || text.includes('losers round 2') || text.includes('lower round 2')) return seasonWindow('Lower Bracket - Round 2');
+  if (text.includes('upper bracket round 3') || text.includes('quarter')) return seasonWindow('Upper Bracket - Round 3');
+  if (text.includes('upper bracket round 2') || text.includes('round of 16')) return seasonWindow('Upper Bracket - Round 2');
+  if (text.includes('lower bracket round 1') || text.includes('losers round 1') || text.includes('lower round 1')) return seasonWindow('Lower Bracket - Round 1');
+  if (text.includes('upper bracket round 1') || text.includes('round of 32')) return seasonWindow('Upper Bracket - Round 1');
 
   if (stageName.includes('playoff')) return seasonWindow('Playoff Stage');
   return null;

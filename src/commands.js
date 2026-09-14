@@ -5,15 +5,15 @@ import {
 
 const roundChoices = [
   { name: 'All detected rounds', value: 'all' },
-  { name: 'WB Round of 32', value: 'wb-r32' },
-  { name: 'WB Round of 16 + Losers Round 1', value: 'wb-r16-lb-r1' },
-  { name: 'WB Quarterfinals + Losers Round 2', value: 'wb-qf-lb-r2' },
-  { name: 'Losers Round 3', value: 'lb-r3' },
-  { name: 'WB Semifinals + Losers Round 4', value: 'wb-sf-lb-r4' },
-  { name: 'Losers Round 5', value: 'lb-r5' },
-  { name: 'WB Final + Losers Round 6', value: 'wb-final-lb-r6' },
-  { name: 'Losers Round 7', value: 'lb-r7' },
-  { name: 'Losers Final', value: 'lb-final' },
+  { name: 'Upper Bracket - Round 1', value: 'upper-r1' },
+  { name: 'Upper Bracket - Round 2 + Lower Bracket - Round 1', value: 'upper-r2-lower-r1' },
+  { name: 'Upper Bracket - Round 3 + Lower Bracket - Round 2', value: 'upper-r3-lower-r2' },
+  { name: 'Lower Bracket - Round 3', value: 'lower-r3' },
+  { name: 'Upper Bracket - Round 4 + Lower Bracket - Round 4', value: 'upper-r4-lower-r4' },
+  { name: 'Lower Bracket - Round 5', value: 'lower-r5' },
+  { name: 'Upper Bracket - Round 5 + Lower Bracket - Round 6', value: 'upper-r5-lower-r6' },
+  { name: 'Lower Bracket - Round 7', value: 'lower-r7' },
+  { name: 'Lower Bracket - Final', value: 'lower-final' },
   { name: 'Grand Final (BO5)', value: 'grand-final' }
 ];
 

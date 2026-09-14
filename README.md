@@ -5,7 +5,7 @@ This bot creates private Discord match channels from a FACEIT Crossfire bracket.
 What it does:
 
 - Reads matches from a FACEIT championship or tournament.
-- Creates one Discord category per FACEIT playoff round, such as `WB Round of 32` or `Losers Round 1`.
+- Creates one Discord category per FACEIT playoff round, such as `Upper Bracket - Round 1` or `Lower Bracket - Round 1`.
 - Creates one private channel per match inside the matching round category.
 - Names match channels from the teams, preserving group-letter prefixes only for old group-stage matches.
 - Adds `🟡-` to a match channel name when it is scheduled and `🟢-` when FACEIT reports it finished.
@@ -100,7 +100,7 @@ SCL sends `demo_ready` once per map. The bot verifies the SCL JWT, calls SCL for
 Optional round windows:
 
 ```env
-ROUND_WINDOWS=WB Round of 32=2026-09-12..2026-09-14;Losers Round 1=2026-09-15..2026-09-17
+ROUND_WINDOWS=Upper Bracket - Round 1=2026-09-12..2026-09-14;Lower Bracket - Round 1=2026-09-15..2026-09-17
 ```
 
 Optional manually-created match channel mapping:
@@ -112,7 +112,7 @@ MATCH_CHANNEL_IDS=Team A|Team B=channel_id;Other Team A|Other Team B=channel_id
 Optional manually-created round category mapping:
 
 ```env
-ROUND_CATEGORY_IDS=WB Round of 32=1548120902154068039;Losers Round 1=channel_category_id
+ROUND_CATEGORY_IDS=Upper Bracket - Round 1=1548120902154068039;Lower Bracket - Round 1=channel_category_id
 ```
 
 ## Invite Link
@@ -124,7 +124,7 @@ https://discord.com/oauth2/authorize?client_id=1523887433047867423&permissions=2
 Then run these in Discord:
 
 - `/cf sync target:matches` creates/updates round categories and private match channels from FACEIT.
-- `/cf sync target:matches round:WB Round of 32` creates/updates only that playoff round window.
+- `/cf sync target:matches round:Upper Bracket - Round 1` creates/updates only that playoff round window.
 - `/cf sync target:teams` updates team roles, participant roles, captain roles, and nicknames from the Google Sheet.
 - `/cf sync target:teams notify_captains:true` also DMs captains about missing players.
 - `/cf audit target:matches` checks FACEIT match channels, team role mappings, and permissions without creating channels.
@@ -144,7 +144,7 @@ These slash commands are restricted to Discord admins, users with Manage Server,
 Inside each match channel:
 
 - The pinned first message pings both team roles, shows the FACEIT room, the scheduling window, and the default round date at 8:00 PM EST.
-- Playoff match messages use the FACEIT playoff round name, including WB/LB bracket labels when FACEIT provides them.
+- Playoff match messages use the FACEIT playoff bracket side and round, such as `Upper Bracket - Round 1` or `Lower Bracket - Round 1`.
 - If FACEIT already has a scheduled time, the pinned message shows that below the FACEIT room link.
 - The pinned first message explains the full schedule flow: one team member proposes with `!schedule`, a member from the other team confirms with `!accept`, then admins are alerted to schedule it on FACEIT.
 - Scheduling is command-only in match rooms; the bot does not add a propose-time button.
@@ -163,15 +163,15 @@ Season 6 schedule windows and default round dates are built into the bot:
 - Round 1: August 31, 2026 - September 2, 2026, default September 1, 2026 at 8:00 PM EST
 - Round 2: September 3, 2026 - September 5, 2026, default September 4, 2026 at 8:00 PM EST
 - Round 3: September 6, 2026 - September 8, 2026, default September 7, 2026 at 8:00 PM EST
-- WB Round of 32: September 12, 2026 - September 14, 2026, default September 13, 2026 at 8:00 PM EST
-- WB Round of 16 + Losers Round 1: September 15, 2026 - September 17, 2026, default September 16, 2026 at 8:00 PM EST
-- WB Quarterfinals + Losers Round 2: September 18, 2026 - September 20, 2026, default September 19, 2026 at 8:00 PM EST
-- Losers Round 3: September 21, 2026 - September 23, 2026, default September 22, 2026 at 8:00 PM EST
-- WB Semifinals + Losers Round 4: September 24, 2026 - September 26, 2026, default September 25, 2026 at 8:00 PM EST
-- Losers Round 5: September 27, 2026 - September 29, 2026, default September 28, 2026 at 8:00 PM EST
-- WB Final + Losers Round 6: September 30, 2026 - October 2, 2026, default October 1, 2026 at 8:00 PM EST
-- Losers Round 7: October 3, 2026 - October 5, 2026, default October 4, 2026 at 8:00 PM EST
-- Losers Final: October 6, 2026 - October 8, 2026, default October 7, 2026 at 8:00 PM EST
+- Upper Bracket - Round 1: September 12, 2026 - September 14, 2026, default September 13, 2026 at 8:00 PM EST
+- Upper Bracket - Round 2 and Lower Bracket - Round 1: September 15, 2026 - September 17, 2026, default September 16, 2026 at 8:00 PM EST
+- Upper Bracket - Round 3 and Lower Bracket - Round 2: September 18, 2026 - September 20, 2026, default September 19, 2026 at 8:00 PM EST
+- Lower Bracket - Round 3: September 21, 2026 - September 23, 2026, default September 22, 2026 at 8:00 PM EST
+- Upper Bracket - Round 4 and Lower Bracket - Round 4: September 24, 2026 - September 26, 2026, default September 25, 2026 at 8:00 PM EST
+- Lower Bracket - Round 5: September 27, 2026 - September 29, 2026, default September 28, 2026 at 8:00 PM EST
+- Upper Bracket - Round 5 and Lower Bracket - Round 6: September 30, 2026 - October 2, 2026, default October 1, 2026 at 8:00 PM EST
+- Lower Bracket - Round 7: October 3, 2026 - October 5, 2026, default October 4, 2026 at 8:00 PM EST
+- Lower Bracket - Final: October 6, 2026 - October 8, 2026, default October 7, 2026 at 8:00 PM EST
 - Grand Final (BO5): October 9, 2026 - October 11, 2026, default October 10, 2026 at 8:00 PM EST
 
 Reschedule rules:
