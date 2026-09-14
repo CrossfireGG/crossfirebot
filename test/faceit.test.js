@@ -64,7 +64,7 @@ test('keeps winners bracket playoff round names distinct', async (context) => {
   const match = await new FaceitClient('api-key', []).getMatch('match-1', {
     type: 'championship',
     id: 'playoffs',
-    name: 'Playoff - CROSSFIRE Season 6'
+    name: 'CROSSFIRE Season 6 - Playoffs'
   });
 
   assert.equal(match.categoryName, 'WB Round of 32');
@@ -86,7 +86,7 @@ test('keeps losers bracket playoff round names distinct', async (context) => {
   const match = await new FaceitClient('api-key', []).getMatch('match-1', {
     type: 'championship',
     id: 'playoffs',
-    name: 'Playoff - CROSSFIRE Season 6'
+    name: 'CROSSFIRE Season 6 - Playoffs'
   });
 
   assert.equal(match.categoryName, 'Losers Round 2');
