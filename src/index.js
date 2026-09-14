@@ -991,6 +991,10 @@ async function handleAuditMatches(interaction) {
         const matchForDiscord = clearDiscordScheduleStatus(match);
         const discordIds = await repairMatchChannel(guild, config, audit.channel, matchForDiscord);
         await saveMatch(matchForDiscord, discordIds);
+        const repairedChannel = await guild.channels.fetch(discordIds.channelId).catch(() => audit.channel);
+        if (repairedChannel?.isTextBased?.()) {
+          await upsertMatchIntroMessage(repairedChannel, matchForDiscord);
+        }
         result.fixed += 1;
       } catch (error) {
         result.problems.push(`${match.teamA} vs ${match.teamB}: fix failed - ${error.message}`);
@@ -2287,12 +2291,13 @@ function isIntroMessage(message, faceitUrl, matchTitle) {
 }
 
 function buildMatchIntroMessage(channel, match, discordIds = {}) {
-  const roundInfo = getSeasonRoundInfo(match);
-  const scheduleWindow = getScheduleWindowForMatch(match);
-  const matchDetails = getMatchDisplayDetails(match);
+  const displayMatch = normalizeMatchForDisplay(match);
+  const roundInfo = getSeasonRoundInfo(displayMatch);
+  const scheduleWindow = getScheduleWindowForMatch(displayMatch);
+  const matchDetails = getMatchDisplayDetails(displayMatch);
   const teamMentions = [
-    discordIds.teamARoleId ? `<@&${discordIds.teamARoleId}>` : `**${match.teamA}**`,
-    discordIds.teamBRoleId ? `<@&${discordIds.teamBRoleId}>` : `**${match.teamB}**`
+    discordIds.teamARoleId ? `<@&${discordIds.teamARoleId}>` : `**${displayMatch.teamA}**`,
+    discordIds.teamBRoleId ? `<@&${discordIds.teamBRoleId}>` : `**${displayMatch.teamB}**`
   ].join(' vs ');
   const ticketChannel = config.rosterTicketChannelId
     ? `<#${config.rosterTicketChannelId}>`
@@ -2302,7 +2307,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
   return [
     teamMentions,
     '',
-    `**${match.teamA} vs ${match.teamB}**`,
+    `**${displayMatch.teamA} vs ${displayMatch.teamB}**`,
     '',
     matchDetails.stage ? `Stage: **${matchDetails.stage}**` : null,
     `Round: **${matchDetails.round}**`,
@@ -2310,8 +2315,8 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     scheduleWindow ? `${scheduleWindow.label}: **${scheduleWindow.start} - ${scheduleWindow.end}**` : 'Scheduling window: **not configured yet**',
     roundInfo ? `Default match date/time: **${roundInfo.defaultDate} at 8:00 PM EDT**` : 'Default match date/time: **admins will announce**',
     `Discord match chat: <#${channel.id}>`,
-    faceitRoomLine(match),
-    getFaceitScheduledTimeLine(match),
+    faceitRoomLine(displayMatch),
+    getFaceitScheduledTimeLine(displayMatch),
     '',
     '**How to schedule this match**',
     '1. One team member posts `!schedule 9/14/2026 8 PM EDT`, `!schedule Tuesday 3 PM EDT`, or `!schedule September 14 8:00 PM EDT`.',
@@ -2324,7 +2329,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     '`!propose September 14 8:00 PM EDT` - same as `!schedule`',
     '`!reschedule September 14 9:00 PM EDT` - team member requests a new time',
     'Schedules and reschedules must stay inside this match window. Reschedules within 24 hours of match time require admin override.',
-    isGroupStageMatch(match)
+    isGroupStageMatch(displayMatch)
       ? 'Group Stage note: any Group Stage match can be scheduled by mutual agreement from August 31, 2026 through September 8, 2026.'
       : 'Playoff note: teams may agree to schedule their match any time during the assigned three-day window.',
     `Roster changes: go to ${ticketChannel}.`,
@@ -2542,6 +2547,70 @@ async function handleAdminScheduleDecision(interaction, approved) {
   }
 }
 
+function normalizeMatchForDisplay(match) {
+  if (!match || !isPlayoffMatch(match)) return match;
+
+  const round = canonicalPlayoffRoundName(match.round || match.categoryName);
+  const categoryName = canonicalPlayoffRoundName(match.categoryName || match.round);
+  return {
+    ...match,
+    round,
+    categoryName
+  };
+}
+
+function canonicalPlayoffRoundName(value) {
+  const normalized = normalizeRoundCategory(value);
+  const names = new Map([
+    ['wb round of 32', 'Upper Bracket - Round 1'],
+    ['winner bracket round 1', 'Upper Bracket - Round 1'],
+    ['winners bracket round 1', 'Upper Bracket - Round 1'],
+    ['upper bracket round 1', 'Upper Bracket - Round 1'],
+    ['wb round of 16', 'Upper Bracket - Round 2'],
+    ['winner bracket round 2', 'Upper Bracket - Round 2'],
+    ['winners bracket round 2', 'Upper Bracket - Round 2'],
+    ['upper bracket round 2', 'Upper Bracket - Round 2'],
+    ['wb quarterfinals', 'Upper Bracket - Round 3'],
+    ['wb quarter finals', 'Upper Bracket - Round 3'],
+    ['upper bracket round 3', 'Upper Bracket - Round 3'],
+    ['wb semifinals', 'Upper Bracket - Round 4'],
+    ['wb semi finals', 'Upper Bracket - Round 4'],
+    ['upper bracket round 4', 'Upper Bracket - Round 4'],
+    ['wb final', 'Upper Bracket - Round 5'],
+    ['upper bracket final', 'Upper Bracket - Round 5'],
+    ['upper bracket round 5', 'Upper Bracket - Round 5'],
+    ['losers round 1', 'Lower Bracket - Round 1'],
+    ['lower round 1', 'Lower Bracket - Round 1'],
+    ['lower bracket round 1', 'Lower Bracket - Round 1'],
+    ['losers round 2', 'Lower Bracket - Round 2'],
+    ['lower round 2', 'Lower Bracket - Round 2'],
+    ['lower bracket round 2', 'Lower Bracket - Round 2'],
+    ['losers round 3', 'Lower Bracket - Round 3'],
+    ['lower round 3', 'Lower Bracket - Round 3'],
+    ['lower bracket round 3', 'Lower Bracket - Round 3'],
+    ['losers round 4', 'Lower Bracket - Round 4'],
+    ['lower round 4', 'Lower Bracket - Round 4'],
+    ['lower bracket round 4', 'Lower Bracket - Round 4'],
+    ['losers round 5', 'Lower Bracket - Round 5'],
+    ['lower round 5', 'Lower Bracket - Round 5'],
+    ['lower bracket round 5', 'Lower Bracket - Round 5'],
+    ['losers round 6', 'Lower Bracket - Round 6'],
+    ['lower round 6', 'Lower Bracket - Round 6'],
+    ['lower bracket round 6', 'Lower Bracket - Round 6'],
+    ['losers round 7', 'Lower Bracket - Round 7'],
+    ['lower round 7', 'Lower Bracket - Round 7'],
+    ['lower bracket round 7', 'Lower Bracket - Round 7'],
+    ['losers final', 'Lower Bracket - Round 8'],
+    ['lower final', 'Lower Bracket - Round 8'],
+    ['lower bracket final', 'Lower Bracket - Round 8'],
+    ['lower bracket round 8', 'Lower Bracket - Round 8'],
+    ['grand final', 'Grand Final (BO5)'],
+    ['grand final bo5', 'Grand Final (BO5)']
+  ]);
+
+  return names.get(normalized) || String(value || 'Playoff Stage');
+}
+
 async function findStoredMatchFromAdminMessage(message, channelId) {
   if (channelId) {
     const storedByChannel = await getStoredMatchByChannel(channelId);
@@ -2701,7 +2770,8 @@ function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) 
 }
 
 function getScheduleWindowForMatch(match) {
-  const configuredWindow = config.roundWindows[String(match.round || '').toLowerCase()];
+  const configuredWindow = config.roundWindows[String(match.round || '').toLowerCase()] ||
+    config.roundWindows[String(canonicalPlayoffRoundName(match.round || match.categoryName)).toLowerCase()];
   if (configuredWindow) {
     return {
       ...configuredWindow,
