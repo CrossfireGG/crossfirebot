@@ -163,16 +163,16 @@ Season 6 schedule windows and default round dates are built into the bot:
 - Round 1: August 31, 2026 - September 2, 2026, default September 1, 2026 at 8:00 PM EST
 - Round 2: September 3, 2026 - September 5, 2026, default September 4, 2026 at 8:00 PM EST
 - Round 3: September 6, 2026 - September 8, 2026, default September 7, 2026 at 8:00 PM EST
-- Upper Bracket - Round 1: September 12, 2026 - September 14, 2026, default September 14, 2026 at 8:00 PM EDT
-- Upper Bracket - Round 2 and Lower Bracket - Round 1: September 15, 2026 - September 17, 2026, default September 16, 2026 at 8:00 PM EDT
-- Upper Bracket - Round 3 and Lower Bracket - Round 2: September 18, 2026 - September 20, 2026, default September 19, 2026 at 8:00 PM EDT
-- Lower Bracket - Round 3: September 21, 2026 - September 23, 2026, default September 22, 2026 at 8:00 PM EDT
-- Upper Bracket - Round 4 and Lower Bracket - Round 4: September 24, 2026 - September 26, 2026, default September 25, 2026 at 8:00 PM EDT
-- Lower Bracket - Round 5: September 27, 2026 - September 29, 2026, default September 28, 2026 at 8:00 PM EDT
-- Upper Bracket - Round 5 and Lower Bracket - Round 6: September 30, 2026 - October 2, 2026, default October 1, 2026 at 8:00 PM EDT
-- Lower Bracket - Round 7: October 3, 2026 - October 5, 2026, default October 4, 2026 at 8:00 PM EDT
-- Lower Bracket - Round 8: October 6, 2026 - October 8, 2026, default October 7, 2026 at 8:00 PM EDT
-- Grand Final (BO5): October 9, 2026 - October 11, 2026, default October 10, 2026 at 8:00 PM EDT
+- Upper Bracket - Round 1: September 12, 2026 - September 14, 2026, default Mon, 14 Sep 2026, 20:00 EDT
+- Upper Bracket - Round 2 and Lower Bracket - Round 1: September 15, 2026 - September 17, 2026, default Wed, 16 Sep 2026, 20:00 EDT
+- Upper Bracket - Round 3 and Lower Bracket - Round 2: September 18, 2026 - September 20, 2026, default Sat, 19 Sep 2026, 20:00 EDT
+- Lower Bracket - Round 3: September 21, 2026 - September 23, 2026, default Tue, 22 Sep 2026, 20:00 EDT
+- Upper Bracket - Round 4 and Lower Bracket - Round 4: September 24, 2026 - September 26, 2026, default Fri, 25 Sep 2026, 20:00 EDT
+- Lower Bracket - Round 5: September 27, 2026 - September 29, 2026, default Mon, 28 Sep 2026, 20:00 EDT
+- Upper Bracket - Round 5 and Lower Bracket - Round 6: September 30, 2026 - October 2, 2026, default Thu, 01 Oct 2026, 20:00 EDT
+- Lower Bracket - Round 7: October 3, 2026 - October 5, 2026, default Sun, 04 Oct 2026, 20:00 EDT
+- Lower Bracket - Round 8: October 6, 2026 - October 8, 2026, default Wed, 07 Oct 2026, 20:00 EDT
+- Grand Final (BO5): October 9, 2026 - October 11, 2026, default Saturday, 10 Oct 2026, 20:00 EDT
 
 Reschedule rules:
 

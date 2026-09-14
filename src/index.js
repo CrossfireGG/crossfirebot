@@ -70,20 +70,20 @@ const SEASON_SCHEDULE = [
   { name: 'Round 3', start: 'September 6, 2026', end: 'September 8, 2026', defaultDate: 'September 7, 2026' },
   { name: 'Seeding Break', start: 'September 9, 2026', end: 'September 11, 2026', defaultDate: 'September 10, 2026' },
   { name: 'Playoff Stage', start: 'September 12, 2026', end: 'October 11, 2026', defaultDate: 'September 26, 2026' },
-  { name: 'Upper Bracket - Round 1', start: 'September 12, 2026', end: 'September 14, 2026', defaultDate: 'September 14, 2026' },
-  { name: 'Upper Bracket - Round 2', start: 'September 15, 2026', end: 'September 17, 2026', defaultDate: 'September 16, 2026' },
-  { name: 'Lower Bracket - Round 1', start: 'September 15, 2026', end: 'September 17, 2026', defaultDate: 'September 16, 2026' },
-  { name: 'Upper Bracket - Round 3', start: 'September 18, 2026', end: 'September 20, 2026', defaultDate: 'September 19, 2026' },
-  { name: 'Lower Bracket - Round 2', start: 'September 18, 2026', end: 'September 20, 2026', defaultDate: 'September 19, 2026' },
-  { name: 'Lower Bracket - Round 3', start: 'September 21, 2026', end: 'September 23, 2026', defaultDate: 'September 22, 2026' },
-  { name: 'Upper Bracket - Round 4', start: 'September 24, 2026', end: 'September 26, 2026', defaultDate: 'September 25, 2026' },
-  { name: 'Lower Bracket - Round 4', start: 'September 24, 2026', end: 'September 26, 2026', defaultDate: 'September 25, 2026' },
-  { name: 'Lower Bracket - Round 5', start: 'September 27, 2026', end: 'September 29, 2026', defaultDate: 'September 28, 2026' },
-  { name: 'Upper Bracket - Round 5', start: 'September 30, 2026', end: 'October 2, 2026', defaultDate: 'October 1, 2026' },
-  { name: 'Lower Bracket - Round 6', start: 'September 30, 2026', end: 'October 2, 2026', defaultDate: 'October 1, 2026' },
-  { name: 'Lower Bracket - Round 7', start: 'October 3, 2026', end: 'October 5, 2026', defaultDate: 'October 4, 2026' },
-  { name: 'Lower Bracket - Round 8', start: 'October 6, 2026', end: 'October 8, 2026', defaultDate: 'October 7, 2026' },
-  { name: 'Grand Final (BO5)', start: 'October 9, 2026', end: 'October 11, 2026', defaultDate: 'October 10, 2026' }
+  { name: 'Upper Bracket - Round 1', start: 'September 12, 2026', end: 'September 14, 2026', defaultDate: 'September 14, 2026', defaultDateTime: 'Mon, 14 Sep 2026, 20:00 EDT' },
+  { name: 'Upper Bracket - Round 2', start: 'September 15, 2026', end: 'September 17, 2026', defaultDate: 'September 16, 2026', defaultDateTime: 'Wed, 16 Sep 2026, 20:00 EDT' },
+  { name: 'Lower Bracket - Round 1', start: 'September 15, 2026', end: 'September 17, 2026', defaultDate: 'September 16, 2026', defaultDateTime: 'Wed, 16 Sep 2026, 20:00 EDT' },
+  { name: 'Upper Bracket - Round 3', start: 'September 18, 2026', end: 'September 20, 2026', defaultDate: 'September 19, 2026', defaultDateTime: 'Sat, 19 Sep 2026, 20:00 EDT' },
+  { name: 'Lower Bracket - Round 2', start: 'September 18, 2026', end: 'September 20, 2026', defaultDate: 'September 19, 2026', defaultDateTime: 'Sat, 19 Sep 2026, 20:00 EDT' },
+  { name: 'Lower Bracket - Round 3', start: 'September 21, 2026', end: 'September 23, 2026', defaultDate: 'September 22, 2026', defaultDateTime: 'Tue, 22 Sep 2026, 20:00 EDT' },
+  { name: 'Upper Bracket - Round 4', start: 'September 24, 2026', end: 'September 26, 2026', defaultDate: 'September 25, 2026', defaultDateTime: 'Fri, 25 Sep 2026, 20:00 EDT' },
+  { name: 'Lower Bracket - Round 4', start: 'September 24, 2026', end: 'September 26, 2026', defaultDate: 'September 25, 2026', defaultDateTime: 'Fri, 25 Sep 2026, 20:00 EDT' },
+  { name: 'Lower Bracket - Round 5', start: 'September 27, 2026', end: 'September 29, 2026', defaultDate: 'September 28, 2026', defaultDateTime: 'Mon, 28 Sep 2026, 20:00 EDT' },
+  { name: 'Upper Bracket - Round 5', start: 'September 30, 2026', end: 'October 2, 2026', defaultDate: 'October 1, 2026', defaultDateTime: 'Thu, 01 Oct 2026, 20:00 EDT' },
+  { name: 'Lower Bracket - Round 6', start: 'September 30, 2026', end: 'October 2, 2026', defaultDate: 'October 1, 2026', defaultDateTime: 'Thu, 01 Oct 2026, 20:00 EDT' },
+  { name: 'Lower Bracket - Round 7', start: 'October 3, 2026', end: 'October 5, 2026', defaultDate: 'October 4, 2026', defaultDateTime: 'Sun, 04 Oct 2026, 20:00 EDT' },
+  { name: 'Lower Bracket - Round 8', start: 'October 6, 2026', end: 'October 8, 2026', defaultDate: 'October 7, 2026', defaultDateTime: 'Wed, 07 Oct 2026, 20:00 EDT' },
+  { name: 'Grand Final (BO5)', start: 'October 9, 2026', end: 'October 11, 2026', defaultDate: 'October 10, 2026', defaultDateTime: 'Saturday, 10 Oct 2026, 20:00 EDT' }
 ];
 
 const PLAYOFF_ROUND_FILTERS = {
@@ -2312,8 +2312,8 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     matchDetails.stage ? `Stage: **${matchDetails.stage}**` : null,
     `Round: **${matchDetails.round}**`,
     matchDetails.group ? `Group: **${matchDetails.group}**` : null,
-    scheduleWindow ? `${scheduleWindow.label}: **${scheduleWindow.start} - ${scheduleWindow.end}**` : 'Scheduling window: **not configured yet**',
-    roundInfo ? `Default match date/time: **${roundInfo.defaultDate} at 8:00 PM EDT**` : 'Default match date/time: **admins will announce**',
+    scheduleWindow ? `${scheduleWindow.label}: **${formatScheduleWindow(scheduleWindow)}**` : 'Scheduling window: **not configured yet**',
+    roundInfo ? `Default match date/time: **${formatDefaultMatchDateTime(roundInfo)}**` : 'Default match date/time: **admins will announce**',
     `Discord match chat: <#${channel.id}>`,
     faceitRoomLine(displayMatch),
     getFaceitScheduledTimeLine(displayMatch),
@@ -2341,6 +2341,15 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
 
 function getAdminNotificationLine(channel) {
   return 'admins are notified and pinged to schedule it on FACEIT.';
+}
+
+function formatScheduleWindow(window) {
+  if (window.displayWindow) return window.displayWindow;
+  return `${window.start} - ${window.end}`;
+}
+
+function formatDefaultMatchDateTime(roundInfo) {
+  return roundInfo.defaultDateTime || `${roundInfo.defaultDate} at 8:00 PM EDT`;
 }
 
 function getMatchDisplayDetails(match) {
@@ -2747,8 +2756,8 @@ function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) 
   };
 
   if (window && proposedDate) {
-    const start = parseScheduleText(`${window.start} 12:00 AM EST`);
-    const end = parseScheduleText(`${window.end} 11:59 PM EST`);
+    const start = parseScheduleText(`${window.start} 12:00 AM ET`);
+    const end = parseScheduleText(`${window.end} 11:59 PM ET`);
     if (start && end && (proposedDate < start || proposedDate > end)) {
       return {
         ...result,
