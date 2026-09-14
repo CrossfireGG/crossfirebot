@@ -114,3 +114,25 @@ test('combines separate playoff bracket side and round fields', async (context) 
   assert.equal(match.categoryName, 'Upper Bracket - Round 2');
   assert.equal(match.round, 'Upper Bracket - Round 2');
 });
+
+test('uses lower bracket round 8 instead of lower bracket final', async (context) => {
+  context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+    match_id: 'match-1',
+    status: 'SCHEDULED',
+    round: 8,
+    bracket_name: 'Lower Bracket',
+    teams: {
+      faction1: { name: 'Team One' },
+      faction2: { name: 'Team Two' }
+    }
+  }), { status: 200 }));
+
+  const match = await new FaceitClient('api-key', []).getMatch('match-1', {
+    type: 'championship',
+    id: 'playoffs',
+    name: 'CROSSFIRE Season 6 - Playoffs'
+  });
+
+  assert.equal(match.categoryName, 'Lower Bracket - Round 8');
+  assert.equal(match.round, 'Lower Bracket - Round 8');
+});

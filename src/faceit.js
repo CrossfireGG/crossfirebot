@@ -372,7 +372,7 @@ function normalizePlayoffRoundLabel(value, raw = {}) {
   }
 
   if (normalized.includes('losers final') || normalized.includes('lower final') || normalized.includes('lb final')) {
-    return 'Lower Bracket - Final';
+    return 'Lower Bracket - Round 8';
   }
 
   if (normalized.includes('grand final')) return 'Grand Final (BO5)';
@@ -385,7 +385,7 @@ function normalizePlayoffRoundLabel(value, raw = {}) {
   if (normalized.includes('round of 16')) return bracket === 'losers' ? 'Lower Bracket - Round 1' : 'Upper Bracket - Round 2';
   if (normalized.includes('quarter')) return bracket === 'losers' ? 'Lower Bracket - Round 2' : 'Upper Bracket - Round 3';
   if (normalized.includes('semi')) return bracket === 'losers' ? 'Lower Bracket - Round 4' : 'Upper Bracket - Round 4';
-  if (normalized.includes('final')) return bracket === 'losers' ? 'Lower Bracket - Final' : 'Upper Bracket - Round 5';
+  if (normalized.includes('final')) return bracket === 'losers' ? 'Lower Bracket - Round 8' : 'Upper Bracket - Round 5';
 
   return text;
 }
@@ -416,7 +416,7 @@ function bracketRoundName(value, raw = {}, source = {}) {
         5: 'Lower Bracket - Round 5',
         6: 'Lower Bracket - Round 6',
         7: 'Lower Bracket - Round 7',
-        8: 'Lower Bracket - Final'
+        8: 'Lower Bracket - Round 8'
       };
       return losersNames[round] || `Lower Bracket - Round ${round}`;
     }

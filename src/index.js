@@ -70,7 +70,7 @@ const SEASON_SCHEDULE = [
   { name: 'Round 3', start: 'September 6, 2026', end: 'September 8, 2026', defaultDate: 'September 7, 2026' },
   { name: 'Seeding Break', start: 'September 9, 2026', end: 'September 11, 2026', defaultDate: 'September 10, 2026' },
   { name: 'Playoff Stage', start: 'September 12, 2026', end: 'October 11, 2026', defaultDate: 'September 26, 2026' },
-  { name: 'Upper Bracket - Round 1', start: 'September 12, 2026', end: 'September 14, 2026', defaultDate: 'September 13, 2026' },
+  { name: 'Upper Bracket - Round 1', start: 'September 12, 2026', end: 'September 14, 2026', defaultDate: 'September 14, 2026' },
   { name: 'Upper Bracket - Round 2', start: 'September 15, 2026', end: 'September 17, 2026', defaultDate: 'September 16, 2026' },
   { name: 'Lower Bracket - Round 1', start: 'September 15, 2026', end: 'September 17, 2026', defaultDate: 'September 16, 2026' },
   { name: 'Upper Bracket - Round 3', start: 'September 18, 2026', end: 'September 20, 2026', defaultDate: 'September 19, 2026' },
@@ -82,7 +82,7 @@ const SEASON_SCHEDULE = [
   { name: 'Upper Bracket - Round 5', start: 'September 30, 2026', end: 'October 2, 2026', defaultDate: 'October 1, 2026' },
   { name: 'Lower Bracket - Round 6', start: 'September 30, 2026', end: 'October 2, 2026', defaultDate: 'October 1, 2026' },
   { name: 'Lower Bracket - Round 7', start: 'October 3, 2026', end: 'October 5, 2026', defaultDate: 'October 4, 2026' },
-  { name: 'Lower Bracket - Final', start: 'October 6, 2026', end: 'October 8, 2026', defaultDate: 'October 7, 2026' },
+  { name: 'Lower Bracket - Round 8', start: 'October 6, 2026', end: 'October 8, 2026', defaultDate: 'October 7, 2026' },
   { name: 'Grand Final (BO5)', start: 'October 9, 2026', end: 'October 11, 2026', defaultDate: 'October 10, 2026' }
 ];
 
@@ -119,9 +119,13 @@ const PLAYOFF_ROUND_FILTERS = {
     label: 'Lower Bracket - Round 7',
     categories: ['Lower Bracket - Round 7', 'Losers Round 7']
   },
+  'lower-r8': {
+    label: 'Lower Bracket - Round 8',
+    categories: ['Lower Bracket - Round 8', 'Lower Bracket - Final', 'Losers Final']
+  },
   'lower-final': {
-    label: 'Lower Bracket - Final',
-    categories: ['Lower Bracket - Final', 'Losers Final']
+    label: 'Lower Bracket - Round 8',
+    categories: ['Lower Bracket - Round 8', 'Lower Bracket - Final', 'Losers Final']
   },
   'wb-r32': {
     label: 'Upper Bracket - Round 1',
@@ -156,8 +160,8 @@ const PLAYOFF_ROUND_FILTERS = {
     categories: ['Lower Bracket - Round 7', 'Losers Round 7']
   },
   'lb-final': {
-    label: 'Lower Bracket - Final',
-    categories: ['Lower Bracket - Final', 'Losers Final']
+    label: 'Lower Bracket - Round 8',
+    categories: ['Lower Bracket - Round 8', 'Lower Bracket - Final', 'Losers Final']
   },
   'grand-final': {
     label: 'Grand Final (BO5)',
@@ -402,9 +406,9 @@ async function handleCommandHelp(interaction) {
       '`/cf sample` - create a sample match room for testing.',
       '',
       '**Match Room Commands**',
-      '`!schedule September 13 8 PM EST` - propose a match time.',
-      '`!propose September 13 8 PM EST` - same as `!schedule`.',
-      '`!reschedule September 14 8 PM EST` - request a new time.',
+      '`!schedule September 14 8 PM EDT` - propose a match time.',
+      '`!propose September 14 8 PM EDT` - same as `!schedule`.',
+      '`!reschedule September 14 9 PM EDT` - request a new time.',
       '`!accept` - accept the open proposal from the other team.',
       '`!decline` - decline the open proposal.',
       '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.'
@@ -1420,7 +1424,7 @@ function getPlayoffRoundSortIndex(match) {
     ['upper bracket round 5', 'wb final'],
     ['lower bracket round 6', 'losers round 6'],
     ['lower bracket round 7', 'losers round 7'],
-    ['lower bracket final', 'losers final'],
+    ['lower bracket round 8', 'lower bracket final', 'losers final'],
     ['grand final', 'grand final bo5']
   ];
   const index = order.findIndex((aliases) => aliases.includes(round));
@@ -1557,8 +1561,8 @@ async function handleSampleMatch(interaction) {
   await interaction.editReply([
     `Created sample match chat: <#${channel.id}>`,
     `Channel name should be \`${channel.name}\`.`,
-    `Team test: give yourself one sample team role, give another person the other sample team role, then test \`!propose Tuesday 8 PM EST\` and \`!accept\`.`,
-    `Tournament Ops test: give yourself the Tournament Ops role, then test \`!schedule Tuesday 8 PM EST\` without \`!accept\`.`
+    `Team test: give yourself one sample team role, give another person the other sample team role, then test \`!propose Tuesday 8 PM EDT\` and \`!accept\`.`,
+    `Tournament Ops test: give yourself the Tournament Ops role, then test \`!schedule Tuesday 8 PM EDT\` without \`!accept\`.`
   ].join('\n'));
 }
 
@@ -2145,7 +2149,7 @@ function truncateText(value, maxLength) {
 
 async function handleDeprecatedScheduleInteraction(interaction) {
   const response = {
-    content: 'Scheduling is command-only now. In the match room, use `!schedule September 1 8 PM EST`; teams confirm with `!accept`, and Tournament Ops can schedule directly.',
+    content: 'Scheduling is command-only now. In the match room, use `!schedule September 14 8 PM EDT`; teams confirm with `!accept`, and Tournament Ops can schedule directly.',
     components: [],
     ephemeral: true
   };
@@ -2304,21 +2308,21 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     `Round: **${matchDetails.round}**`,
     matchDetails.group ? `Group: **${matchDetails.group}**` : null,
     scheduleWindow ? `${scheduleWindow.label}: **${scheduleWindow.start} - ${scheduleWindow.end}**` : 'Scheduling window: **not configured yet**',
-    roundInfo ? `Default match date/time: **${roundInfo.defaultDate} at 8:00 PM EST**` : 'Default match date/time: **admins will announce**',
+    roundInfo ? `Default match date/time: **${roundInfo.defaultDate} at 8:00 PM EDT**` : 'Default match date/time: **admins will announce**',
     `Discord match chat: <#${channel.id}>`,
     faceitRoomLine(match),
     getFaceitScheduledTimeLine(match),
     '',
     '**How to schedule this match**',
-    '1. One team member posts `!schedule 8/24/2026 3 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 1 8:00 PM EST`.',
+    '1. One team member posts `!schedule 9/14/2026 8 PM EDT`, `!schedule Tuesday 3 PM EDT`, or `!schedule September 14 8:00 PM EDT`.',
     '2. The bot detects the timezone, records the proposed time, and pings the other team role.',
     '3. A member from the other team posts `!accept` to confirm or `!decline` to reject.',
     `4. After \`!accept\`, ${adminNotificationLine}`,
-    'Tournament Ops can use `!schedule September 13 8 PM EST` to set the time directly without team approval.',
+    'Tournament Ops can use `!schedule September 14 8 PM EDT` to set the time directly without team approval.',
     '',
     '**Other commands**',
-    '`!propose September 13 8:00 PM EST` - same as `!schedule`',
-    '`!reschedule September 14 8:00 PM EST` - team member requests a new time',
+    '`!propose September 14 8:00 PM EDT` - same as `!schedule`',
+    '`!reschedule September 14 9:00 PM EDT` - team member requests a new time',
     'Schedules and reschedules must stay inside this match window. Reschedules within 24 hours of match time require admin override.',
     isGroupStageMatch(match)
       ? 'Group Stage note: any Group Stage match can be scheduled by mutual agreement from August 31, 2026 through September 8, 2026.'
@@ -2396,7 +2400,7 @@ function getSeasonRoundInfo(match) {
 
   const text = `${stageName} ${roundName}`;
   if (text.includes('grand final')) return seasonWindow('Grand Final (BO5)');
-  if (text.includes('lower bracket final') || text.includes('losers final') || text.includes('lower final')) return seasonWindow('Lower Bracket - Final');
+  if (text.includes('lower bracket round 8') || text.includes('lower bracket final') || text.includes('losers final') || text.includes('lower final')) return seasonWindow('Lower Bracket - Round 8');
   if (text.includes('lower bracket round 7') || text.includes('losers round 7') || text.includes('lower round 7')) return seasonWindow('Lower Bracket - Round 7');
   if (text.includes('upper bracket round 5') || (text.includes('winner') && text.includes('final')) || text.includes('wb final') || text.includes('upper final')) return seasonWindow('Upper Bracket - Round 5');
   if (text.includes('lower bracket round 6') || text.includes('losers round 6') || text.includes('lower round 6')) return seasonWindow('Lower Bracket - Round 6');

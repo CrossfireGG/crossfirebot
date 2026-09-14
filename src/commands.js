@@ -13,7 +13,7 @@ const roundChoices = [
   { name: 'Lower Bracket - Round 5', value: 'lower-r5' },
   { name: 'Upper Bracket - Round 5 + Lower Bracket - Round 6', value: 'upper-r5-lower-r6' },
   { name: 'Lower Bracket - Round 7', value: 'lower-r7' },
-  { name: 'Lower Bracket - Final', value: 'lower-final' },
+  { name: 'Lower Bracket - Round 8', value: 'lower-r8' },
   { name: 'Grand Final (BO5)', value: 'grand-final' }
 ];
 

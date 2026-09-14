@@ -143,14 +143,14 @@ These slash commands are restricted to Discord admins, users with Manage Server,
 
 Inside each match channel:
 
-- The pinned first message pings both team roles, shows the FACEIT room, the scheduling window, and the default round date at 8:00 PM EST.
+- The pinned first message pings both team roles, shows the FACEIT room, the scheduling window, and the default round date at 8:00 PM EDT for playoffs.
 - Playoff match messages use the FACEIT playoff bracket side and round, such as `Upper Bracket - Round 1` or `Lower Bracket - Round 1`.
 - If FACEIT already has a scheduled time, the pinned message shows that below the FACEIT room link.
 - The pinned first message explains the full schedule flow: one team member proposes with `!schedule`, a member from the other team confirms with `!accept`, then admins are alerted to schedule it on FACEIT.
 - Scheduling is command-only in match rooms; the bot does not add a propose-time button.
-- `!schedule September 13 8 PM EST`, `!schedule Tuesday 3 PM EST`, or `!schedule September 14 9 PM EST` proposes a match time, detects the timezone, and pings the other team to confirm.
-- `!propose September 13 8:00 PM EST` also proposes a match time.
-- `!reschedule September 14 8:00 PM EST` requests a reschedule.
+- `!schedule September 14 8 PM EDT`, `!schedule Tuesday 3 PM EDT`, or `!schedule September 14 9 PM EDT` proposes a match time, detects the timezone, and pings the other team to confirm.
+- `!propose September 14 8:00 PM EDT` also proposes a match time.
+- `!reschedule September 14 9:00 PM EDT` requests a reschedule.
 - `!accept` lets a member from the other team accept it.
 - `!decline` lets a member from the other team decline it.
 - Users with a role in `SCHEDULE_OVERRIDE_ROLE_IDS` can run `!schedule` in a match room to set the schedule directly without both teams accepting.
@@ -163,16 +163,16 @@ Season 6 schedule windows and default round dates are built into the bot:
 - Round 1: August 31, 2026 - September 2, 2026, default September 1, 2026 at 8:00 PM EST
 - Round 2: September 3, 2026 - September 5, 2026, default September 4, 2026 at 8:00 PM EST
 - Round 3: September 6, 2026 - September 8, 2026, default September 7, 2026 at 8:00 PM EST
-- Upper Bracket - Round 1: September 12, 2026 - September 14, 2026, default September 13, 2026 at 8:00 PM EST
-- Upper Bracket - Round 2 and Lower Bracket - Round 1: September 15, 2026 - September 17, 2026, default September 16, 2026 at 8:00 PM EST
-- Upper Bracket - Round 3 and Lower Bracket - Round 2: September 18, 2026 - September 20, 2026, default September 19, 2026 at 8:00 PM EST
-- Lower Bracket - Round 3: September 21, 2026 - September 23, 2026, default September 22, 2026 at 8:00 PM EST
-- Upper Bracket - Round 4 and Lower Bracket - Round 4: September 24, 2026 - September 26, 2026, default September 25, 2026 at 8:00 PM EST
-- Lower Bracket - Round 5: September 27, 2026 - September 29, 2026, default September 28, 2026 at 8:00 PM EST
-- Upper Bracket - Round 5 and Lower Bracket - Round 6: September 30, 2026 - October 2, 2026, default October 1, 2026 at 8:00 PM EST
-- Lower Bracket - Round 7: October 3, 2026 - October 5, 2026, default October 4, 2026 at 8:00 PM EST
-- Lower Bracket - Final: October 6, 2026 - October 8, 2026, default October 7, 2026 at 8:00 PM EST
-- Grand Final (BO5): October 9, 2026 - October 11, 2026, default October 10, 2026 at 8:00 PM EST
+- Upper Bracket - Round 1: September 12, 2026 - September 14, 2026, default September 14, 2026 at 8:00 PM EDT
+- Upper Bracket - Round 2 and Lower Bracket - Round 1: September 15, 2026 - September 17, 2026, default September 16, 2026 at 8:00 PM EDT
+- Upper Bracket - Round 3 and Lower Bracket - Round 2: September 18, 2026 - September 20, 2026, default September 19, 2026 at 8:00 PM EDT
+- Lower Bracket - Round 3: September 21, 2026 - September 23, 2026, default September 22, 2026 at 8:00 PM EDT
+- Upper Bracket - Round 4 and Lower Bracket - Round 4: September 24, 2026 - September 26, 2026, default September 25, 2026 at 8:00 PM EDT
+- Lower Bracket - Round 5: September 27, 2026 - September 29, 2026, default September 28, 2026 at 8:00 PM EDT
+- Upper Bracket - Round 5 and Lower Bracket - Round 6: September 30, 2026 - October 2, 2026, default October 1, 2026 at 8:00 PM EDT
+- Lower Bracket - Round 7: October 3, 2026 - October 5, 2026, default October 4, 2026 at 8:00 PM EDT
+- Lower Bracket - Round 8: October 6, 2026 - October 8, 2026, default October 7, 2026 at 8:00 PM EDT
+- Grand Final (BO5): October 9, 2026 - October 11, 2026, default October 10, 2026 at 8:00 PM EDT
 
 Reschedule rules:
 
