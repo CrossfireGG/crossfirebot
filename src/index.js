@@ -2412,7 +2412,7 @@ function getSeasonRoundInfo(match) {
     return seasonWindow('Group Stage');
   }
 
-  const text = `${stageName} ${roundName}`;
+  const text = normalizeRoundCategory(`${stageName} ${roundName}`);
   if (text.includes('grand final')) return seasonWindow('Grand Final (BO5)');
   if (text.includes('lower bracket round 8') || text.includes('lower bracket final') || text.includes('losers final') || text.includes('lower final')) return seasonWindow('Lower Bracket - Round 8');
   if (text.includes('lower bracket round 7') || text.includes('losers round 7') || text.includes('lower round 7')) return seasonWindow('Lower Bracket - Round 7');
@@ -2428,7 +2428,7 @@ function getSeasonRoundInfo(match) {
   if (text.includes('lower bracket round 1') || text.includes('losers round 1') || text.includes('lower round 1')) return seasonWindow('Lower Bracket - Round 1');
   if (text.includes('upper bracket round 1') || text.includes('round of 32')) return seasonWindow('Upper Bracket - Round 1');
 
-  if (stageName.includes('playoff')) return seasonWindow('Playoff Stage');
+  if (stageName.includes('playoff') || text.includes('playoff')) return seasonWindow('Playoff Stage');
   return null;
 }
 
