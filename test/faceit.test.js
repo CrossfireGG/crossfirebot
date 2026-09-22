@@ -158,3 +158,25 @@ test('uses scheduled playoff window when bracket side is missing', async (contex
   assert.equal(match.categoryName, 'Lower Bracket - Round 1');
   assert.equal(match.round, 'Lower Bracket - Round 1');
 });
+
+test('defaults ambiguous playoff round 4 to lower bracket when bracket side is missing', async (context) => {
+  context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+    match_id: 'match-1',
+    status: 'SCHEDULED',
+    round: 4,
+    scheduled_at: 1790380800,
+    teams: {
+      faction1: { name: 'Villainous' },
+      faction2: { name: 'Zomblers' }
+    }
+  }), { status: 200 }));
+
+  const match = await new FaceitClient('api-key', []).getMatch('match-1', {
+    type: 'championship',
+    id: 'playoffs',
+    name: 'CROSSFIRE Season 6 - Playoffs'
+  });
+
+  assert.equal(match.categoryName, 'Lower Bracket - Round 4');
+  assert.equal(match.round, 'Lower Bracket - Round 4');
+});

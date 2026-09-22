@@ -482,6 +482,7 @@ function inferPlayoffBracketFromSchedule(round, raw = {}) {
   const inUpperWindow = isDateInRange(dateKey, upperWindows[round]);
   if (inLowerWindow && !inUpperWindow) return 'losers';
   if (inUpperWindow && !inLowerWindow) return 'winners';
+  if (round === 4 && inLowerWindow && inUpperWindow) return 'losers';
   return '';
 }
 
