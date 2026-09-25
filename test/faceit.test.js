@@ -180,3 +180,48 @@ test('defaults ambiguous playoff round 4 to lower bracket when bracket side is m
   assert.equal(match.categoryName, 'Lower Bracket - Round 4');
   assert.equal(match.round, 'Lower Bracket - Round 4');
 });
+
+test('uses FACEIT group 2 for lower bracket round 5 before schedule fallback', async (context) => {
+  context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+    match_id: '1-85bb66d7-0087-453b-b92d-2b6a123d2f84',
+    status: 'SCHEDULED',
+    round: 5,
+    group: 2,
+    teams: {
+      faction1: { name: 'LAG Gaming' },
+      faction2: { name: 'Villainous' }
+    }
+  }), { status: 200 }));
+
+  const match = await new FaceitClient('api-key', []).getMatch('1-85bb66d7-0087-453b-b92d-2b6a123d2f84', {
+    type: 'championship',
+    id: 'playoffs',
+    name: 'CROSSFIRE Season 6 - Playoffs'
+  });
+
+  assert.equal(match.categoryName, 'Lower Bracket - Round 5');
+  assert.equal(match.round, 'Lower Bracket - Round 5');
+});
+
+test('uses FACEIT group 1 for upper bracket when schedule windows overlap', async (context) => {
+  context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+    match_id: 'upper-round-4',
+    status: 'SCHEDULED',
+    round: 4,
+    group: 1,
+    scheduled_at: 1790380800,
+    teams: {
+      faction1: { name: 'Marsborne' },
+      faction2: { name: 'regain' }
+    }
+  }), { status: 200 }));
+
+  const match = await new FaceitClient('api-key', []).getMatch('upper-round-4', {
+    type: 'championship',
+    id: 'playoffs',
+    name: 'CROSSFIRE Season 6 - Playoffs'
+  });
+
+  assert.equal(match.categoryName, 'Upper Bracket - Round 4');
+  assert.equal(match.round, 'Upper Bracket - Round 4');
+});

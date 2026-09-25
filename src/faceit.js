@@ -407,7 +407,9 @@ function bracketRoundName(value, raw = {}, source = {}) {
   const bracket = bracketSide(context);
 
   if (sourceText.includes('playoff')) {
-    const effectiveBracket = bracket || inferPlayoffBracketFromSchedule(round, raw);
+    // FACEIT's championship payload uses group 1 for the upper bracket and
+    // group 2 for the lower bracket, even when it omits every bracket label.
+    const effectiveBracket = bracket || inferPlayoffBracketFromGroup(raw) || inferPlayoffBracketFromSchedule(round, raw);
     if (effectiveBracket === 'losers') {
       const losersNames = {
         1: 'Lower Bracket - Round 1',
@@ -444,6 +446,13 @@ function bracketRoundName(value, raw = {}, source = {}) {
   };
 
   return names[round] || `Round ${round}`;
+}
+
+function inferPlayoffBracketFromGroup(raw = {}) {
+  const group = Number(raw.group);
+  if (group === 1) return 'winners';
+  if (group === 2) return 'losers';
+  return '';
 }
 
 function inferPlayoffBracketFromSchedule(round, raw = {}) {

@@ -1289,6 +1289,12 @@ async function auditMatchProvisioning(guild, match) {
     problems.push(`wrong channel name ${channel.name}, expected ${expectedName}`);
   }
 
+  const expectedCategory = normalizeRoundCategory(match.categoryName || match.round);
+  const actualCategory = normalizeRoundCategory(channel.parent?.name || '');
+  if (actualCategory !== expectedCategory) {
+    problems.push(`wrong category ${channel.parent?.name || 'none'}, expected ${match.categoryName || match.round}`);
+  }
+
   const everyoneOverwrite = channel.permissionOverwrites.cache.get(guild.roles.everyone.id);
   if (!everyoneOverwrite?.deny.has(PermissionFlagsBits.ViewChannel)) {
     badPermissions.push('@everyone hidden');
