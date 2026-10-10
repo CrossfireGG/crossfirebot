@@ -6,10 +6,13 @@ import {
   EmbedBuilder,
   Events,
   GatewayIntentBits,
+  ModalBuilder,
   Partials,
   PermissionFlagsBits,
   REST,
-  Routes
+  Routes,
+  TextInputBuilder,
+  TextInputStyle
 } from 'discord.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,25 +25,45 @@ import { findUniqueSclMatchChannel } from './sclChannelResolver.js';
 import { makeMatchChannelName, provisionMatchChannel, repairMatchChannel, resolveTeamRole, updateMatchChannelName } from './discordProvision.js';
 import {
   acceptScheduleProposal,
+  appendAuditLog,
   approveScheduleProposal,
+  claimPostCastReminder,
+  createStreamRequest,
   denyScheduleProposal,
   declineScheduleProposal,
   getLatestOpenScheduleProposalForMatch,
   getSchedule,
+  getScheduleProposal,
+  getStreamRequest,
   getSclDiscordMessage,
   getStoredMatch,
   getStoredMatchByChannel,
   listStoredMatches,
+  listAdminTickets,
+  listAuditLog,
+  listScheduleProposals,
+  listSchedules,
+  listStreamRequests,
+  listTeamMappings,
+  listVetoes,
+  getVeto,
+  saveAdminTicket,
   saveMatch,
   saveMatchIntroMessageId,
   savePostedSclDemo,
   saveSclDiscordMessage,
   saveSchedule,
-  saveScheduleProposal
+  saveScheduleProposal,
+  saveTeamMapping,
+  saveVeto,
+  updateStreamRequest
 } from './store.js';
 import { scheduleFaceitMatch } from './faceitSchedule.js';
-import { auditMissingCaptains, auditMissingPlayers, syncRolesFromSheet } from './sheetRoles.js';
+import { auditMissingCaptains, auditMissingPlayers, getTeamMappingScope, syncRolesFromSheet } from './sheetRoles.js';
 import { startWebhookServer } from './webhookServer.js';
+import { applyVetoAction, chooseFirstAction, createVeto, expectedVetoAction } from './vetoEngine.js';
+import { makeStreamRequestId, validateStreamRequest } from './streamRequest.js';
+import { isAuthorizedStaffMember, parseForceDirective } from './operationsPolicy.js';
 
 const config = getConfig();
 const lockPath = path.resolve('bot.lock');
@@ -53,6 +76,7 @@ const faceit = new FaceitClient(
 const scl = new SclClient(config.sclApiKey);
 const sclMessageUpdateQueues = new Map();
 let webhookServer = null;
+let operationsTimer = null;
 
 const PENDING_SCHEDULE_TOPIC_PREFIX = 'Pending schedule:';
 const EMBED_COLORS = {
@@ -216,18 +240,60 @@ client.once(Events.ClientReady, async () => {
       onSclDemoReady: handleSclDemoReady
     });
   }
+
+  await hydratePersistentTeamRoleMappings();
+  await runOperationsTick().catch((error) => console.error('Operations recovery failed:', error));
+  if (!operationsTimer) {
+    operationsTimer = setInterval(() => {
+      runOperationsTick().catch((error) => console.error('Operations tick failed:', error));
+    }, 60_000);
+    operationsTimer.unref?.();
+  }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'request') {
+        await handleStreamRequestCommand(interaction);
+        return;
+      }
+      if (interaction.commandName === 'crossfire') {
+        await handleCrossfireCommand(interaction);
+        return;
+      }
       if (!canUseBotAdminCommand(interaction.member)) {
         await interaction.reply({ content: 'Only admins/match staff can use this bot command.', ephemeral: true });
         return;
       }
 
       await handleAdminCommand(interaction);
+      return;
+    }
 
+    if (interaction.isButton() && interaction.customId.startsWith('stream_request_open:')) {
+      await showStreamRequestModal(interaction);
+      return;
+    }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('stream_request_submit:')) {
+      await handleStreamRequestModal(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('stream_review:')) {
+      await handleStreamReview(interaction);
+      return;
+    }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('stream_deny_submit:')) {
+      await handleStreamDenialModal(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('veto_first:')) {
+      await handleVetoFirstChoice(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('veto_map:')) {
+      await handleVetoMapChoice(interaction);
+      return;
     }
 
     if (interaction.isButton() && interaction.customId.startsWith('schedule:')) {
@@ -320,6 +386,26 @@ async function handleAdminCommand(interaction) {
       await handleSampleMatch(interaction);
       return;
     }
+
+    if (subcommand === 'mappings') {
+      await handleTeamMappings(interaction);
+      return;
+    }
+
+    if (subcommand === 'veto') {
+      await handleAdminVeto(interaction);
+      return;
+    }
+
+    if (subcommand === 'streams') {
+      await handleAdminStreams(interaction);
+      return;
+    }
+
+    if (subcommand === 'auditlog') {
+      await handleAuditLog(interaction);
+      return;
+    }
   }
 
   if (interaction.commandName === 'matches') {
@@ -384,7 +470,102 @@ async function handleAdminCommand(interaction) {
 
 async function handleBotStatus(interaction) {
   const matches = await listStoredMatches();
-  await interaction.reply({ content: `I know about ${matches.length} match(es).`, ephemeral: true });
+  const proposals = await listScheduleProposals();
+  const tickets = await listAdminTickets();
+  const streams = await listStreamRequests();
+  const mappings = await listTeamMappings(teamMappingScope());
+  const vetoes = await listVetoes();
+  await interaction.reply({
+    content: [
+      `Known matches: ${matches.length}`,
+      `Pending schedules: ${proposals.filter((entry) => entry.accepted && !entry.adminApproved && !entry.adminDenied).length}`,
+      `Open admin tickets: ${tickets.filter((entry) => entry.status === 'open').length}`,
+      `Pending streamer requests: ${streams.filter((entry) => entry.status === 'pending').length}`,
+      `Approved coverage: ${streams.filter((entry) => entry.status === 'approved').length}`,
+      `Persistent team mappings: ${mappings.length}`,
+      `Active/blocked vetoes: ${vetoes.filter((entry) => ['choosing_first_action', 'active', 'blocked'].includes(entry.status)).length}`
+    ].join('\n'),
+    ephemeral: true
+  });
+}
+
+async function handleCrossfireCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const subcommand = interaction.options.getSubcommand();
+  const member = interaction.member;
+  const staff = isAdminStaff(member);
+  const storedMatches = await listStoredMatches();
+
+  if (subcommand === 'rounds') {
+    await interaction.editReply(truncateDiscordMessage(SEASON_SCHEDULE
+      .filter((round) => /bracket|grand final/i.test(round.name))
+      .map((round) => `- **${round.name}**: ${round.start} - ${round.end}; default ${round.defaultDateTime || `${round.defaultDate} 8:00 PM ET`}`)
+      .join('\n')));
+    return;
+  }
+  if (subcommand === 'help') {
+    await interaction.editReply([
+      '`/crossfire upcoming` - your upcoming approved matches.',
+      '`/crossfire team name:<team>` - that team’s matches when you have access.',
+      '`/crossfire rounds` - round windows and defaults.',
+      '`/crossfire veto` - veto status for this linked match room.',
+      '`/request stream` or `!request` - request permission to stream.',
+      config.rulesUrl ? `Rules: ${config.rulesUrl}` : 'Rules link is not configured; ask Tournament Operations for the current rules.'
+    ].join('\n'));
+    return;
+  }
+  if (subcommand === 'veto') {
+    const stored = await getStoredMatchForChannel(interaction.channel);
+    if (!stored) {
+      await interaction.editReply('Use this inside a linked match room.');
+      return;
+    }
+    const veto = await getVeto(stored.match.id);
+    await interaction.editReply(veto ? formatVetoStatus(veto) : 'No veto has started for this match.');
+    return;
+  }
+
+  const visible = storedMatches.filter((stored) => staff || memberCanSeeStoredMatch(member, stored));
+  if (subcommand === 'upcoming') {
+    const schedules = new Map((await listSchedules()).map((schedule) => [schedule.matchId, schedule]));
+    const rows = visible
+      .map((stored) => ({ stored, schedule: schedules.get(stored.match.id) }))
+      .filter(({ schedule }) => schedule?.adminApproved && Date.parse(schedule.scheduledAtIso || schedule.scheduledAt) >= Date.now())
+      .sort((a, b) => Date.parse(a.schedule.scheduledAtIso || a.schedule.scheduledAt) - Date.parse(b.schedule.scheduledAtIso || b.schedule.scheduledAt));
+    await interaction.editReply(truncateDiscordMessage(rows.length
+      ? rows.slice(0, 30).map(({ stored, schedule }) => `- **${stored.match.teamA} vs ${stored.match.teamB}**: ${schedule.scheduledAt} <#${stored.discord.channelId}>`).join('\n')
+      : 'No upcoming approved matches are visible to you.'));
+    return;
+  }
+  if (subcommand === 'team') {
+    const team = interaction.options.getString('name', true);
+    const rows = visible.filter((stored) => [stored.match.teamA, stored.match.teamB]
+      .some((name) => normalizeTeamKey(name) === normalizeTeamKey(team)));
+    if (!rows.length) {
+      await interaction.editReply('No matches for that team are visible to you.');
+      return;
+    }
+    const schedules = new Map((await listSchedules()).map((schedule) => [schedule.matchId, schedule]));
+    await interaction.editReply(truncateDiscordMessage(rows.slice(0, 40).map((stored) => {
+      const schedule = schedules.get(stored.match.id);
+      return `- **${stored.match.teamA} vs ${stored.match.teamB}** | ${stored.match.round} | ${schedule?.adminApproved ? `approved: ${schedule.scheduledAt}` : schedule ? 'pending approval' : 'not scheduled'} | <#${stored.discord.channelId}>`;
+    }).join('\n')));
+  }
+}
+
+function memberCanSeeStoredMatch(member, stored) {
+  return [stored.discord?.teamARoleId, stored.discord?.teamBRoleId]
+    .filter(Boolean)
+    .some((roleId) => member.roles.cache.has(roleId));
+}
+
+async function handleAuditLog(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const matchId = interaction.options.getString('match_id') || null;
+  const entries = (await listAuditLog({ matchId })).slice(-40).reverse();
+  await interaction.editReply(truncateDiscordMessage(entries.length
+    ? entries.map((entry) => `- ${entry.timestamp} | ${entry.type} | actor ${entry.actorId || 'system'}${entry.matchId ? ` | match ${entry.matchId}` : ''}${entry.reason ? ` | ${entry.reason}` : ''}`).join('\n')
+    : 'No matching audit events.'));
 }
 
 async function handleCommandHelp(interaction) {
@@ -395,6 +576,7 @@ async function handleCommandHelp(interaction) {
       '`/cf sync target:matches round:Upper Bracket - Round 1` - sync one playoff round window only.',
       '`/cf sync target:teams` - sync roles, captains, participants, and nicknames from the sheet.',
       '`/cf sync target:teams notify_captains:true` - also DM captains about missing players.',
+      '`/cf sync target:teams dry_run:true` - preview roster changes without changing Discord.',
       '`/cf audit target:matches` - check match rooms and permissions without creating channels.',
       '`/cf audit target:matches fix:true` - repair channel names, links, pins, and permissions.',
       '`/cf audit target:players` - show sheet players missing from Discord.',
@@ -403,6 +585,10 @@ async function handleCommandHelp(interaction) {
       '`/cf status` - show how many matches the bot knows.',
       '`/cf create link:<FACEIT room link>` - create/update one match room.',
       '`/cf sample` - create a sample match room for testing.',
+      '`/cf mappings action:list|inspect|link|repair` - manage persistent team-role mappings.',
+      '`/cf veto action:start|inspect|reset|cancel|seeds` - manage a playoff veto.',
+      '`/cf streams action:pending|approved|inspect|revoke|complete` - review stream requests.',
+      '`/cf auditlog match_id:<optional>` - inspect scheduling and operations decisions.',
       '',
       '**Match Room Commands**',
       '`!schedule September 14 8 PM EDT` - propose a match time.',
@@ -410,7 +596,12 @@ async function handleCommandHelp(interaction) {
       '`!reschedule September 14 9 PM EDT` - request a new time.',
       '`!accept` - accept the open proposal from the other team.',
       '`!decline` - decline the open proposal.',
-      '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.'
+      '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.',
+      '`!request` - open the community stream request workflow.',
+      '',
+      '**Public Slash Commands**',
+      '`/request stream` - submit a stream request; `/request cancel` cancels your pending request.',
+      '`/crossfire upcoming|team|rounds|veto|help` - authorized match and event information.'
     ].join('\n'),
     ephemeral: true
   });
@@ -445,6 +636,10 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (/^!(calladmin|admin)\b/i.test(content)) {
       await handleCallAdmin(message, content);
+    }
+
+    if (/^!request\b/i.test(content)) {
+      await handleTextStreamRequest(message);
     }
   } catch (error) {
     console.error(error);
@@ -742,6 +937,11 @@ async function handleCallAdminReaction(reaction, user) {
   if (!matchChannel?.isTextBased?.()) return;
 
   await sendCallAdminClaimToMatchChannel(matchChannel, user.id);
+  const ticket = (await listAdminTickets()).find((entry) => entry.staffMessageId === message.id);
+  if (ticket?.status === 'open') {
+    await saveAdminTicket({ ...ticket, status: 'claimed', claimedBy: user.id, claimedAt: new Date().toISOString() });
+    await appendAuditLog({ type: 'admin_ticket_claimed', matchId: ticket.matchId, actorId: user.id, ticketId: ticket.id });
+  }
 }
 
 async function handleCallAdminClaim(interaction) {
@@ -766,6 +966,11 @@ async function handleCallAdminClaim(interaction) {
   }
 
   await sendCallAdminClaimToMatchChannel(matchChannel, interaction.user.id);
+  const ticket = (await listAdminTickets()).find((entry) => entry.staffMessageId === interaction.message.id);
+  if (ticket?.status === 'open') {
+    await saveAdminTicket({ ...ticket, status: 'claimed', claimedBy: interaction.user.id, claimedAt: new Date().toISOString() });
+  }
+  await appendAuditLog({ type: 'admin_ticket_claimed', matchId: ticket?.matchId, actorId: interaction.user.id, ticketId: ticket?.id });
   await interaction.message.react('✅').catch(() => null);
   await interaction.message.edit({
     components: [callAdminClaimButton(matchChannelId, true)]
@@ -922,6 +1127,7 @@ async function handleRefreshMatchStatuses(interaction) {
       const status = String(matchForStatus.status || '').toLowerCase();
       if (['finished', 'done', 'completed', 'cancelled'].some((value) => status.includes(value))) {
         result.finished += 1;
+        if (!status.includes('cancel')) await sendPostCastReminder(match.id);
       } else if (matchForStatus.scheduledByDiscord || status === 'discord_scheduled') {
         result.scheduled += 1;
       }
@@ -1243,6 +1449,7 @@ function buildProposalFromMessage(message, stored) {
     proposerTeam,
     accepted: false,
     kind,
+    previousScheduledAt: currentScheduleText(stored),
     source: 'recovered_message',
     validation: validateScheduleRequest(stored, scheduledAt, kind, parsedSchedule?.date || null),
     override: false
@@ -1396,7 +1603,7 @@ function filterAndSortMatchesForSync(matches, roundFilter) {
 }
 
 function isPlayoffMatch(match) {
-  return String(match.source?.name || '').toLowerCase().includes('playoff');
+  return Boolean(match.source?.id && config.playoffSourceIds.includes(match.source.id));
 }
 
 function compareMatchesForChannelOrder(a, b) {
@@ -1626,8 +1833,9 @@ function slugForId(value) {
 async function handleSyncTeamRoles(interaction) {
   await interaction.deferReply({ ephemeral: true });
   const notifyCaptains = interaction.options.getBoolean('notify_captains') || false;
+  const dryRun = interaction.options.getBoolean('dry_run') || false;
   await interaction.editReply(
-    `Started syncing team roles from Google Sheet... Captain DMs: **${notifyCaptains ? 'on' : 'off'}**.`
+    `${dryRun ? 'Previewing' : 'Started syncing'} team roles from Google Sheet... Captain DMs: **${notifyCaptains && !dryRun ? 'on' : 'off'}**.`
   );
 
   const guild = await client.guilds.fetch(config.discordGuildId);
@@ -1635,7 +1843,7 @@ async function handleSyncTeamRoles(interaction) {
   const result = await syncRolesFromSheet(
     guild,
     config,
-    { notifyCaptains },
+    { notifyCaptains: notifyCaptains && !dryRun, dryRun },
     async (progress) => {
       const now = Date.now();
       if (now - lastProgressAt < 2500 && progress.current !== progress.total) return;
@@ -1647,16 +1855,113 @@ async function handleSyncTeamRoles(interaction) {
     }
   );
 
+  if (dryRun) {
+    await interaction.editReply(truncateDiscordMessage([
+      `Dry run complete. No roles, nicknames, or mappings were changed. ${result.totalTeams || 0} team row(s) checked.`,
+      ...(result.plannedChanges || []).slice(0, 30).map((line) => `- ${line}`),
+      result.duplicateEntries?.length ? `Duplicates: ${result.duplicateEntries.join(', ')}` : null
+    ].filter(Boolean).join('\n')));
+    return;
+  }
+
+  await hydratePersistentTeamRoleMappings();
+
   const missingLine = result.missingMembers?.length
     ? `\nCould not find these Discord users: ${result.missingMembers.join(', ')}`
     : '';
   const failedLine = result.failedActions?.length
     ? `\nCould not complete these actions: ${result.failedActions.join(', ')}`
     : '';
+  const duplicateLine = result.duplicateEntries?.length
+    ? `\nDuplicate sheet identities: ${result.duplicateEntries.join(', ')}`
+    : '';
+  const unresolvedLine = result.unresolvedTeams?.length
+    ? `\nUnresolved teams: ${result.unresolvedTeams.join(', ')}`
+    : '';
 
   await interaction.editReply(truncateDiscordMessage(
-    `Synced team roles from Google Sheet. Created ${result.rolesCreated} role(s), added ${result.added} team role assignment(s), ${result.participantAdded} season participant assignment(s), ${result.captainAdded} captain role assignment(s), removed ${result.removed} stale role assignment(s), changed ${result.nicknamesChanged} nickname(s), sent ${result.captainDmsSent} captain DM(s). Skipped ${result.skipped}.${missingLine}${failedLine}`
+    `Synced team roles from Google Sheet. Created ${result.rolesCreated} role(s), added ${result.added} team role assignment(s), ${result.participantAdded} season participant assignment(s), ${result.captainAdded} captain role assignment(s), removed ${result.removed} stale role assignment(s), changed ${result.nicknamesChanged} nickname(s), sent ${result.captainDmsSent} captain DM(s). Skipped ${result.skipped}.${missingLine}${failedLine}${duplicateLine}${unresolvedLine}`
   ));
+}
+
+function teamMappingScope() {
+  return getTeamMappingScope(config, config.discordGuildId);
+}
+
+async function hydratePersistentTeamRoleMappings() {
+  const mappings = await listTeamMappings(teamMappingScope());
+  for (const mapping of mappings) {
+    if (!mapping.discordRoleId) continue;
+    for (const alias of [mapping.teamName, ...(mapping.aliases || [])].filter(Boolean)) {
+      config.teamRoleIds.set(normalizeTeamKey(alias), mapping.discordRoleId);
+    }
+  }
+}
+
+async function handleTeamMappings(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const action = interaction.options.getString('action', true);
+  const query = interaction.options.getString('team')?.trim() || '';
+  const mappings = await listTeamMappings(teamMappingScope());
+
+  if (action === 'list' || action === 'inspect') {
+    const filtered = query
+      ? mappings.filter((mapping) => [mapping.identity, mapping.teamName, ...(mapping.aliases || [])]
+        .some((value) => normalizeTeamKey(value).includes(normalizeTeamKey(query))))
+      : mappings;
+    const lines = filtered.slice(0, 40).map((mapping) =>
+      `- **${mapping.teamName}** | identity: ${mapping.identity} | role: ${mapping.discordRoleId ? `<@&${mapping.discordRoleId}>` : 'missing'} | captains: ${(mapping.captainDiscordIds || []).length} | players: ${(mapping.playerDiscordIds || []).length}`
+    );
+    await interaction.editReply(truncateDiscordMessage(lines.length ? lines.join('\n') : 'No matching persistent team mappings found.'));
+    return;
+  }
+
+  if (action === 'link') {
+    const role = interaction.options.getRole('role');
+    const faceitTeamId = interaction.options.getString('faceit_team_id')?.trim().toLowerCase() || '';
+    if (!query || !role) {
+      await interaction.editReply('For link/correct, provide `team` and `role`. Add `faceit_team_id` when available.');
+      return;
+    }
+    const existing = mappings.find((mapping) =>
+      (faceitTeamId && mapping.faceitTeamId === faceitTeamId) ||
+      [mapping.teamName, ...(mapping.aliases || [])].some((value) => normalizeTeamKey(value) === normalizeTeamKey(query))
+    );
+    const identity = faceitTeamId || existing?.identity || `name:${normalizeTeamKey(query)}`;
+    const saved = await saveTeamMapping(teamMappingScope(), {
+      ...(existing || {}),
+      identity,
+      teamName: query,
+      faceitTeamId: faceitTeamId || existing?.faceitTeamId || null,
+      discordRoleId: role.id,
+      aliases: [...(existing?.aliases || []), existing?.teamName, query].filter(Boolean),
+      source: 'admin_link'
+    });
+    await hydratePersistentTeamRoleMappings();
+    await appendAuditLog({ type: 'team_mapping_link', actorId: interaction.user.id, identity, teamName: query, roleId: role.id });
+    await interaction.editReply(`Saved mapping: **${saved.teamName}** -> <@&${saved.discordRoleId}> (identity ${saved.identity}). Existing aliases were preserved.`);
+    return;
+  }
+
+  if (action === 'repair') {
+    const guild = await client.guilds.fetch(config.discordGuildId);
+    await guild.channels.fetch();
+    await guild.roles.fetch();
+    let repaired = 0;
+    const failures = [];
+    for (const stored of await listStoredMatches()) {
+      const channel = stored.discord?.channelId ? await guild.channels.fetch(stored.discord.channelId).catch(() => null) : null;
+      if (!channel) continue;
+      try {
+        const discordIds = await repairMatchChannel(guild, config, channel, stored.match);
+        await saveMatch(stored.match, discordIds);
+        repaired += 1;
+      } catch (error) {
+        failures.push(`${stored.match.teamA} vs ${stored.match.teamB}: ${error.message}`);
+      }
+    }
+    await interaction.editReply(truncateDiscordMessage(`Repaired ${repaired} linked match room(s). Failures: ${failures.length}.${failures.length ? `\n${failures.slice(0, 10).join('\n')}` : ''}`));
+  }
 }
 
 async function handleMissingCaptains(interaction) {
@@ -1736,15 +2041,26 @@ async function handleTextScheduleProposal(message, content, kind) {
     return;
   }
 
-  const proposedText = content.replace(/^!(schedule|propose|reschedule)\s*/i, '').trim();
+  const rawProposedText = content.replace(/^!(schedule|propose|reschedule)\s*/i, '').trim();
+  const forceDirective = parseForceDirective(rawProposedText);
+  const proposedText = forceDirective.scheduleText;
   if (!proposedText) {
     await message.reply(`Use it like this: \`!${kind === 'reschedule' ? 'reschedule' : 'schedule'} 8/24/2026 3 PM EST\` or \`!${kind === 'reschedule' ? 'reschedule' : 'schedule'} Tuesday 8 PM ET\``);
     return;
   }
 
   const parsedSchedule = parseScheduleInput(proposedText);
+  if (parsedSchedule && isAmbiguousNumericScheduleDate(proposedText)) {
+    await message.reply(`That numeric date is ambiguous. I would read it as **${parsedSchedule.display}**. Please resubmit with the month written out, for example \`!${kind === 'reschedule' ? 'reschedule' : 'schedule'} September 8 8 PM ET\`.`);
+    return;
+  }
   const validation = validateScheduleRequest(stored, proposedText, kind, parsedSchedule?.date || null);
-  if (!validation.allowed) {
+  const bypassPolicy = canScheduleDirectly && !validation.allowed && Boolean(forceDirective.reason);
+  if (!validation.allowed && !bypassPolicy) {
+    if (canScheduleDirectly) {
+      await message.reply(`${validation.message} To override it, add --force reason here after the time.`);
+      return;
+    }
     await message.reply(validation.message);
     return;
   }
@@ -1764,14 +2080,28 @@ async function handleTextScheduleProposal(message, content, kind) {
     kind,
     source: 'text',
     validation,
-    override: canScheduleDirectly
+    override: canScheduleDirectly,
+    overrideReason: bypassPolicy ? forceDirective.reason : null
   };
 
   await saveScheduleProposal(proposal);
 
   if (canScheduleDirectly) {
-    const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id);
+    const oldTime = currentScheduleText(stored);
+    const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id, { markScheduled: true });
+    await approveScheduleProposal(proposal.id, message.author.id);
+    await appendAuditLog({
+      type: 'admin_schedule_override',
+      matchId: stored.match.id,
+      actorId: message.author.id,
+      oldTime,
+      newTime: proposal.scheduledAt,
+      newTimeIso: proposal.scheduledAtIso,
+      override: bypassPolicy,
+      reason: proposal.overrideReason || 'Authorized direct schedule inside configured policy'
+    });
     await message.channel.send({
+      content: `<@&${stored.discord.teamARoleId}> <@&${stored.discord.teamBRoleId}>`,
       embeds: [scheduleStatusEmbed({
         title: kind === 'reschedule' ? 'Reschedule Set By Tournament Ops' : 'Schedule Set By Tournament Ops',
         color: EMBED_COLORS.admin,
@@ -1780,10 +2110,12 @@ async function handleTextScheduleProposal(message, content, kind) {
         actorLabel: 'Set By',
         actorId: message.author.id,
         footer: faceitLine,
-        warning: validation.warning
-      })]
+        warning: [validation.warning, proposal.overrideReason ? `Policy override: ${proposal.overrideReason}` : null].filter(Boolean).join('\n') || null
+      })],
+      allowedMentions: { roles: [stored.discord.teamARoleId, stored.discord.teamBRoleId], users: [], repliedUser: false }
     });
-    await notifyAdmins(message.guild, stored, proposal, message.author.id, faceitLine);
+    await notifyDirectAdminSchedule(message.guild, stored, proposal, message.author.id, faceitLine);
+    await upsertMatchIntroMessage(message.channel, { ...stored.match, status: 'discord_scheduled', scheduledByDiscord: true, scheduledAt: proposal.scheduledAt });
     return;
   }
 
@@ -1935,22 +2267,321 @@ async function handleCallAdmin(message, content) {
     .setTimestamp(new Date());
 
   if (adminChannel) {
-    await adminChannel.send({
+    const alert = await adminChannel.send({
       content: staffMentions,
       embeds: [alertEmbed],
       allowedMentions,
       components: [callAdminClaimButton(message.channel.id)]
     });
+    await saveAdminTicket({
+      id: `ticket-${alert.id}`,
+      status: 'open',
+      matchId: stored.match.id,
+      matchChannelId: message.channel.id,
+      staffChannelId: adminChannel.id,
+      staffMessageId: alert.id,
+      requestedBy: message.author.id,
+      reason
+    });
     await message.reply('Admins have been notified.');
     return;
   }
 
-  await message.channel.send({
+  const alert = await message.channel.send({
     content: staffMentions,
     embeds: [alertEmbed],
     allowedMentions,
     components: [callAdminClaimButton(message.channel.id)]
   });
+  await saveAdminTicket({
+    id: `ticket-${alert.id}`,
+    status: 'open',
+    matchId: stored.match.id,
+    matchChannelId: message.channel.id,
+    staffChannelId: message.channel.id,
+    staffMessageId: alert.id,
+    requestedBy: message.author.id,
+    reason
+  });
+}
+
+async function handleTextStreamRequest(message) {
+  const stored = await getStoredMatchForChannel(message.channel);
+  await message.reply({
+    content: [
+      '**Stream Request**',
+      'Submitting a request does not grant permission to stream.',
+      config.streamGuidelinesUrl ? `Guidelines: ${config.streamGuidelinesUrl}` : config.streamGuidelinesText
+    ].join('\n'),
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`stream_request_open:${message.author.id}:${stored?.match?.id || 'manual'}`)
+        .setLabel('Request to Stream')
+        .setStyle(ButtonStyle.Primary)
+    )]
+  });
+}
+
+async function handleStreamRequestCommand(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === 'cancel') {
+    const requestId = interaction.options.getString('request_id', true);
+    const request = await getStreamRequest(requestId);
+    if (!request || request.requesterId !== interaction.user.id || request.status !== 'pending') {
+      await interaction.reply({ content: 'I could not find a pending request with that ID belonging to you.', ephemeral: true });
+      return;
+    }
+    await updateStreamRequest(requestId, { status: 'canceled', canceledBy: interaction.user.id, canceledAt: new Date().toISOString() }, ['pending']);
+    await interaction.reply({ content: `Canceled stream request ${requestId}.`, ephemeral: true });
+    return;
+  }
+  await showStreamRequestModal(interaction);
+}
+
+async function showStreamRequestModal(interaction) {
+  const parts = interaction.customId?.split(':') || [];
+  const boundRequester = parts[1] || interaction.user.id;
+  if (boundRequester !== interaction.user.id) {
+    await interaction.reply({ content: 'Use your own Request to Stream button.', ephemeral: true });
+    return;
+  }
+  const stored = interaction.channel?.id ? await getStoredMatchForChannel(interaction.channel) : null;
+  const schedule = stored ? await getSchedule(stored.match.id) : null;
+  const modal = new ModalBuilder()
+    .setCustomId(`stream_request_submit:${interaction.user.id}:${stored?.match?.id || 'manual'}:${interaction.channelId || 'none'}`)
+    .setTitle('Request to Stream');
+  const fields = [
+    ['date_time', 'Match date and time (ET)', schedule?.scheduledAt || stored?.match?.scheduledAt || '', TextInputStyle.Short],
+    ['matchup', 'Teams / matchup', stored ? `${stored.match.teamA} vs ${stored.match.teamB}` : '', TextInputStyle.Short],
+    ['stream_url', 'Twitch stream URL', '', TextInputStyle.Short],
+    ['social_url', 'Caster/streamer X or Twitter URL', '', TextInputStyle.Short],
+    ['ack', 'Type I AGREE to the co-streaming guidelines', '', TextInputStyle.Short]
+  ];
+  modal.addComponents(...fields.map(([id, label, value, style]) => {
+    const input = new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style).setRequired(true);
+    if (value) input.setValue(String(value).slice(0, 4000));
+    return new ActionRowBuilder().addComponents(input);
+  }));
+  await interaction.showModal(modal);
+}
+
+async function handleStreamRequestModal(interaction) {
+  const [, requesterId, matchIdRaw, sourceChannelId] = interaction.customId.split(':');
+  if (requesterId !== interaction.user.id) {
+    await interaction.reply({ content: 'This form belongs to another user.', ephemeral: true });
+    return;
+  }
+  const matchId = matchIdRaw === 'manual' ? null : matchIdRaw;
+  const linkedMatch = matchId ? await getStoredMatch(matchId) : null;
+  if (matchId && !linkedMatch) {
+    await interaction.reply({ content: 'That linked match is no longer available. Open a new request from its match room.', ephemeral: true });
+    return;
+  }
+  const submittedMatchup = interaction.fields.getTextInputValue('matchup');
+  const expectedMatchup = linkedMatch ? `${linkedMatch.match.teamA} vs ${linkedMatch.match.teamB}` : null;
+  if (expectedMatchup && normalizeTeamKey(submittedMatchup) !== normalizeTeamKey(expectedMatchup)) {
+    await interaction.reply({ content: `This request is linked to **${expectedMatchup}**. Do not change the teams in a linked request.`, ephemeral: true });
+    return;
+  }
+  const validation = validateStreamRequest({
+    dateTime: interaction.fields.getTextInputValue('date_time'),
+    matchup: expectedMatchup || submittedMatchup,
+    streamUrl: interaction.fields.getTextInputValue('stream_url'),
+    socialUrl: interaction.fields.getTextInputValue('social_url'),
+    acknowledged: interaction.fields.getTextInputValue('ack')
+  });
+  if (!validation.valid) {
+    await interaction.reply({ content: validation.errors.join('\n'), ephemeral: true });
+    return;
+  }
+  const staffChannel = config.streamRequestChannelId
+    ? await client.channels.fetch(config.streamRequestChannelId).catch(() => null)
+    : null;
+  if (!staffChannel?.isTextBased?.()) {
+    await interaction.reply({ content: 'Stream requests are temporarily unavailable because the staff review channel is not configured.', ephemeral: true });
+    return;
+  }
+  const priorRequests = (await listStreamRequests({ requesterId: interaction.user.id })).filter((entry) =>
+    matchId ? entry.matchId === matchId : normalizeTeamKey(entry.matchup) === normalizeTeamKey(validation.value.matchup)
+  );
+  const request = await createStreamRequest({
+    id: makeStreamRequestId(),
+    requesterId: interaction.user.id,
+    requesterTag: interaction.user.tag,
+    matchId,
+    sourceChannelId: sourceChannelId === 'none' ? interaction.channelId : sourceChannelId,
+    manualVerificationRequired: !matchId,
+    repeatSubmission: priorRequests.length > 0,
+    priorSubmissionCount: priorRequests.length,
+    ...validation.value,
+    guidelinesSnapshot: config.streamGuidelinesText,
+    guidelinesUrl: config.streamGuidelinesUrl
+  });
+  await sendStreamRequestToStaff(request, staffChannel);
+  await interaction.reply({ content: `Request ${request.id} was submitted for staff review. This is not approval to stream.`, ephemeral: true });
+}
+
+async function sendStreamRequestToStaff(request, suppliedChannel = null) {
+  const channel = suppliedChannel || (config.streamRequestChannelId
+    ? await client.channels.fetch(config.streamRequestChannelId).catch(() => null)
+    : null);
+  if (!channel?.isTextBased?.()) throw new Error('STREAM_REQUEST_CHANNEL_ID is not configured or accessible');
+  const embed = streamRequestEmbed(request);
+  const message = await channel.send({
+    content: getStaffMentions(channel.guild),
+    embeds: [embed],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`stream_review:${request.id}:approve`).setLabel('Approve').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`stream_review:${request.id}:deny`).setLabel('Deny').setStyle(ButtonStyle.Danger)
+    )],
+    allowedMentions: getAdminAllowedMentions(channel.guild)
+  });
+  await updateStreamRequest(request.id, { staffChannelId: channel.id, staffMessageId: message.id }, ['pending']);
+}
+
+function streamRequestEmbed(request) {
+  const status = request.status || 'pending';
+  const colors = { pending: EMBED_COLORS.warning, approved: EMBED_COLORS.accepted, denied: EMBED_COLORS.declined, revoked: EMBED_COLORS.declined, canceled: 0x7f8c8d };
+  return new EmbedBuilder()
+    .setColor(colors[status] || EMBED_COLORS.admin)
+    .setTitle(`Stream Request ${request.id}`)
+    .setDescription([
+      `Status: **${status.toUpperCase()}**`,
+      request.manualVerificationRequired ? 'Manual/unlinked match: staff verification required.' : null,
+      request.repeatSubmission ? `Repeat submission by this requester (${request.priorSubmissionCount} earlier request(s)); review normally.` : null
+    ].filter(Boolean).join('\n'))
+    .addFields([
+      { name: 'Requester', value: `<@${request.requesterId}>`, inline: true },
+      { name: 'Match', value: request.matchup, inline: true },
+      { name: 'Date/Time', value: request.dateTime, inline: false },
+      { name: 'Stream', value: request.streamUrl, inline: false },
+      { name: 'X/Twitter', value: request.socialUrl, inline: false },
+      request.reviewedBy ? { name: 'Reviewed By', value: `<@${request.reviewedBy}>`, inline: true } : null,
+      request.denialReason ? { name: 'Reason', value: request.denialReason, inline: false } : null
+    ].filter(Boolean))
+    .setFooter({ text: 'A request is not permission until staff approves it.' })
+    .setTimestamp(new Date(request.updatedAt || request.createdAt || Date.now()));
+}
+
+async function handleStreamReview(interaction) {
+  if (!isAdminStaff(interaction.member)) {
+    await interaction.reply({ content: 'Only authorized staff can review stream requests.', ephemeral: true });
+    return;
+  }
+  const [, requestId, decision] = interaction.customId.split(':');
+  if (decision === 'deny') {
+    const modal = new ModalBuilder().setCustomId(`stream_deny_submit:${requestId}`).setTitle('Deny Stream Request');
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId('reason').setLabel('Denial reason').setStyle(TextInputStyle.Paragraph).setRequired(true)
+    ));
+    await interaction.showModal(modal);
+    return;
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const updated = await updateStreamRequest(requestId, {
+    status: 'approved',
+    reviewedBy: interaction.user.id,
+    reviewedAt: new Date().toISOString()
+  }, ['pending']);
+  if (!updated) {
+    await interaction.editReply('This request was already reviewed or no longer exists.');
+    return;
+  }
+  await interaction.message.edit({ embeds: [streamRequestEmbed(updated)], components: [] });
+  await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} was **approved** for ${updated.matchup}.`);
+  await appendAuditLog({ type: 'stream_request_approved', actorId: interaction.user.id, matchId: updated.matchId, requestId });
+  await interaction.editReply('Stream request approved.');
+}
+
+async function handleStreamDenialModal(interaction) {
+  if (!isAdminStaff(interaction.member)) {
+    await interaction.reply({ content: 'Only authorized staff can review stream requests.', ephemeral: true });
+    return;
+  }
+  const requestId = interaction.customId.split(':')[1];
+  const reason = interaction.fields.getTextInputValue('reason').trim();
+  const updated = await updateStreamRequest(requestId, {
+    status: 'denied',
+    reviewedBy: interaction.user.id,
+    reviewedAt: new Date().toISOString(),
+    denialReason: reason
+  }, ['pending']);
+  if (!updated) {
+    await interaction.reply({ content: 'This request was already reviewed or no longer exists.', ephemeral: true });
+    return;
+  }
+  if (updated.staffChannelId && updated.staffMessageId) {
+    const channel = await client.channels.fetch(updated.staffChannelId).catch(() => null);
+    const message = await channel?.messages.fetch(updated.staffMessageId).catch(() => null);
+    await message?.edit({ embeds: [streamRequestEmbed(updated)], components: [] }).catch(() => null);
+  }
+  await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} was **denied**. Reason: ${reason}`);
+  await appendAuditLog({ type: 'stream_request_denied', actorId: interaction.user.id, matchId: updated.matchId, requestId, reason });
+  await interaction.reply({ content: 'Stream request denied.', ephemeral: true });
+}
+
+async function notifyStreamRequester(request, text) {
+  const user = await client.users.fetch(request.requesterId).catch(() => null);
+  if (user && await user.send(text).then(() => true).catch(() => false)) return true;
+  const channel = request.sourceChannelId ? await client.channels.fetch(request.sourceChannelId).catch(() => null) : null;
+  if (channel?.isTextBased?.()) {
+    const delivered = await channel.send({
+      content: `<@${request.requesterId}> ${text}`,
+      allowedMentions: { users: [request.requesterId], roles: [], repliedUser: false }
+    }).then(() => true).catch(() => false);
+    if (delivered) return true;
+  }
+  const staff = config.streamRequestChannelId ? await client.channels.fetch(config.streamRequestChannelId).catch(() => null) : null;
+  await staff?.send(`Could not DM <@${request.requesterId}> about stream request ${request.id}.`).catch(() => null);
+  return false;
+}
+
+async function handleAdminStreams(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const action = interaction.options.getString('action', true);
+  const requestId = interaction.options.getString('request_id');
+  const reason = interaction.options.getString('reason') || '';
+  if (action === 'pending' || action === 'approved') {
+    const requests = await listStreamRequests({ status: action });
+    await interaction.editReply(truncateDiscordMessage(requests.length
+      ? requests.slice(0, 40).map((request) => `- ${request.id} ${request.matchup} | <@${request.requesterId}> | ${request.dateTime}`).join('\n')
+      : `No ${action} stream requests.`));
+    return;
+  }
+  const request = requestId ? await getStreamRequest(requestId) : null;
+  if (!request) {
+    await interaction.editReply('Provide a valid `request_id`.');
+    return;
+  }
+  if (action === 'inspect') {
+    await interaction.editReply({ embeds: [streamRequestEmbed(request)] });
+    return;
+  }
+  if (action === 'revoke') {
+    const updated = await updateStreamRequest(requestId, { status: 'revoked', reviewedBy: interaction.user.id, denialReason: reason || 'Approval revoked by staff' }, ['approved']);
+    await interaction.editReply(updated ? 'Approval revoked and requester will be notified.' : 'Only an approved request can be revoked.');
+    if (updated) await notifyStreamRequester(updated, `Your CROSSFIRE stream approval ${updated.id} was revoked. Reason: ${updated.denialReason}`);
+    return;
+  }
+  if (action === 'complete') {
+    await sendPostCastReminder(request.matchId, interaction.user.id);
+    await interaction.editReply('Marked completion and processed eligible post-cast reminders.');
+  }
+}
+
+async function sendPostCastReminder(matchId, actorId = null) {
+  if (!matchId) return;
+  const requests = await listStreamRequests({ matchId, status: 'approved' });
+  for (const request of requests) {
+    const claimed = await claimPostCastReminder(request.id);
+    if (!claimed) continue;
+    const sent = await notifyStreamRequester(claimed, `Thanks for covering Crossfire! Please fill out the post-cast form: ${config.postCastFormUrl}`);
+    await updateStreamRequest(claimed.id, {
+      postCastReminderSentAt: new Date().toISOString(),
+      postCastReminderDelivery: sent ? 'delivered' : 'failed',
+      completedBy: actorId
+    }, ['approved']);
+  }
 }
 
 function scheduleStatusEmbed({
@@ -2178,11 +2809,13 @@ async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy, opti
   if (!acceptedProposal) {
     await saveSchedule(proposal.matchId, {
       scheduledAt: proposal.scheduledAt,
+      scheduledAtIso: proposal.scheduledAtIso || null,
       timezone: proposal.timezone,
       proposedBy: proposal.proposedBy,
       acceptedBy,
       proposalId: proposal.id,
-      kind: proposal.kind || 'schedule'
+      kind: proposal.kind || 'schedule',
+      overrideReason: proposal.overrideReason || null
     });
   }
   const result = await scheduleFaceitMatch(
@@ -2240,6 +2873,30 @@ async function notifyAdmins(guild, stored, proposal, acceptedBy, faceitLine) {
     embeds: [adminEmbed],
     allowedMentions,
     components: [adminDecisionButtons(proposal.id, stored.discord.channelId)]
+  });
+}
+
+async function notifyDirectAdminSchedule(guild, stored, proposal, adminId, faceitLine) {
+  const target = await getScheduleAdminChannel() || await guild.channels.fetch(stored.discord.channelId).catch(() => null);
+  if (!target) return;
+  const adminMentions = getAdminAllowedMentions(guild);
+  await target.send({
+    content: getStaffMentions(guild),
+    embeds: [scheduleStatusEmbed({
+      title: proposal.kind === 'reschedule' ? 'Reschedule Set By Authorized Staff' : 'Schedule Set By Authorized Staff',
+      color: EMBED_COLORS.admin,
+      stored,
+      proposal,
+      actorLabel: 'Administrator',
+      actorId: adminId,
+      footer: faceitLine,
+      warning: proposal.overrideReason ? `Bot policy override: ${proposal.overrideReason}` : null
+    })],
+    allowedMentions: {
+      roles: adminMentions.roles,
+      users: [adminId],
+      repliedUser: false
+    }
   });
 }
 
@@ -2517,6 +3174,11 @@ async function handleAdminScheduleDecision(interaction, approved) {
   }
 
   const [, proposalId, channelId] = interaction.customId.split(':');
+  const beforeDecision = proposalId ? await getScheduleProposal(proposalId) : null;
+  if (beforeDecision?.adminApproved || beforeDecision?.adminDenied) {
+    await interaction.editReply(`This schedule request was already ${beforeDecision.adminApproved ? 'approved' : 'denied'}.`);
+    return;
+  }
   const proposal = approved
     ? await approveScheduleProposal(proposalId, interaction.user.id)
     : await denyScheduleProposal(proposalId, interaction.user.id);
@@ -2543,7 +3205,22 @@ async function handleAdminScheduleDecision(interaction, approved) {
     let renameResult = null;
     if (matchChannel && stored) {
       renameResult = await markMatchChannelScheduled(matchChannel, stored, proposal);
+      await upsertMatchIntroMessage(matchChannel, {
+        ...stored.match,
+        status: 'discord_scheduled',
+        scheduledByDiscord: true,
+        scheduledAt: proposal?.scheduledAt || stored.match.scheduledAt
+      });
     }
+    await appendAuditLog({
+      type: 'schedule_approved',
+      matchId: stored?.match?.id || proposal?.matchId,
+      actorId: interaction.user.id,
+      oldTime: proposal?.previousScheduledAt || (stored ? currentScheduleText(stored) : null),
+      newTime: proposal?.scheduledAt || null,
+      reason: proposal?.overrideReason || null
+    });
+    await runOperationsTick().catch((error) => console.error('Veto reminder update failed:', error));
     await interaction.message.react('✅').catch(() => null);
     const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
     const missingChannelNote = matchChannel ? '' : ' I could not find the match channel to mark yellow.';
@@ -2552,6 +3229,7 @@ async function handleAdminScheduleDecision(interaction, approved) {
       : '';
     await interaction.editReply(`Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}`);
   } else {
+    await appendAuditLog({ type: 'schedule_denied', matchId: stored?.match?.id || proposal?.matchId, actorId: interaction.user.id });
     await interaction.message.react('❌').catch(() => null);
     const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
     const missingChannelNote = matchChannel ? '' : ' I could not find the match channel.';
@@ -2714,37 +3392,214 @@ function adminDecisionEmbed({ approved, stored, proposal, adminId }) {
 }
 
 function isAdminStaff(member) {
-  if (member.permissions?.has(PermissionFlagsBits.Administrator) ||
-      member.permissions?.has(PermissionFlagsBits.ManageGuild)) {
-    return true;
-  }
-
-  if (config.discordStaffRoleId && member.roles.cache.has(config.discordStaffRoleId)) {
-    return true;
-  }
-
-  if (config.adminAlertRoleIds.some((roleId) => member.roles.cache.has(roleId))) {
-    return true;
-  }
-
-  return config.matchAccessRoleNames.some((roleName) =>
-    member.roles.cache.some((role) => role.name.toLowerCase() === roleName.toLowerCase())
-  ) ||
-    config.matchAccessRoleIds.some((roleId) => member.roles.cache.has(roleId)) ||
-    config.scheduleOverrideRoleIds.some((roleId) => member.roles.cache.has(roleId));
+  return isAuthorizedStaffMember(member, config);
 }
 
 function canUseBotAdminCommand(member) {
-  if (member.permissions?.has(PermissionFlagsBits.Administrator) ||
-      member.permissions?.has(PermissionFlagsBits.ManageGuild)) {
-    return true;
-  }
-
-  return Boolean(config.discordStaffRoleId && member.roles.cache.has(config.discordStaffRoleId));
+  return isAuthorizedStaffMember(member, config);
 }
 
 function hasScheduleOverride(member) {
-  return config.scheduleOverrideRoleIds.some((roleId) => member.roles.cache.has(roleId));
+  return isAuthorizedStaffMember(member, config) ||
+    config.scheduleOverrideRoleIds.some((roleId) => member.roles.cache.has(roleId));
+}
+
+async function handleAdminVeto(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const action = interaction.options.getString('action', true);
+  const channel = interaction.options.getChannel('match_room') || interaction.channel;
+  const stored = channel?.id ? await getStoredMatchForChannel(channel) : null;
+  if (!stored) {
+    await interaction.editReply('Select or run this inside a linked match room.');
+    return;
+  }
+
+  if (action === 'inspect') {
+    const veto = await getVeto(stored.match.id);
+    await interaction.editReply(veto ? formatVetoStatus(veto) : 'No veto exists for this match.');
+    return;
+  }
+  if (action === 'cancel') {
+    const existing = await getVeto(stored.match.id);
+    await saveVeto({ ...(existing || { matchId: stored.match.id }), status: 'canceled', canceledBy: interaction.user.id, canceledAt: new Date().toISOString() }, existing?.version ?? null);
+    await appendAuditLog({ type: 'veto_cancel', matchId: stored.match.id, actorId: interaction.user.id });
+    await interaction.editReply('Veto canceled. Automatic recovery will not restart it unless an admin resets it.');
+    return;
+  }
+  if (action === 'seeds') {
+    const teamASeed = interaction.options.getInteger('team_a_seed');
+    const teamBSeed = interaction.options.getInteger('team_b_seed');
+    const advantageTeam = interaction.options.getString('advantage_team');
+    if (!teamASeed || !teamBSeed || teamASeed === teamBSeed) {
+      await interaction.editReply('Provide two different positive seeds. Lower number means higher seed.');
+      return;
+    }
+    const existing = await getVeto(stored.match.id);
+    await saveVeto({
+      ...(existing || {}),
+      matchId: stored.match.id,
+      teamA: stored.match.teamA,
+      teamB: stored.match.teamB,
+      teamASeed,
+      teamBSeed,
+      advantageTeam: advantageTeam || existing?.advantageTeam || null,
+      seedSource: 'admin override',
+      status: existing?.status || 'configured',
+      seedConfiguredBy: interaction.user.id,
+      seedConfiguredAt: new Date().toISOString()
+    }, existing?.version ?? null);
+    await appendAuditLog({ type: 'veto_seed_override', matchId: stored.match.id, actorId: interaction.user.id, teamASeed, teamBSeed });
+    await interaction.editReply(`Persistent seed override saved: ${stored.match.teamA} #${teamASeed}, ${stored.match.teamB} #${teamBSeed}.${advantageTeam ? ` Grand Final advantage: ${advantageTeam === 'teamA' ? stored.match.teamA : stored.match.teamB}.` : ''}`);
+    return;
+  }
+  if (action === 'reset') {
+    const existing = await getVeto(stored.match.id);
+    if (existing) await saveVeto({ ...existing, status: 'reset', resetBy: interaction.user.id }, existing.version);
+  }
+  await startVetoForStoredMatch(stored, channel, interaction.user.id, true);
+  await interaction.editReply(`Veto started in <#${channel.id}>.`);
+}
+
+async function startVetoForStoredMatch(stored, channel, actorId = null, force = false) {
+  if (!isPlayoffMatch(stored.match)) throw new Error('Automatic vetoes are only enabled for explicitly configured playoff sources.');
+  const existing = await getVeto(stored.match.id);
+  if (!force && existing && ['choosing_first_action', 'active', 'complete', 'canceled'].includes(existing.status)) return existing;
+  const format = normalizeRoundCategory(stored.match.round).includes('grand final') ? 'bo5_advantage' : 'bo3';
+  const configuredAdvantage = normalizeTeamKey(config.vetoAdvantageTeam || '');
+  const configuredAdvantageTeam = configuredAdvantage && configuredAdvantage === normalizeTeamKey(stored.match.teamA)
+    ? 'teamA'
+    : configuredAdvantage && configuredAdvantage === normalizeTeamKey(stored.match.teamB)
+      ? 'teamB'
+      : null;
+  const seeds = {
+    teamA: existing?.teamASeed || config.vetoSeeds.get(normalizeTeamKey(stored.match.teamA)),
+    teamB: existing?.teamBSeed || config.vetoSeeds.get(normalizeTeamKey(stored.match.teamB)),
+    source: existing?.seedSource || 'configured tournament seed table'
+  };
+  const veto = createVeto({
+    match: stored.match,
+    mapPool: config.vetoMapPool,
+    seeds,
+    format,
+    advantageTeam: existing?.advantageTeam || configuredAdvantageTeam,
+    captainOnly: config.vetoCaptainOnly,
+    sidePolicy: config.vetoSidePolicy
+  });
+  const saved = await saveVeto({ ...veto, channelId: channel.id, startedBy: actorId, startedAt: new Date().toISOString() }, existing?.version ?? null);
+  const message = await channel.send(vetoMessagePayload(saved, stored));
+  const updated = await saveVeto({ ...saved, messageId: message.id }, saved.version);
+  await appendAuditLog({ type: 'veto_start', matchId: stored.match.id, actorId, format, seedSource: seeds.source });
+  return updated;
+}
+
+async function handleVetoFirstChoice(interaction) {
+  const [, matchId, versionText, choice] = interaction.customId.split(':');
+  const veto = await getVeto(matchId);
+  if (!veto || Number(versionText) !== Number(veto.version)) {
+    await interaction.reply({ content: 'That veto button is stale. Use the newest veto message.', ephemeral: true });
+    return;
+  }
+  const stored = await getStoredMatch(matchId);
+  const actorTeam = await getVetoActorTeam(interaction.member, stored);
+  await assertVetoActorEligible(interaction.member, stored, veto, actorTeam);
+  const next = chooseFirstAction(veto, actorTeam, choice);
+  const saved = await saveVeto(next, veto.version);
+  await interaction.update(vetoMessagePayload(saved, stored));
+}
+
+async function handleVetoMapChoice(interaction) {
+  const [, matchId, versionText, mapIndexText] = interaction.customId.split(':');
+  const veto = await getVeto(matchId);
+  if (!veto || Number(versionText) !== Number(veto.version)) {
+    await interaction.reply({ content: 'That veto button is stale. Use the newest veto message.', ephemeral: true });
+    return;
+  }
+  const stored = await getStoredMatch(matchId);
+  const actorTeam = await getVetoActorTeam(interaction.member, stored);
+  await assertVetoActorEligible(interaction.member, stored, veto, actorTeam);
+  const mapName = veto.mapPool[Number(mapIndexText)];
+  const next = applyVetoAction(veto, actorTeam, mapName);
+  const saved = await saveVeto(next, veto.version);
+  await interaction.update(vetoMessagePayload(saved, stored));
+  if (saved.status === 'complete') await notifyStaffVetoComplete(saved, stored);
+}
+
+async function getVetoActorTeam(member, stored) {
+  if (!stored || !member) return null;
+  if (stored.discord?.teamARoleId && member.roles.cache.has(stored.discord.teamARoleId)) return 'teamA';
+  if (stored.discord?.teamBRoleId && member.roles.cache.has(stored.discord.teamBRoleId)) return 'teamB';
+  return null;
+}
+
+async function assertVetoActorEligible(member, stored, veto, actorTeam) {
+  if (!actorTeam) throw new Error('You are not mapped to either team in this match.');
+  if (!veto.captainOnly) return;
+  const mappings = await listTeamMappings(teamMappingScope());
+  const teamName = actorTeam === 'teamA' ? stored.match.teamA : stored.match.teamB;
+  const mapping = mappings.find((candidate) => [candidate.teamName, ...(candidate.aliases || [])]
+    .some((value) => normalizeTeamKey(value) === normalizeTeamKey(teamName)));
+  if (!mapping?.captainDiscordIds?.includes(member.id)) throw new Error('Only the mapped captain for your team may act in this veto.');
+}
+
+function vetoMessagePayload(veto, stored) {
+  const higherName = veto.higherSeedTeam === 'teamA' ? veto.teamA : veto.teamB;
+  const currentName = veto.currentTeam === 'teamA' ? veto.teamA : veto.teamB;
+  const actionLines = veto.actions.length
+    ? veto.actions.map((entry) => `${entry.index}. **${entry.team === 'teamA' ? veto.teamA : veto.teamB}** ${entry.action} ${entry.map}`).join('\n')
+    : 'No map actions yet.';
+  const final = veto.final
+    ? [
+        `Playable maps: **${veto.final.playableMaps.join(', ')}**`,
+        veto.final.awardedMap ? `Awarded map (not played): **${veto.final.awardedMap}**` : `Decider: **${veto.final.decider}**`,
+        `Starting score: **${veto.final.startingScore}**`
+      ].join('\n')
+    : null;
+  const embed = new EmbedBuilder()
+    .setColor(veto.status === 'complete' ? EMBED_COLORS.accepted : EMBED_COLORS.admin)
+    .setTitle(veto.status === 'complete' ? 'Discord Veto Complete' : 'CROSSFIRE Playoff Veto')
+    .setDescription(`**${veto.teamA} vs ${veto.teamB}**`)
+    .addFields(
+      { name: 'Map Pool Snapshot', value: veto.mapPool.join(', ') },
+      { name: 'Seeds', value: `${veto.teamA}: #${veto.teamASeed}\n${veto.teamB}: #${veto.teamBSeed}\nSource: ${veto.seedSource}` },
+      { name: 'Actions', value: actionLines },
+      final ? { name: 'Final Result', value: final } : { name: 'Current Turn', value: veto.status === 'choosing_first_action' ? `${higherName} chooses who takes the first veto action.` : `${currentName}: **${expectedVetoAction(veto)}** a map.` },
+      { name: 'Side Policy', value: veto.sidePolicy },
+      { name: 'FACEIT', value: stored.match.faceitUrl || 'Not linked' }
+    )
+    .setFooter({ text: 'Discord veto only. Staff must enter the result into FACEIT.' });
+  const components = [];
+  if (veto.status === 'choosing_first_action') {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`veto_first:${veto.matchId}:${veto.version}:self`).setLabel('Our team acts first').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`veto_first:${veto.matchId}:${veto.version}:opponent`).setLabel('Opponent acts first').setStyle(ButtonStyle.Secondary)
+    ));
+  } else if (veto.status === 'active') {
+    const available = veto.mapPool.map((map, index) => ({ map, index })).filter(({ map }) => veto.availableMaps.includes(map));
+    for (let index = 0; index < available.length; index += 5) {
+      components.push(new ActionRowBuilder().addComponents(...available.slice(index, index + 5).map(({ map, index: mapIndex }) =>
+        new ButtonBuilder().setCustomId(`veto_map:${veto.matchId}:${veto.version}:${mapIndex}`).setLabel(map).setStyle(ButtonStyle.Primary)
+      )));
+    }
+  }
+  return { embeds: [embed], components };
+}
+
+function formatVetoStatus(veto) {
+  return truncateDiscordMessage([
+    `**${veto.teamA} vs ${veto.teamB}**`,
+    `Status: ${veto.status}`,
+    `Format: ${veto.format}`,
+    `Map pool: ${(veto.mapPool || []).join(', ')}`,
+    `Turn: ${veto.currentTeam || 'none'} ${expectedVetoAction(veto) || ''}`,
+    ...(veto.actions || []).map((entry) => `${entry.index}. ${entry.team} ${entry.action} ${entry.map}`)
+  ].join('\n'));
+}
+
+async function notifyStaffVetoComplete(veto, stored) {
+  const channelId = config.vetoStaffChannelId;
+  const channel = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
+  if (!channel?.isTextBased?.()) return;
+  await channel.send({ embeds: vetoMessagePayload(veto, stored).embeds });
 }
 
 function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) {
@@ -2870,6 +3725,12 @@ function parseScheduleInput(value) {
     display: formatScheduleDisplay(date, zone.timeZone),
     discordTimestamp: discordTimestamp(date.toISOString(), 'F')
   };
+}
+
+function isAmbiguousNumericScheduleDate(value) {
+  const match = String(value || '').match(/\b(\d{1,2})[\/-](\d{1,2})(?:[\/-]\d{2,4})?\b/);
+  if (!match) return false;
+  return Number(match[1]) >= 1 && Number(match[1]) <= 12 && Number(match[2]) >= 1 && Number(match[2]) <= 12;
 }
 
 function detectScheduleTimezone(value) {
@@ -3260,6 +4121,46 @@ function findCandidateRoleForTeam(candidates, teamName) {
 
 function makeProposalId() {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+async function runOperationsTick() {
+  const now = Date.now();
+  const schedules = await listSchedules();
+  for (const schedule of schedules) {
+    if (!schedule.adminApproved) continue;
+    const startMs = Date.parse(schedule.scheduledAtIso || schedule.scheduledAt);
+    if (!Number.isFinite(startMs) || startMs <= now) continue;
+    if (startMs - now > 60 * 60 * 1000) continue;
+    const stored = await getStoredMatch(schedule.matchId);
+    if (!stored || !isPlayoffMatch(stored.match)) continue;
+    const status = String(stored.match.status || '').toLowerCase();
+    if (/(finished|done|completed|cancel)/.test(status)) continue;
+    const existing = await getVeto(stored.match.id);
+    if (existing && ['choosing_first_action', 'active', 'complete', 'canceled'].includes(existing.status)) continue;
+    const channel = stored.discord?.channelId ? await client.channels.fetch(stored.discord.channelId).catch(() => null) : null;
+    if (!channel?.isTextBased?.()) continue;
+    try {
+      await startVetoForStoredMatch(stored, channel);
+    } catch (error) {
+      if (existing?.status === 'blocked' && existing.reason === error.message) continue;
+      await saveVeto({
+        ...(existing || {}),
+        matchId: stored.match.id,
+        teamA: stored.match.teamA,
+        teamB: stored.match.teamB,
+        status: 'blocked',
+        reason: error.message,
+        scheduledAtIso: schedule.scheduledAtIso || null
+      }, existing?.version ?? null);
+      await channel.send({
+        embeds: [new EmbedBuilder()
+          .setColor(EMBED_COLORS.warning)
+          .setTitle('Veto Needs Staff Configuration')
+          .setDescription(error.message)
+          .setFooter({ text: 'No seed or map-pool values were guessed. Staff can configure them and run /cf veto action:start.' })]
+      });
+    }
+  }
 }
 
 client.login(config.discordToken);

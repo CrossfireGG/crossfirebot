@@ -153,6 +153,10 @@ export function getConfig() {
     matchAccessRoleIds: parseCsvValue(process.env.MATCH_ACCESS_ROLE_IDS || '1128907825167482900,1353921199016644700'),
     matchAccessRoleNames: parseCsvValue(process.env.MATCH_ACCESS_ROLE_NAMES || ''),
     scheduleOverrideRoleIds: parseCsvValue(process.env.SCHEDULE_OVERRIDE_ROLE_IDS || '1128907825167482900'),
+    authorizedStaffRoleIds: parseCsvValue(process.env.AUTHORIZED_STAFF_ROLE_IDS || [
+      process.env.DISCORD_STAFF_ROLE_ID,
+      process.env.ADMIN_ALERT_ROLE_IDS
+    ].filter(Boolean).join(',')),
     roleSyncPairs: parseRoleSyncPairs(
       process.env.ROLE_SYNC_PAIRS ||
       '1128905368018354277:1128907940720562296=1473173377005912074:1474117290600562920'
@@ -175,10 +179,38 @@ export function getConfig() {
     teamCaptainRoleId: process.env.TEAM_CAPTAIN_ROLE_ID || null,
     teamCaptainRoleName: process.env.TEAM_CAPTAIN_ROLE_NAME || 'Team Captain',
     updateTeamNicknames: process.env.UPDATE_TEAM_NICKNAMES !== 'false',
+    teamMappingSeasonId: process.env.TEAM_MAPPING_SEASON_ID || faceitSources[0]?.id || 'default',
+    playoffSourceIds: parseCsvValue(process.env.PLAYOFF_SOURCE_IDS || faceitSources
+      .filter((source) => /playoff/i.test(source.name || ''))
+      .map((source) => source.id)
+      .join(',')),
+    vetoMapPool: parseCsvValue(process.env.VETO_MAP_POOL || ''),
+    vetoSeeds: parseNamedNumbers(process.env.VETO_SEEDS || ''),
+    vetoCaptainOnly: process.env.VETO_CAPTAIN_ONLY !== 'false',
+    vetoSidePolicy: process.env.VETO_SIDE_POLICY || 'Staff decides sides after the Discord veto.',
+    vetoAdvantageTeam: process.env.VETO_ADVANTAGE_TEAM || null,
+    vetoStaffChannelId: process.env.VETO_STAFF_CHANNEL_ID || process.env.ADMIN_SCHEDULE_CHANNEL_ID || null,
+    streamRequestChannelId: process.env.STREAM_REQUEST_CHANNEL_ID || null,
+    streamGuidelinesUrl: process.env.STREAM_GUIDELINES_URL || null,
+    streamGuidelinesText: process.env.STREAM_GUIDELINES_TEXT || 'Follow all CROSSFIRE co-streaming rules and do not restream the official broadcast without explicit permission.',
+    postCastFormUrl: process.env.POST_CAST_FORM_URL || 'https://forms.gle/6zwVr2ArfFngGQ2NA',
+    rulesUrl: process.env.CROSSFIRE_RULES_URL || null,
     arenaClubId: process.env.ARENA_CLUB_ID || '5c8215bf-be47-4714-8738-2d7038b5d9c3',
     roundWindows: parseRoundWindows(process.env.ROUND_WINDOWS || ''),
     defaultTimezone: process.env.DEFAULT_TIMEZONE || 'America/New_York'
   };
+}
+
+function parseNamedNumbers(value) {
+  const result = new Map();
+  for (const entry of String(value || '').split(';').map((part) => part.trim()).filter(Boolean)) {
+    const separator = entry.lastIndexOf('=');
+    if (separator < 1) continue;
+    const name = normalizeTeamKey(entry.slice(0, separator));
+    const number = Number(entry.slice(separator + 1));
+    if (name && Number.isInteger(number) && number > 0) result.set(name, number);
+  }
+  return result;
 }
 
 function parseRoleSyncPairs(value) {

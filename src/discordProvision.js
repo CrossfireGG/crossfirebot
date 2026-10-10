@@ -92,7 +92,7 @@ export async function repairMatchChannel(guild, config, channel, match) {
   };
 }
 
-function makeMatchPermissionOverwrites(everyoneRole, teamARole, teamBRole, privilegedRoles) {
+export function makeMatchPermissionOverwrites(everyoneRole, teamARole, teamBRole, privilegedRoles) {
   return [
     {
       id: everyoneRole.id,

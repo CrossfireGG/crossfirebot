@@ -1,7 +1,4 @@
-import {
-  PermissionFlagsBits,
-  SlashCommandBuilder
-} from 'discord.js';
+import { SlashCommandBuilder } from 'discord.js';
 
 const roundChoices = [
   { name: 'All detected rounds', value: 'all' },
@@ -46,6 +43,12 @@ export const commands = [
           option
             .setName('notify_captains')
             .setDescription('For team sync: DM captains about missing players')
+            .setRequired(false)
+        )
+        .addBooleanOption((option) =>
+          option
+            .setName('dry_run')
+            .setDescription('Preview team sync changes without changing Discord')
             .setRequired(false)
         )
     )
@@ -138,5 +141,73 @@ export const commands = [
             .setRequired(false)
         )
     )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('mappings')
+        .setDescription('Manage persistent team mappings')
+        .addStringOption((option) => option.setName('action').setDescription('Mapping action').setRequired(true).addChoices(
+          { name: 'list', value: 'list' },
+          { name: 'inspect', value: 'inspect' },
+          { name: 'link/correct', value: 'link' },
+          { name: 'repair match rooms', value: 'repair' }
+        ))
+        .addStringOption((option) => option.setName('team').setDescription('Team name or persistent identity').setRequired(false))
+        .addStringOption((option) => option.setName('faceit_team_id').setDescription('FACEIT team UUID').setRequired(false))
+        .addRoleOption((option) => option.setName('role').setDescription('Discord team role').setRequired(false))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('veto')
+        .setDescription('Start, inspect, reset, cancel, or override a veto')
+        .addStringOption((option) => option.setName('action').setDescription('Veto action').setRequired(true).addChoices(
+          { name: 'start', value: 'start' },
+          { name: 'inspect', value: 'inspect' },
+          { name: 'reset', value: 'reset' },
+          { name: 'cancel', value: 'cancel' },
+          { name: 'set seeds', value: 'seeds' }
+        ))
+        .addChannelOption((option) => option.setName('match_room').setDescription('Linked Discord match room').setRequired(false))
+        .addIntegerOption((option) => option.setName('team_a_seed').setDescription('Team A tournament seed').setRequired(false).setMinValue(1))
+        .addIntegerOption((option) => option.setName('team_b_seed').setDescription('Team B tournament seed').setRequired(false).setMinValue(1))
+        .addStringOption((option) => option.setName('advantage_team').setDescription('Grand Final upper-bracket winner').setRequired(false).addChoices(
+          { name: 'Team A', value: 'teamA' },
+          { name: 'Team B', value: 'teamB' }
+        ))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('streams')
+        .setDescription('Review and manage streamer requests')
+        .addStringOption((option) => option.setName('action').setDescription('Request action').setRequired(true).addChoices(
+          { name: 'list pending', value: 'pending' },
+          { name: 'list approved', value: 'approved' },
+          { name: 'inspect', value: 'inspect' },
+          { name: 'revoke approval', value: 'revoke' },
+          { name: 'mark match completed', value: 'complete' }
+        ))
+        .addStringOption((option) => option.setName('request_id').setDescription('Streamer request ID').setRequired(false))
+        .addStringOption((option) => option.setName('reason').setDescription('Reason for revoke/completion').setRequired(false))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('auditlog')
+        .setDescription('Show recent scheduling and operations audit events')
+        .addStringOption((option) => option.setName('match_id').setDescription('Optional FACEIT match ID').setRequired(false))
+    )
+  ,
+  new SlashCommandBuilder()
+    .setName('request')
+    .setDescription('Request permission to stream a CROSSFIRE match')
+    .addSubcommand((subcommand) => subcommand.setName('stream').setDescription('Open the stream request form'))
+    .addSubcommand((subcommand) => subcommand.setName('cancel').setDescription('Cancel one of your pending requests')
+      .addStringOption((option) => option.setName('request_id').setDescription('Your request ID').setRequired(true))),
+  new SlashCommandBuilder()
+    .setName('crossfire')
+    .setDescription('CROSSFIRE match and operations information')
+    .addSubcommand((subcommand) => subcommand.setName('upcoming').setDescription('Show upcoming approved matches'))
+    .addSubcommand((subcommand) => subcommand.setName('team').setDescription('Show a team’s matches and schedule status')
+      .addStringOption((option) => option.setName('name').setDescription('Team name').setRequired(true)))
+    .addSubcommand((subcommand) => subcommand.setName('rounds').setDescription('Show configured round windows and defaults'))
+    .addSubcommand((subcommand) => subcommand.setName('veto').setDescription('Show veto status for this match room'))
+    .addSubcommand((subcommand) => subcommand.setName('help').setDescription('Show CROSSFIRE command help and rules links'))
 ].map((command) => command.toJSON());

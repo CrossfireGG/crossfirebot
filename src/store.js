@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const dbPath = path.resolve('bot-data.json');
+const dbPath = path.resolve(process.env.BOT_DATA_PATH || 'bot-data.json');
+let mutationQueue = Promise.resolve();
 
 async function readDb() {
   try {
@@ -16,183 +17,369 @@ async function readDb() {
 
 function normalizeDb(db) {
   return {
+    ...db,
+    schemaVersion: 2,
     matches: db.matches || {},
     schedules: db.schedules || {},
     scheduleProposals: db.scheduleProposals || {},
     sheetTeamRoles: db.sheetTeamRoles || {},
+    teamMappings: db.teamMappings || {},
+    vetoes: db.vetoes || {},
+    streamRequests: db.streamRequests || {},
+    adminTickets: db.adminTickets || {},
+    auditLog: Array.isArray(db.auditLog) ? db.auditLog : [],
     sclDemos: db.sclDemos || {},
     sclMessages: db.sclMessages || {}
   };
 }
 
 async function writeDb(db) {
-  await fs.writeFile(dbPath, JSON.stringify(db, null, 2));
+  await fs.writeFile(dbPath, JSON.stringify(normalizeDb(db), null, 2));
+}
+
+function mutateDb(mutator) {
+  const operation = mutationQueue.then(async () => {
+    const db = normalizeDb(await readDb());
+    const result = await mutator(db);
+    await writeDb(db);
+    return result;
+  });
+  mutationQueue = operation.catch(() => null);
+  return operation;
+}
+
+async function snapshot() {
+  await mutationQueue;
+  return normalizeDb(await readDb());
 }
 
 export async function saveMatch(match, discordIds) {
-  const db = normalizeDb(await readDb());
-  const existing = db.matches[match.id] || {};
-  db.matches[match.id] = {
-    match,
-    discord: {
-      ...(existing.discord || {}),
-      ...discordIds
-    },
-    updatedAt: new Date().toISOString()
-  };
-  await writeDb(db);
+  return mutateDb((db) => {
+    const existing = db.matches[match.id] || {};
+    db.matches[match.id] = {
+      match,
+      discord: {
+        ...(existing.discord || {}),
+        ...discordIds
+      },
+      updatedAt: new Date().toISOString()
+    };
+  });
 }
 
 export async function saveMatchIntroMessageId(matchId, introMessageId) {
-  const db = normalizeDb(await readDb());
-  if (!db.matches[matchId]) return;
-
-  db.matches[matchId].discord = {
-    ...(db.matches[matchId].discord || {}),
-    introMessageId
-  };
-  db.matches[matchId].updatedAt = new Date().toISOString();
-  await writeDb(db);
+  return mutateDb((db) => {
+    if (!db.matches[matchId]) return;
+    db.matches[matchId].discord = {
+      ...(db.matches[matchId].discord || {}),
+      introMessageId
+    };
+    db.matches[matchId].updatedAt = new Date().toISOString();
+  });
 }
 
 export async function listStoredMatches() {
-  const db = normalizeDb(await readDb());
+  const db = await snapshot();
   return Object.values(db.matches);
 }
 
 export async function getStoredMatch(matchId) {
-  const db = normalizeDb(await readDb());
+  const db = await snapshot();
   return db.matches[matchId] || null;
 }
 
 export async function getStoredMatchByChannel(channelId) {
-  const db = normalizeDb(await readDb());
+  const db = await snapshot();
   return Object.values(db.matches).find((entry) => entry.discord?.channelId === channelId) || null;
 }
 
 export async function getSheetTeamRoleIds(guildId) {
-  const db = normalizeDb(await readDb());
+  const db = await snapshot();
   return db.sheetTeamRoles[guildId] || {};
 }
 
 export async function saveSheetTeamRoleIds(guildId, roleIdsByTeamName) {
-  const db = normalizeDb(await readDb());
-  db.sheetTeamRoles[guildId] = {
-    ...(db.sheetTeamRoles[guildId] || {}),
-    ...roleIdsByTeamName,
-    updatedAt: new Date().toISOString()
-  };
-  await writeDb(db);
+  return mutateDb((db) => {
+    db.sheetTeamRoles[guildId] = {
+      ...(db.sheetTeamRoles[guildId] || {}),
+      ...roleIdsByTeamName,
+      updatedAt: new Date().toISOString()
+    };
+  });
 }
 
 export async function saveSchedule(matchId, schedule) {
-  const db = normalizeDb(await readDb());
-  db.schedules[matchId] = {
-    ...schedule,
-    updatedAt: new Date().toISOString()
-  };
-  await writeDb(db);
+  return mutateDb((db) => {
+    db.schedules[matchId] = {
+      ...(db.schedules[matchId] || {}),
+      ...schedule,
+      updatedAt: new Date().toISOString()
+    };
+  });
 }
 
 export async function getSchedule(matchId) {
-  const db = normalizeDb(await readDb());
+  const db = await snapshot();
   return db.schedules[matchId] || null;
 }
 
 export async function saveScheduleProposal(proposal) {
-  const db = normalizeDb(await readDb());
-  db.scheduleProposals[proposal.id] = {
-    ...proposal,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-  await writeDb(db);
+  return mutateDb((db) => {
+    const existing = db.scheduleProposals[proposal.id] || {};
+    db.scheduleProposals[proposal.id] = {
+      ...existing,
+      ...proposal,
+      createdAt: existing.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  });
 }
 
 export async function getScheduleProposal(proposalId) {
-  const db = normalizeDb(await readDb());
+  const db = await snapshot();
   return db.scheduleProposals[proposalId] || null;
 }
 
 export async function getLatestOpenScheduleProposalForMatch(matchId) {
-  const db = normalizeDb(await readDb());
+  const db = await snapshot();
   return Object.values(db.scheduleProposals)
     .filter((proposal) => proposal.matchId === matchId && !proposal.accepted && !proposal.declined)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0] || null;
 }
 
 export async function acceptScheduleProposal(proposalId, acceptedBy) {
-  const db = normalizeDb(await readDb());
-  const proposal = db.scheduleProposals[proposalId];
-  if (!proposal) return null;
-
-  db.scheduleProposals[proposalId] = {
-    ...proposal,
-    accepted: true,
-    acceptedBy,
-    updatedAt: new Date().toISOString()
-  };
-  db.schedules[proposal.matchId] = {
-    scheduledAt: proposal.scheduledAt,
-    timezone: proposal.timezone,
-    proposedBy: proposal.proposedBy,
-    acceptedBy,
-    proposalId,
-    kind: proposal.kind || 'schedule',
-    updatedAt: new Date().toISOString()
-  };
-  await writeDb(db);
-  return db.scheduleProposals[proposalId];
+  return mutateDb((db) => {
+    const proposal = db.scheduleProposals[proposalId];
+    if (!proposal || proposal.declined || proposal.accepted) return null;
+    db.scheduleProposals[proposalId] = {
+      ...proposal,
+      accepted: true,
+      acceptedBy,
+      updatedAt: new Date().toISOString()
+    };
+    db.schedules[proposal.matchId] = {
+      ...(db.schedules[proposal.matchId] || {}),
+      scheduledAt: proposal.scheduledAt,
+      scheduledAtIso: proposal.scheduledAtIso || null,
+      timezone: proposal.timezone,
+      proposedBy: proposal.proposedBy,
+      acceptedBy,
+      proposalId,
+      kind: proposal.kind || 'schedule',
+      updatedAt: new Date().toISOString()
+    };
+    return db.scheduleProposals[proposalId];
+  });
 }
 
 export async function approveScheduleProposal(proposalId, approvedBy) {
-  const db = normalizeDb(await readDb());
-  const proposal = db.scheduleProposals[proposalId];
-  if (!proposal) return null;
-
-  db.scheduleProposals[proposalId] = {
-    ...proposal,
-    adminApproved: true,
-    approvedBy,
-    updatedAt: new Date().toISOString()
-  };
-  if (db.schedules[proposal.matchId]) {
-    db.schedules[proposal.matchId].adminApproved = true;
-    db.schedules[proposal.matchId].approvedBy = approvedBy;
-    db.schedules[proposal.matchId].updatedAt = new Date().toISOString();
-  }
-  await writeDb(db);
-  return db.scheduleProposals[proposalId];
+  return mutateDb((db) => {
+    const proposal = db.scheduleProposals[proposalId];
+    if (!proposal || proposal.adminDenied || proposal.adminApproved) return null;
+    db.scheduleProposals[proposalId] = {
+      ...proposal,
+      adminApproved: true,
+      approvedBy,
+      updatedAt: new Date().toISOString()
+    };
+    db.schedules[proposal.matchId] = {
+      ...(db.schedules[proposal.matchId] || {}),
+      scheduledAt: proposal.scheduledAt,
+      scheduledAtIso: proposal.scheduledAtIso || db.schedules[proposal.matchId]?.scheduledAtIso || null,
+      timezone: proposal.timezone,
+      adminApproved: true,
+      approvedBy,
+      overrideReason: proposal.overrideReason || null,
+      updatedAt: new Date().toISOString()
+    };
+    return db.scheduleProposals[proposalId];
+  });
 }
 
-export async function denyScheduleProposal(proposalId, deniedBy) {
-  const db = normalizeDb(await readDb());
-  const proposal = db.scheduleProposals[proposalId];
-  if (!proposal) return null;
-
-  db.scheduleProposals[proposalId] = {
-    ...proposal,
-    adminDenied: true,
-    deniedBy,
-    updatedAt: new Date().toISOString()
-  };
-  await writeDb(db);
-  return db.scheduleProposals[proposalId];
+export async function denyScheduleProposal(proposalId, deniedBy, reason = '') {
+  return mutateDb((db) => {
+    const proposal = db.scheduleProposals[proposalId];
+    if (!proposal || proposal.adminApproved || proposal.adminDenied) return null;
+    db.scheduleProposals[proposalId] = {
+      ...proposal,
+      adminDenied: true,
+      deniedBy,
+      denialReason: reason || null,
+      updatedAt: new Date().toISOString()
+    };
+    return db.scheduleProposals[proposalId];
+  });
 }
 
 export async function declineScheduleProposal(proposalId, declinedBy) {
-  const db = normalizeDb(await readDb());
-  const proposal = db.scheduleProposals[proposalId];
-  if (!proposal) return null;
+  return mutateDb((db) => {
+    const proposal = db.scheduleProposals[proposalId];
+    if (!proposal || proposal.accepted || proposal.declined) return null;
+    db.scheduleProposals[proposalId] = {
+      ...proposal,
+      declined: true,
+      declinedBy,
+      updatedAt: new Date().toISOString()
+    };
+    return db.scheduleProposals[proposalId];
+  });
+}
 
-  db.scheduleProposals[proposalId] = {
-    ...proposal,
-    declined: true,
-    declinedBy,
-    updatedAt: new Date().toISOString()
-  };
-  await writeDb(db);
-  return db.scheduleProposals[proposalId];
+export async function listSchedules() {
+  return Object.entries((await snapshot()).schedules)
+    .map(([matchId, schedule]) => ({ matchId, ...schedule }));
+}
+
+export async function listScheduleProposals() {
+  return Object.values((await snapshot()).scheduleProposals);
+}
+
+export async function saveTeamMapping(scopeKey, mapping) {
+  return mutateDb((db) => {
+    db.teamMappings[scopeKey] ||= {};
+    const identity = String(mapping.identity || mapping.faceitTeamId || '').trim();
+    if (!identity) throw new Error('Team mapping identity is required');
+    const existing = db.teamMappings[scopeKey][identity] || {};
+    db.teamMappings[scopeKey][identity] = {
+      ...existing,
+      ...mapping,
+      identity,
+      aliases: [...new Set([...(existing.aliases || []), ...(mapping.aliases || []), mapping.teamName].filter(Boolean))],
+      createdAt: existing.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    return db.teamMappings[scopeKey][identity];
+  });
+}
+
+export async function listTeamMappings(scopeKey) {
+  return Object.values((await snapshot()).teamMappings[scopeKey] || {});
+}
+
+export async function saveVeto(veto, expectedVersion = null) {
+  return mutateDb((db) => {
+    const existing = db.vetoes[veto.matchId] || null;
+    if (expectedVersion !== null && Number(existing?.version || 0) !== Number(expectedVersion)) {
+      const error = new Error('This veto changed before your action was processed. Refresh and try again.');
+      error.code = 'STALE_VETO';
+      throw error;
+    }
+    db.vetoes[veto.matchId] = {
+      ...(existing || {}),
+      ...veto,
+      version: Number(existing?.version || 0) + 1,
+      createdAt: existing?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    return db.vetoes[veto.matchId];
+  });
+}
+
+export async function getVeto(matchId) {
+  return (await snapshot()).vetoes[matchId] || null;
+}
+
+export async function listVetoes() {
+  return Object.values((await snapshot()).vetoes);
+}
+
+export async function createStreamRequest(request) {
+  return mutateDb((db) => {
+    if (db.streamRequests[request.id]) throw new Error('Stream request ID already exists');
+    db.streamRequests[request.id] = {
+      ...request,
+      status: request.status || 'pending',
+      version: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    return db.streamRequests[request.id];
+  });
+}
+
+export async function getStreamRequest(id) {
+  return (await snapshot()).streamRequests[id] || null;
+}
+
+export async function listStreamRequests(filters = {}) {
+  return Object.values((await snapshot()).streamRequests).filter((request) =>
+    (!filters.status || request.status === filters.status) &&
+    (!filters.matchId || request.matchId === filters.matchId) &&
+    (!filters.requesterId || request.requesterId === filters.requesterId)
+  );
+}
+
+export async function updateStreamRequest(id, patch, allowedStatuses = null) {
+  return mutateDb((db) => {
+    const existing = db.streamRequests[id];
+    if (!existing) return null;
+    if (allowedStatuses && !allowedStatuses.includes(existing.status)) return null;
+    db.streamRequests[id] = {
+      ...existing,
+      ...patch,
+      version: Number(existing.version || 0) + 1,
+      updatedAt: new Date().toISOString()
+    };
+    return db.streamRequests[id];
+  });
+}
+
+export async function claimPostCastReminder(id) {
+  return mutateDb((db) => {
+    const existing = db.streamRequests[id];
+    const claimedAt = Date.parse(existing?.postCastReminderClaimedAt || '');
+    const claimIsFresh = Number.isFinite(claimedAt) && Date.now() - claimedAt < 10 * 60 * 1000;
+    if (!existing || existing.status !== 'approved' || existing.postCastReminderSentAt || claimIsFresh) {
+      return null;
+    }
+    db.streamRequests[id] = {
+      ...existing,
+      postCastReminderClaimedAt: new Date().toISOString(),
+      version: Number(existing.version || 0) + 1,
+      updatedAt: new Date().toISOString()
+    };
+    return db.streamRequests[id];
+  });
+}
+
+export async function saveAdminTicket(ticket) {
+  return mutateDb((db) => {
+    const existing = db.adminTickets[ticket.id] || {};
+    db.adminTickets[ticket.id] = {
+      ...existing,
+      ...ticket,
+      createdAt: existing.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    return db.adminTickets[ticket.id];
+  });
+}
+
+export async function listAdminTickets(filters = {}) {
+  return Object.values((await snapshot()).adminTickets).filter((ticket) =>
+    (!filters.status || ticket.status === filters.status) &&
+    (!filters.matchId || ticket.matchId === filters.matchId)
+  );
+}
+
+export async function appendAuditLog(event) {
+  return mutateDb((db) => {
+    const entry = {
+      id: event.id || `audit-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      ...event,
+      timestamp: event.timestamp || new Date().toISOString()
+    };
+    db.auditLog.push(entry);
+    if (db.auditLog.length > 5000) db.auditLog.splice(0, db.auditLog.length - 5000);
+    return entry;
+  });
+}
+
+export async function listAuditLog(filters = {}) {
+  return (await snapshot()).auditLog.filter((entry) =>
+    (!filters.matchId || entry.matchId === filters.matchId) &&
+    (!filters.type || entry.type === filters.type)
+  );
 }
 
 export async function hasPostedSclDemo(matchId, mapNumber, viewerUrl) {

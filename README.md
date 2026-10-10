@@ -181,11 +181,35 @@ Reschedule rules:
 - Accepted schedules and reschedules are sent to admins to schedule manually on FACEIT.
 - When admins approve a schedule request in the staff channel, the bot reacts to that admin alert with a checkmark.
 - Playoff teams may schedule or reschedule during their assigned three-day round window by mutual agreement.
+
+## Persistent operations workflows
+
+The JSON database is migrated in place. Set `BOT_DATA_PATH=/data/bot-data.json` when the Railway service has a volume mounted at `/data`; otherwise Railway filesystem replacement can remove bot state during deployment.
+
+Set `AUTHORIZED_STAFF_ROLE_IDS` to the exact staff role IDs from every server where staff buttons or `/cf` are used. Administrator/Manage Server permissions are also accepted; role names are never trusted. `SCHEDULE_OVERRIDE_ROLE_IDS` separately lists Tournament Operations roles that may schedule directly.
+
+Team identities are scoped by Discord guild plus `TEAM_MAPPING_SEASON_ID`. Sheet sync prefers `FACEIT Team ID` or a UUID found in `FACEIT Team URL`, then falls back to an exact normalized team name. Similar names are never merged automatically.
+
+- `/cf sync target:teams dry_run:true` previews roster changes without changing Discord.
+- `/cf mappings action:list` lists persistent team-role mappings.
+- `/cf mappings action:inspect team:<name-or-id>` inspects one mapping.
+- `/cf mappings action:link team:<name> faceit_team_id:<uuid> role:<role>` links or corrects a mapping while preserving aliases.
+- `/cf mappings action:repair` reapplies mapped roles and private permissions to linked match rooms.
+
+Authorized staff can schedule directly inside a match room. Normal direct scheduling is `!schedule September 28 8 PM ET`. To bypass the configured window, a reason is mandatory: `!schedule October 1 9 PM ET --force production conflict`. Direct staff schedules are approved immediately, audit logged, announced to both teams/staff, and retained over FACEIT status refreshes.
+
+Veto setup requires the playoff championship ID in `PLAYOFF_SOURCE_IDS`, exactly seven maps in `VETO_MAP_POOL`, and actual tournament seeds in `VETO_SEEDS`. The FACEIT Open API match payload does not provide a verified tournament seed, so the bot never substitutes Elo, standings, or bracket position. `/cf veto action:seeds` stores a persistent per-match override; for the Grand Final, also set `advantage_team` to the actual upper-bracket winner (or configure `VETO_ADVANTAGE_TEAM`). `/cf veto action:start|inspect|reset|cancel` manages a linked playoff room. BO3 uses ban, ban, pick, pick, ban, ban, decider. Grand Final uses two bans and four picks; the remaining map is awarded to the explicitly configured upper-bracket winner for a 1-0 start and is not played. Veto output is Discord-only and must be entered into FACEIT by staff.
+
+Streamers use `!request` or `/request stream`. Requests require a Twitch URL, X/Twitter URL, match time, matchup, and guidelines acknowledgment. `STREAM_REQUEST_CHANNEL_ID` receives race-safe Approve/Deny controls. Staff use `/cf streams action:pending|approved|inspect|revoke|complete`. Verified FACEIT completion sends the configured post-cast form once; delivery state is persisted.
+
+Operations reporting:
+
+- `/crossfire upcoming`, `/crossfire team`, `/crossfire rounds`, `/crossfire veto`, `/crossfire help` expose only information visible to the requesting user.
+- `/cf status` summarizes pending schedules, tickets, stream requests, mappings, and vetoes for staff.
+- `/cf auditlog` shows recent persistent scheduling and operations events.
 - Roster changes should go to `#make-a-ticket`.
 - Set `ROSTER_TICKET_CHANNEL_ID=1418725495545004175` so pinned match messages link directly to the roster ticket channel.
 
 ## Important FACEIT Note
 
-FACEIT Data API access is commonly read-focused. If your API key has organizer/admin write access for scheduling, add the endpoint to `FACEIT_SCHEDULE_ENDPOINT` and adjust `src/faceitSchedule.js` if the payload shape differs.
-
-Until that is confirmed, Discord scheduling works and the bot records the agreed time locally, but FACEIT write-back is skipped safely.
+The documented FACEIT Data API exposes public read operations; no documented schedule-write or veto-write operation was verified for this bot. Keep `FACEIT_SCHEDULE_ENDPOINT` unset. Discord scheduling and vetoes are stored locally, and staff must enter them into FACEIT manually.

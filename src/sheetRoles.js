@@ -1,4 +1,9 @@
-import { getSheetTeamRoleIds, saveSheetTeamRoleIds } from './store.js';
+import {
+  getSheetTeamRoleIds,
+  listTeamMappings,
+  saveSheetTeamRoleIds,
+  saveTeamMapping
+} from './store.js';
 
 export async function syncRolesFromSheet(guild, config, options = {}, onProgress = null) {
   if (!config.googleSheetCsvUrl) {
@@ -9,11 +14,14 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
   await guild.members.fetch().catch(() => null);
 
   const rows = await fetchCsvRows(config.googleSheetCsvUrl);
+  const scopeKey = getTeamMappingScope(config, guild.id);
+  const existingMappings = await listTeamMappings(scopeKey);
   const teamNames = rows
     .map((row) => getColumn(row, ['team_name', 'team name', 'team']))
     .filter(Boolean);
   const teamRoles = new Map();
   const previousTeamRoleIds = await getSheetTeamRoleIds(guild.id);
+  const botManagedTeamRoleIds = new Set(previousTeamRoleIds.__botManagedRoleIds || []);
   const stats = {
     added: 0,
     rolesCreated: 0,
@@ -25,20 +33,55 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
     missingMembers: [],
     failedActions: [],
     captainDmsSent: 0,
-    captainDmsFailed: 0
+    captainDmsFailed: 0,
+    duplicateEntries: [],
+    unresolvedTeams: [],
+    plannedChanges: []
   };
   const currentCaptainMemberIds = new Set();
   const currentRosterMemberIds = new Set();
   const currentTeamRoleIdByMemberId = new Map();
 
+  const identityRows = new Map();
+  for (const row of rows) {
+    const teamName = getColumn(row, ['team_name', 'team name', 'team']);
+    if (!teamName) continue;
+    const faceitTeamId = extractFaceitTeamId(row);
+    const identity = faceitTeamId || `name:${normalizeTeamKey(teamName)}`;
+    if (identityRows.has(identity)) stats.duplicateEntries.push(`${teamName} duplicates ${identityRows.get(identity)}`);
+    else identityRows.set(identity, teamName);
+    const persistent = existingMappings.find((mapping) => mapping.identity === identity);
+    if (persistent?.discordRoleId) {
+      config.teamRoleIds.set(normalizeTeamKey(teamName), persistent.discordRoleId);
+    }
+  }
+
+  if (options.dryRun) {
+    for (const row of rows) {
+      const teamName = getColumn(row, ['team_name', 'team name', 'team']);
+      if (!teamName) continue;
+      const identity = extractFaceitTeamId(row) || `name:${normalizeTeamKey(teamName)}`;
+      const prior = existingMappings.find((mapping) => mapping.identity === identity);
+      const mappedRoleId = prior?.discordRoleId || config.teamRoleIds?.get(normalizeTeamKey(teamName));
+      stats.plannedChanges.push(`${prior ? 'update' : 'create mapping'} ${teamName}${mappedRoleId ? ` -> role ${mappedRoleId}` : ' -> create/find role'}`);
+    }
+    return { ...stats, preview: true, totalTeams: rows.length };
+  }
+
   for (const teamName of teamNames) {
     const teamRoleResult = await findOrCreateRole(guild, teamName, config.createMissingTeamRoles, config);
-    if (teamRoleResult.created) stats.rolesCreated += 1;
+    if (teamRoleResult.created) {
+      stats.rolesCreated += 1;
+      botManagedTeamRoleIds.add(teamRoleResult.role.id);
+    }
     if (teamRoleResult.role) teamRoles.set(teamName, teamRoleResult.role);
   }
 
   await saveSheetTeamRoleIds(guild.id, Object.fromEntries(
-    [...teamRoles.entries()].map(([teamName, role]) => [teamName, role.id])
+    [
+      ...[...teamRoles.entries()].map(([teamName, role]) => [teamName, role.id]),
+      ['__botManagedRoleIds', [...botManagedTeamRoleIds]]
+    ]
   ));
 
   for (const [index, row] of rows.entries()) {
@@ -51,13 +94,13 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
     const teamRole = teamRoles.get(teamName);
     if (!teamRole) {
       stats.skipped += 1;
+      stats.unresolvedTeams.push(`${teamName}: no mapped role and role creation is disabled or failed`);
       continue;
     }
 
     const assignments = getTeamAssignments(row);
     if (!assignments.length) {
       stats.skipped += 1;
-      continue;
     }
 
     const captainRoleResult = await findCaptainRole(guild, config);
@@ -67,6 +110,7 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
 
     const missingForTeam = [];
     const captainMembers = [];
+    const rosterMemberIds = [];
 
     for (const assignment of assignments) {
       const member = await findMember(guild, assignment.discordName);
@@ -78,6 +122,7 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
       }
 
       currentRosterMemberIds.add(member.id);
+      rosterMemberIds.push(member.id);
       currentTeamRoleIdByMemberId.set(member.id, teamRole.id);
 
       if (!member.roles.cache.has(teamRole.id)) {
@@ -87,8 +132,6 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
           stats.failedActions.push(`${teamName}: could not add team role to ${assignment.discordName}`);
         }
       }
-
-      await removeStaleTeamRoles(member, teamRoles, previousTeamRoleIds, teamName, stats);
 
       if (participantRoleResult.role && !member.roles.cache.has(participantRoleResult.role.id)) {
         if (await addRole(member, participantRoleResult.role, 'Google Sheet season participant sync')) {
@@ -122,6 +165,21 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
       stats.captainDmsFailed += sent.failed;
     }
 
+    const faceitTeamId = extractFaceitTeamId(row);
+    const identity = faceitTeamId || `name:${normalizeTeamKey(teamName)}`;
+    await saveTeamMapping(scopeKey, {
+      identity,
+      signupIdentity: getColumn(row, ['signup_team_id', 'signup id', 'registration id']) || identity,
+      teamName,
+      faceitTeamId: faceitTeamId || null,
+      discordRoleId: teamRole.id,
+      captainDiscordIds: captainMembers.map((member) => member.id),
+      playerDiscordIds: [...new Set(rosterMemberIds)],
+      missingDiscordIdentifiers: missingForTeam,
+      aliases: [teamName],
+      source: 'google_sheet'
+    });
+
     if (onProgress && ((index + 1) % 5 === 0 || index + 1 === rows.length)) {
       await onProgress({
         current: index + 1,
@@ -137,23 +195,65 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
     }
   }
 
-  const captainRoleResult = await findCaptainRole(guild, config);
-  if (captainRoleResult.role) {
-    await removeStaleCaptainRoles(guild, captainRoleResult.role, currentCaptainMemberIds, stats);
-  }
+  const canRemoveStaleAssignments = currentRosterMemberIds.size > 0 &&
+    stats.missingMembers.length === 0 &&
+    stats.duplicateEntries.length === 0;
+  if (canRemoveStaleAssignments) {
+    const captainRoleResult = await findCaptainRole(guild, config);
+    if (captainRoleResult.role) {
+      await removeStaleCaptainRoles(guild, captainRoleResult.role, currentCaptainMemberIds, stats);
+    }
 
-  const participantRoleResult = await findParticipantRole(guild, config);
-  if (participantRoleResult.role) {
-    await removeStaleParticipantRoles(guild, participantRoleResult.role, currentRosterMemberIds, stats);
-  }
+    const participantRoleResult = await findParticipantRole(guild, config);
+    if (participantRoleResult.role) {
+      await removeStaleParticipantRoles(guild, participantRoleResult.role, currentRosterMemberIds, stats);
+    }
 
-  await removeStaleManagedTeamRoles(guild, teamRoles, previousTeamRoleIds, currentTeamRoleIdByMemberId, stats);
+    await removeStaleManagedTeamRoles(guild, botManagedTeamRoleIds, currentTeamRoleIdByMemberId, stats);
+  } else {
+    stats.failedActions.push('Skipped all stale role removals because one or more roster entries were unresolved/duplicated, or no Discord members were resolved.');
+  }
 
   return {
     ...stats,
     missingMembers: stats.missingMembers.slice(0, 15),
     failedActions: stats.failedActions.slice(0, 10)
   };
+}
+
+export async function inspectSheetRoster(config) {
+  if (!config.googleSheetCsvUrl) throw new Error('GOOGLE_SHEET_CSV_URL is not configured');
+  const rows = await fetchCsvRows(config.googleSheetCsvUrl);
+  return rows.map((row) => {
+    const teamName = getColumn(row, ['team_name', 'team name', 'team']);
+    const faceitTeamId = extractFaceitTeamId(row);
+    const assignments = getTeamAssignments(row);
+    return {
+      teamName,
+      faceitTeamId,
+      identity: faceitTeamId || `name:${normalizeTeamKey(teamName)}`,
+      players: assignments.map((entry) => entry.discordName),
+      captains: assignments.filter((entry) => entry.isCaptain).map((entry) => entry.discordName)
+    };
+  }).filter((entry) => entry.teamName);
+}
+
+export function getTeamMappingScope(config, guildId) {
+  const seasonId = config.teamMappingSeasonId || config.faceitSources?.[0]?.id || 'default';
+  return `${guildId}:${seasonId}`;
+}
+
+function extractFaceitTeamId(row) {
+  const direct = getColumn(row, [
+    'faceit_team_id',
+    'faceit team id',
+    'team faceit id'
+  ]);
+  if (/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(direct)) return direct.toLowerCase();
+  const url = getColumn(row, ['faceit_team_url', 'faceit team url', 'team url', 'faceit url']);
+  const match = String(url || '').match(/(?:teams?|team)\/([0-9a-f]{8}-[0-9a-f-]{27,})/i) ||
+    String(url || '').match(/\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i);
+  return match?.[1]?.toLowerCase() || '';
 }
 
 export async function auditMissingCaptains(guild, config) {
@@ -443,30 +543,6 @@ async function addRole(member, role, reason) {
   }
 }
 
-async function removeStaleTeamRoles(member, teamRoles, previousTeamRoleIds, currentTeamName, stats) {
-  const currentRole = teamRoles.get(currentTeamName);
-  const managedRoles = new Map();
-
-  for (const [teamName, role] of teamRoles.entries()) {
-    managedRoles.set(role.id, teamName);
-  }
-
-  for (const [teamName, roleId] of Object.entries(previousTeamRoleIds || {})) {
-    if (teamName === 'updatedAt') continue;
-    managedRoles.set(roleId, teamName);
-  }
-
-  for (const [roleId, teamName] of managedRoles.entries()) {
-    if (roleId === currentRole?.id || !member.roles.cache.has(roleId)) continue;
-
-    try {
-      await member.roles.remove(roleId, 'Removing stale Google Sheet team role');
-    } catch {
-      stats.failedActions.push(`${currentTeamName}: could not remove stale ${teamName} role from ${member.user.username}`);
-    }
-  }
-}
-
 async function removeStaleCaptainRoles(guild, captainRole, currentCaptainMemberIds, stats) {
   for (const member of guild.members.cache.values()) {
     if (!member.roles.cache.has(captainRole.id) || currentCaptainMemberIds.has(member.id)) continue;
@@ -493,14 +569,7 @@ async function removeStaleParticipantRoles(guild, participantRole, currentRoster
   }
 }
 
-async function removeStaleManagedTeamRoles(guild, teamRoles, previousTeamRoleIds, currentTeamRoleIdByMemberId, stats) {
-  const managedRoleIds = new Set([
-    ...[...teamRoles.values()].map((role) => role.id),
-    ...Object.entries(previousTeamRoleIds || {})
-      .filter(([teamName]) => teamName !== 'updatedAt')
-      .map(([, roleId]) => roleId)
-  ].filter(Boolean));
-
+async function removeStaleManagedTeamRoles(guild, managedRoleIds, currentTeamRoleIdByMemberId, stats) {
   for (const member of guild.members.cache.values()) {
     const currentRoleId = currentTeamRoleIdByMemberId.get(member.id) || null;
 
