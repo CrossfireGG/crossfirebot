@@ -62,7 +62,12 @@ import { scheduleFaceitMatch } from './faceitSchedule.js';
 import { auditMissingCaptains, auditMissingPlayers, getTeamMappingScope, syncRolesFromSheet } from './sheetRoles.js';
 import { startWebhookServer } from './webhookServer.js';
 import { applyVetoAction, chooseFirstAction, createVeto, expectedVetoAction } from './vetoEngine.js';
-import { makeStreamRequestId, validateStreamRequest } from './streamRequest.js';
+import {
+  makeStreamRequestId,
+  makeStreamRequestModalId,
+  parseStreamRequestModalId,
+  validateStreamRequest
+} from './streamRequest.js';
 import { isAuthorizedStaffMember, parseForceDirective } from './operationsPolicy.js';
 
 const config = getConfig();
@@ -2306,7 +2311,6 @@ async function handleCallAdmin(message, content) {
 }
 
 async function handleTextStreamRequest(message) {
-  const stored = await getStoredMatchForChannel(message.channel);
   await message.reply({
     content: [
       '**Stream Request**',
@@ -2315,7 +2319,7 @@ async function handleTextStreamRequest(message) {
     ].join('\n'),
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`stream_request_open:${message.author.id}:${stored?.match?.id || 'manual'}`)
+        .setCustomId(`stream_request_open:${message.author.id}`)
         .setLabel('Request to Stream')
         .setStyle(ButtonStyle.Primary)
     )]
@@ -2348,7 +2352,7 @@ async function showStreamRequestModal(interaction) {
   const stored = interaction.channel?.id ? await getStoredMatchForChannel(interaction.channel) : null;
   const schedule = stored ? await getSchedule(stored.match.id) : null;
   const modal = new ModalBuilder()
-    .setCustomId(`stream_request_submit:${interaction.user.id}:${stored?.match?.id || 'manual'}:${interaction.channelId || 'none'}`)
+    .setCustomId(makeStreamRequestModalId(interaction.user.id, interaction.channelId))
     .setTitle('Request to Stream');
   const fields = [
     ['date_time', 'Match date and time (ET)', schedule?.scheduledAt || stored?.match?.scheduledAt || '', TextInputStyle.Short],
@@ -2366,17 +2370,20 @@ async function showStreamRequestModal(interaction) {
 }
 
 async function handleStreamRequestModal(interaction) {
-  const [, requesterId, matchIdRaw, sourceChannelId] = interaction.customId.split(':');
+  const modalContext = parseStreamRequestModalId(interaction.customId);
+  if (!modalContext) {
+    await interaction.reply({ content: 'This stream request form is invalid. Please open a new one.', ephemeral: true });
+    return;
+  }
+  const { requesterId, sourceChannelId } = modalContext;
   if (requesterId !== interaction.user.id) {
     await interaction.reply({ content: 'This form belongs to another user.', ephemeral: true });
     return;
   }
-  const matchId = matchIdRaw === 'manual' ? null : matchIdRaw;
-  const linkedMatch = matchId ? await getStoredMatch(matchId) : null;
-  if (matchId && !linkedMatch) {
-    await interaction.reply({ content: 'That linked match is no longer available. Open a new request from its match room.', ephemeral: true });
-    return;
-  }
+  const linkedMatch = sourceChannelId === 'none'
+    ? null
+    : await getStoredMatchByChannel(sourceChannelId);
+  const matchId = linkedMatch?.match?.id || null;
   const submittedMatchup = interaction.fields.getTextInputValue('matchup');
   const expectedMatchup = linkedMatch ? `${linkedMatch.match.teamA} vs ${linkedMatch.match.teamB}` : null;
   if (expectedMatchup && normalizeTeamKey(submittedMatchup) !== normalizeTeamKey(expectedMatchup)) {

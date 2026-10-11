@@ -9,7 +9,11 @@ import { makeMatchPermissionOverwrites } from '../src/discordProvision.js';
 import { isAuthorizedStaffMember, parseForceDirective } from '../src/operationsPolicy.js';
 import { extractFaceitTeamId } from '../src/sheetRoles.js';
 import { applyVetoAction, chooseFirstAction, createVeto } from '../src/vetoEngine.js';
-import { validateStreamRequest } from '../src/streamRequest.js';
+import {
+  makeStreamRequestModalId,
+  parseStreamRequestModalId,
+  validateStreamRequest
+} from '../src/streamRequest.js';
 
 const match = { id: 'match-1', teamA: 'Alpha', teamB: 'Bravo' };
 const mapPool = ['Ancient', 'Anubis', 'Dust2', 'Inferno', 'Mirage', 'Nuke', 'Train'];
@@ -82,6 +86,15 @@ test('stream request validates host allowlists and guidelines acknowledgment', (
   assert.equal(valid.valid, true);
   const invalid = validateStreamRequest({ ...valid.value, streamUrl: 'https://example.com', acknowledged: 'no' });
   assert.equal(invalid.valid, false);
+});
+
+test('stream request modal IDs stay below Discord limits for long sample match rooms', () => {
+  const customId = makeStreamRequestModalId('252433882991820810', '1558682231172636685');
+  assert(customId.length <= 100);
+  assert.deepEqual(parseStreamRequestModalId(customId), {
+    requesterId: '252433882991820810',
+    sourceChannelId: '1558682231172636685'
+  });
 });
 
 test('persistent decisions are serialized and survive a fresh module load', async () => {

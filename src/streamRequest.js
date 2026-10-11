@@ -84,6 +84,16 @@ export function makeStreamRequestId() {
   return `stream-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+export function makeStreamRequestModalId(requesterId, sourceChannelId) {
+  return `stream_request_submit:${requesterId}:${sourceChannelId || 'none'}`;
+}
+
+export function parseStreamRequestModalId(customId) {
+  const [prefix, requesterId, sourceChannelId] = String(customId || '').split(':');
+  if (prefix !== 'stream_request_submit' || !requesterId || !sourceChannelId) return null;
+  return { requesterId, sourceChannelId };
+}
+
 function normalizeHttpUrl(value) {
   try {
     const url = new URL(String(value || '').trim());
