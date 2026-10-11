@@ -88,6 +88,19 @@ test('stream request validates host allowlists and guidelines acknowledgment', (
   assert.equal(invalid.valid, false);
 });
 
+test('stream request date errors explain the required Eastern Time format', () => {
+  const result = validateStreamRequest({
+    dateTime: 'tomorrow sometime',
+    matchup: 'Alpha vs Bravo',
+    streamUrl: 'https://twitch.tv/example',
+    socialUrl: 'https://x.com/example',
+    acknowledged: 'I AGREE'
+  });
+  assert.equal(result.valid, false);
+  assert.match(result.errors.join('\n'), /Eastern Time/);
+  assert.match(result.errors.join('\n'), /10\/12\/2026 8:00 PM ET/);
+});
+
 test('stream request modal IDs stay below Discord limits for long sample match rooms', () => {
   const customId = makeStreamRequestModalId('252433882991820810', '1558682231172636685');
   assert(customId.length <= 100);

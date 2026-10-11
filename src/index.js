@@ -2355,7 +2355,7 @@ async function showStreamRequestModal(interaction) {
     .setCustomId(makeStreamRequestModalId(interaction.user.id, interaction.channelId))
     .setTitle('Request to Stream');
   const fields = [
-    ['date_time', 'Match date and time (ET)', schedule?.scheduledAt || stored?.match?.scheduledAt || '', TextInputStyle.Short],
+    ['date_time', 'Match date and time (Eastern Time)', schedule?.scheduledAt || stored?.match?.scheduledAt || '', TextInputStyle.Short],
     ['matchup', 'Teams / matchup', stored ? `${stored.match.teamA} vs ${stored.match.teamB}` : '', TextInputStyle.Short],
     ['stream_url', 'Twitch stream URL', '', TextInputStyle.Short],
     ['social_url', 'Caster/streamer X or Twitter URL', '', TextInputStyle.Short],
@@ -2363,6 +2363,9 @@ async function showStreamRequestModal(interaction) {
   ];
   modal.addComponents(...fields.map(([id, label, value, style]) => {
     const input = new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style).setRequired(true);
+    if (id === 'date_time') {
+      input.setPlaceholder('Example: 10/12/2026 8:00 PM ET');
+    }
     if (value) input.setValue(String(value).slice(0, 4000));
     return new ActionRowBuilder().addComponents(input);
   }));

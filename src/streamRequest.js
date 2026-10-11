@@ -8,7 +8,9 @@ export function validateStreamRequest(input) {
   const dateTimeMs = parseEasternDateTime(dateTime);
 
   if (!matchup) errors.push('Matchup is required.');
-  if (!dateTime || !Number.isFinite(dateTimeMs)) errors.push('Enter a recognizable match date and time.');
+  if (!dateTime || !Number.isFinite(dateTimeMs)) {
+    errors.push('Enter the match date and time in Eastern Time, for example `10/12/2026 8:00 PM ET` or `October 12, 2026 8 PM ET`.');
+  }
   if (!streamUrl || !isAllowedHost(streamUrl, ['twitch.tv', 'www.twitch.tv'])) errors.push('Stream URL must be a valid twitch.tv link.');
   if (!socialUrl || !isAllowedHost(socialUrl, ['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'])) errors.push('Social URL must be a valid x.com or twitter.com link.');
   if (!acknowledged) errors.push('You must acknowledge the configured co-streaming guidelines.');
