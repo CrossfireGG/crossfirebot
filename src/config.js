@@ -166,6 +166,7 @@ export function getConfig() {
     roundCategoryIds: parseRoundCategoryIds(process.env.ROUND_CATEGORY_IDS || ''),
     createMissingMatchTeamRoles: process.env.CREATE_MISSING_MATCH_TEAM_ROLES === 'true',
     createMissingTeamRoles: process.env.CREATE_MISSING_TEAM_ROLES === 'true',
+    createNewSeasonTeamRoles: process.env.CREATE_NEW_SEASON_TEAM_ROLES === 'true',
     faceitApiKey: process.env.FACEIT_API_KEY,
     faceitSources,
     faceitScheduleEndpoint: process.env.FACEIT_SCHEDULE_ENDPOINT || null,
@@ -237,9 +238,6 @@ function parseRoleSyncSide(value) {
 
 function parseTeamRoleIds(value) {
   const roles = new Map();
-  for (const [name, roleId] of Object.entries(defaultTeamRoleIds)) {
-    roles.set(normalizeTeamKey(name), roleId);
-  }
 
   for (const entry of value.split(';').map((part) => part.trim()).filter(Boolean)) {
     const [name, roleId] = entry.split('=').map((part) => part.trim());

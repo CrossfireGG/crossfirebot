@@ -190,6 +190,8 @@ Set `AUTHORIZED_STAFF_ROLE_IDS` to the exact staff role IDs from every server wh
 
 Team identities are scoped by Discord guild plus `TEAM_MAPPING_SEASON_ID`. Sheet sync prefers `FACEIT Team ID` or a UUID found in `FACEIT Team URL`, then falls back to an exact normalized team name. Similar names are never merged automatically.
 
+For a season rollover, assign a brand-new `TEAM_MAPPING_SEASON_ID`, set `CREATE_MISSING_TEAM_ROLES=true`, and set `CREATE_NEW_SEASON_TEAM_ROLES=true`. The first sync creates fresh team roles even when old roles have the same names; later syncs reuse only the mappings saved in that season scope. Old-season roles are not deleted.
+
 - `/cf sync target:teams dry_run:true` previews roster changes without changing Discord.
 - `/cf mappings action:list` lists persistent team-role mappings.
 - `/cf mappings action:inspect team:<name-or-id>` inspects one mapping.

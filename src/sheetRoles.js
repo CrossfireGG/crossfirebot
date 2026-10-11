@@ -16,9 +16,7 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
   const rows = await fetchCsvRows(config.googleSheetCsvUrl);
   const scopeKey = getTeamMappingScope(config, guild.id);
   const existingMappings = await listTeamMappings(scopeKey);
-  const teamNames = rows
-    .map((row) => getColumn(row, ['team_name', 'team name', 'team']))
-    .filter(Boolean);
+  const uniqueTeams = getUniqueTeams(rows);
   const teamRoles = new Map();
   const previousTeamRoleIds = await getSheetTeamRoleIds(guild.id);
   const botManagedTeamRoleIds = new Set(previousTeamRoleIds.__botManagedRoleIds || []);
@@ -57,19 +55,36 @@ export async function syncRolesFromSheet(guild, config, options = {}, onProgress
   }
 
   if (options.dryRun) {
-    for (const row of rows) {
-      const teamName = getColumn(row, ['team_name', 'team name', 'team']);
-      if (!teamName) continue;
-      const identity = extractFaceitTeamId(row) || `name:${normalizeTeamKey(teamName)}`;
+    for (const { teamName, identity } of uniqueTeams) {
       const prior = existingMappings.find((mapping) => mapping.identity === identity);
-      const mappedRoleId = prior?.discordRoleId || config.teamRoleIds?.get(normalizeTeamKey(teamName));
-      stats.plannedChanges.push(`${prior ? 'update' : 'create mapping'} ${teamName}${mappedRoleId ? ` -> role ${mappedRoleId}` : ' -> create/find role'}`);
+      const configuredRoleId = config.teamRoleIds?.get(normalizeTeamKey(teamName));
+      if (prior?.discordRoleId) {
+        stats.plannedChanges.push(`update ${teamName} -> Season role ${prior.discordRoleId}`);
+      } else if (config.createNewSeasonTeamRoles) {
+        stats.plannedChanges.push(`create mapping ${teamName} -> create new season role`);
+      } else {
+        stats.plannedChanges.push(`create mapping ${teamName}${configuredRoleId ? ` -> role ${configuredRoleId}` : ' -> create/find role'}`);
+      }
     }
-    return { ...stats, preview: true, totalTeams: rows.length };
+    return { ...stats, preview: true, totalTeams: uniqueTeams.length };
   }
 
-  for (const teamName of teamNames) {
-    const teamRoleResult = await findOrCreateRole(guild, teamName, config.createMissingTeamRoles, config);
+  for (const { teamName, identity } of uniqueTeams) {
+    const prior = existingMappings.find((mapping) => mapping.identity === identity);
+    const forceCreate = Boolean(config.createNewSeasonTeamRoles && !prior?.discordRoleId);
+    const teamRoleResult = await findOrCreateRole(
+      guild,
+      teamName,
+      config.createMissingTeamRoles,
+      config,
+      {
+        preferredRoleId: prior?.discordRoleId || null,
+        forceCreate,
+        reason: forceCreate
+          ? `New season team role sync (${config.teamMappingSeasonId})`
+          : 'Google Sheet role sync'
+      }
+    );
     if (teamRoleResult.created) {
       stats.rolesCreated += 1;
       botManagedTeamRoleIds.add(teamRoleResult.role.id);
@@ -462,26 +477,44 @@ function dedupeAssignments(assignments) {
   return [...byName.values()];
 }
 
-async function findOrCreateRole(guild, name, shouldCreate, config = null) {
-  const mappedRoleId = config?.teamRoleIds?.get(normalizeTeamKey(name));
-  if (mappedRoleId) {
-    const role = await guild.roles.fetch(mappedRoleId).catch(() => null);
+export async function findOrCreateRole(guild, name, shouldCreate, config = null, options = {}) {
+  if (options.preferredRoleId) {
+    const role = await guild.roles.fetch(options.preferredRoleId).catch(() => null);
     if (role) return { role, created: false };
   }
 
-  const existing = guild.roles.cache.find((role) =>
-    role.name.toLowerCase() === name.toLowerCase()
-  );
+  if (!options.forceCreate) {
+    const mappedRoleId = config?.teamRoleIds?.get(normalizeTeamKey(name));
+    if (mappedRoleId) {
+      const role = await guild.roles.fetch(mappedRoleId).catch(() => null);
+      if (role) return { role, created: false };
+    }
 
-  if (existing) return { role: existing, created: false };
+    const existing = guild.roles.cache.find((role) =>
+      role.name.toLowerCase() === name.toLowerCase()
+    );
+
+    if (existing) return { role: existing, created: false };
+  }
   if (!shouldCreate) return { role: null, created: false };
 
   const role = await guild.roles.create({
     name,
     mentionable: true,
-    reason: 'Google Sheet role sync'
+    reason: options.reason || 'Google Sheet role sync'
   });
   return { role, created: true };
+}
+
+function getUniqueTeams(rows) {
+  const teams = new Map();
+  for (const row of rows) {
+    const teamName = getColumn(row, ['team_name', 'team name', 'team']);
+    if (!teamName) continue;
+    const identity = extractFaceitTeamId(row) || `name:${normalizeTeamKey(teamName)}`;
+    if (!teams.has(identity)) teams.set(identity, { teamName, identity });
+  }
+  return [...teams.values()];
 }
 
 async function findCaptainRole(guild, config) {
