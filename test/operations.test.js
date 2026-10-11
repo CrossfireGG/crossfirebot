@@ -7,11 +7,19 @@ import path from 'node:path';
 import { PermissionFlagsBits } from 'discord.js';
 import { makeMatchPermissionOverwrites } from '../src/discordProvision.js';
 import { isAuthorizedStaffMember, parseForceDirective } from '../src/operationsPolicy.js';
+import { extractFaceitTeamId } from '../src/sheetRoles.js';
 import { applyVetoAction, chooseFirstAction, createVeto } from '../src/vetoEngine.js';
 import { validateStreamRequest } from '../src/streamRequest.js';
 
 const match = { id: 'match-1', teamA: 'Alpha', teamB: 'Bravo' };
 const mapPool = ['Ancient', 'Anubis', 'Dust2', 'Inferno', 'Mirage', 'Nuke', 'Train'];
+
+test('Season 7 Team FACEIT Link header resolves a stable team identity', () => {
+  assert.equal(
+    extractFaceitTeamId({ team_faceit_link: 'https://www.faceit.com/en/teams/12345678-1234-1234-1234-123456789abc' }),
+    '12345678-1234-1234-1234-123456789abc'
+  );
+});
 
 test('veto enforces higher-seed choice, turn order, and unique maps', () => {
   const veto = createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8, source: 'test seed table' }, format: 'bo3' });

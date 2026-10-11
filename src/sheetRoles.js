@@ -243,14 +243,21 @@ export function getTeamMappingScope(config, guildId) {
   return `${guildId}:${seasonId}`;
 }
 
-function extractFaceitTeamId(row) {
+export function extractFaceitTeamId(row) {
   const direct = getColumn(row, [
     'faceit_team_id',
     'faceit team id',
     'team faceit id'
   ]);
   if (/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(direct)) return direct.toLowerCase();
-  const url = getColumn(row, ['faceit_team_url', 'faceit team url', 'team url', 'faceit url']);
+  const url = getColumn(row, [
+    'faceit_team_url',
+    'faceit team url',
+    'team faceit link',
+    'team faceit url',
+    'team url',
+    'faceit url'
+  ]);
   const match = String(url || '').match(/(?:teams?|team)\/([0-9a-f]{8}-[0-9a-f-]{27,})/i) ||
     String(url || '').match(/\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i);
   return match?.[1]?.toLowerCase() || '';
