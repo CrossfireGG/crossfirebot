@@ -617,6 +617,7 @@ async function handleCommandHelp(interaction) {
       '`!request` - open the community stream request workflow.',
       '`!cancelreq FACEIT_LINK` or `!cancelreq @caster` - staff cancel grouped or individual approved caster requests.',
       '`!resendip FACEIT_LINK` - staff restart the CSTV/Twitch delivery prompt.',
+      '`!sendip FACEIT_LINK connect IP:PORT` - staff immediately DM the CSTV connect command to approved casters.',
       '',
       '**Public Slash Commands**',
       '`/request stream` - submit a stream request; `/request cancel` cancels your pending request.',
@@ -667,6 +668,10 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (/^!resendip\b/i.test(content)) {
       await handleResendStreamDelivery(message, content);
+    }
+
+    if (/^!sendip\b/i.test(content)) {
+      await handleSendIp(message, content);
     }
   } catch (error) {
     console.error(error);
@@ -2703,12 +2708,18 @@ async function handleStreamDeliverySubmit(interaction) {
     return;
   }
   await interaction.deferReply({ ephemeral: true });
+  const result = await deliverStreamConnection(matchId, type, delivery.value, interaction.user.id);
+  await interaction.message?.edit({ components: [] }).catch(() => null);
+  await interaction.editReply(`Sent the ${type === 'cstv' ? 'CSTV connect' : 'Twitch link'} to ${result.delivered}/${result.casterCount} approved caster(s).`);
+}
+
+async function deliverStreamConnection(matchId, type, value, actorId) {
   const requests = await listStreamRequests({ matchId, status: 'approved' });
   let delivered = 0;
   const deliveryByCaster = new Map();
   for (const request of new Map(requests.map((entry) => [entry.requesterId, entry])).values()) {
     const label = type === 'cstv' ? 'FACEIT CSTV connect' : 'official CROSSFIRE stream';
-    const detail = type === 'cstv' ? `\`${delivery.value}\`` : delivery.value;
+    const detail = type === 'cstv' ? `\`${value}\`` : value;
     const sent = await dmStreamRequester(request, `**${request.matchup}** is ready. ${label}:\n${detail}`);
     if (sent) delivered += 1;
     deliveryByCaster.set(request.requesterId, sent);
@@ -2718,13 +2729,12 @@ async function handleStreamDeliverySubmit(interaction) {
     await updateStreamRequest(request.id, {
       deliveryType: type,
       deliverySentAt: new Date().toISOString(),
-      deliverySentBy: interaction.user.id,
+      deliverySentBy: actorId,
       deliveryStatus: sent ? 'delivered' : 'failed'
     }, ['approved']);
   }
-  await interaction.message?.edit({ components: [] }).catch(() => null);
-  await appendAuditLog({ type: 'stream_connection_delivered', actorId: interaction.user.id, matchId, delivered, requestCount: requests.length });
-  await interaction.editReply(`Sent the ${type === 'cstv' ? 'CSTV connect' : 'Twitch link'} to ${delivered}/${deliveryByCaster.size} approved caster(s).`);
+  await appendAuditLog({ type: 'stream_connection_delivered', actorId, matchId, delivered, requestCount: requests.length });
+  return { delivered, casterCount: deliveryByCaster.size, requests };
 }
 
 async function disableStreamDeliveryPrompts(requests) {
@@ -2781,6 +2791,32 @@ async function handleResendStreamDelivery(message, content) {
   }
   const sent = await sendStreamDeliveryPrompt(parsed.matchId, true);
   await message.reply(sent ? 'Restarted the staff CSTV/Twitch prompt.' : 'No approved caster requests were found for that FACEIT matchroom.');
+}
+
+async function handleSendIp(message, content) {
+  if (!isAdminStaff(message.member)) {
+    await message.reply('Only authorized staff can send caster connection details.');
+    return;
+  }
+  const input = content.replace(/^!sendip\b/i, '').trim();
+  const separator = input.search(/\s/);
+  const faceitUrl = separator === -1 ? input : input.slice(0, separator);
+  const connectCommand = separator === -1 ? '' : input.slice(separator).trim();
+  const parsed = parseFaceitMatchRoomLink(faceitUrl);
+  const delivery = validateStreamDelivery('cstv', connectCommand);
+  if (!parsed || !delivery.valid) {
+    await message.reply('Use `!sendip FACEIT_MATCHROOM_LINK connect IP:PORT`, for example `!sendip https://www.faceit.com/en/cs2/room/1-... connect 123.45.67.89:27020`.');
+    return;
+  }
+  await message.delete().catch(() => null);
+  const result = await deliverStreamConnection(parsed.matchId, 'cstv', delivery.value, message.author.id);
+  if (!result.requests.length) {
+    const channel = message.channel;
+    await channel.send('No approved caster requests were found for that FACEIT matchroom.').catch(() => null);
+    return;
+  }
+  await disableStreamDeliveryPrompts(result.requests);
+  await message.channel.send(`Sent the CSTV connect command to ${result.delivered}/${result.casterCount} approved caster(s).`).catch(() => null);
 }
 
 async function handleAdminStreams(interaction) {
