@@ -2363,7 +2363,7 @@ async function showStreamRequestModal(interaction) {
     ['social_url', 'Caster/streamer X or Twitter URL', '', TextInputStyle.Short]
   ];
   const placeholders = {
-    date_time: 'Example: 10/12/2026 8:00 PM ET',
+    date_time: 'Example: 10/12/2026 8:00 PM ET/EDT/EST',
     matchup: 'Example: Team One vs Team Two',
     stream_url: 'Example: https://twitch.tv/yourchannel',
     social_url: 'Example: https://x.com/yourname'

@@ -98,7 +98,7 @@ test('stream request date errors explain the required Eastern Time format', () =
   });
   assert.equal(result.valid, false);
   assert.match(result.errors.join('\n'), /Eastern Time/);
-  assert.match(result.errors.join('\n'), /10\/12\/2026 8:00 PM ET/);
+  assert.match(result.errors.join('\n'), /ET.*,.*EDT.*,.*EST|ET.*EDT.*EST/);
 });
 
 test('stream request accepts common Eastern Time date formats and relative dates', () => {
@@ -114,6 +114,14 @@ test('stream request accepts common Eastern Time date formats and relative dates
   assert.equal(
     new Date(parseEasternDateTime('October 14 at 7 PM', now)).toISOString(),
     '2026-10-14T23:00:00.000Z'
+  );
+  assert.equal(
+    parseEasternDateTime('October 14 at 7 PM EDT', now),
+    parseEasternDateTime('October 14 at 7 PM EST', now)
+  );
+  assert.equal(
+    parseEasternDateTime('October 14 at 7 PM EST', now),
+    parseEasternDateTime('October 14 at 7 PM ET', now)
   );
 });
 
