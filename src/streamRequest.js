@@ -26,6 +26,40 @@ export function validateStreamRequest(input) {
   };
 }
 
+export function parseFaceitMatchRoomLink(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    if (!/(^|\.)faceit\.com$/i.test(url.hostname)) return null;
+    const match = decodeURIComponent(url.pathname).match(/\/room\/(1-[0-9a-f-]{36})(?:\/|$)/i);
+    if (!match) return null;
+    const matchId = match[1].toLowerCase();
+    return {
+      matchId,
+      url: `https://www.faceit.com/en/cs2/room/${matchId}`
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function validateStreamDelivery(type, value) {
+  const text = String(value || '').trim();
+  if (type === 'twitch') {
+    const url = normalizeHttpUrl(text);
+    return url && isAllowedHost(url, ['twitch.tv', 'www.twitch.tv'])
+      ? { valid: true, value: url.toString() }
+      : { valid: false, error: 'Enter a valid twitch.tv stream link.' };
+  }
+  if (type === 'cstv') {
+    const hasConnect = /^connect\s+/i.test(text);
+    const hasAddress = /(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}/.test(text) || /[a-z0-9.-]+:\d{2,5}/i.test(text);
+    return hasConnect && hasAddress
+      ? { valid: true, value: text }
+      : { valid: false, error: 'Enter the complete CSTV command, for example `connect 123.45.67.89:27020`.' };
+  }
+  return { valid: false, error: 'Unknown delivery type.' };
+}
+
 export function parseEasternDateTime(value, now = new Date()) {
   const text = String(value || '').trim();
   const normalized = text

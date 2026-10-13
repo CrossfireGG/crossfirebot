@@ -182,6 +182,7 @@ export const commands = [
           { name: 'list pending', value: 'pending' },
           { name: 'list approved', value: 'approved' },
           { name: 'inspect', value: 'inspect' },
+          { name: 'cancel request', value: 'cancel' },
           { name: 'revoke approval', value: 'revoke' },
           { name: 'mark match completed', value: 'complete' }
         ))

@@ -28,6 +28,7 @@ import {
   appendAuditLog,
   approveScheduleProposal,
   claimPostCastReminder,
+  claimStreamDeliveryPrompt,
   createStreamRequest,
   denyScheduleProposal,
   declineScheduleProposal,
@@ -66,7 +67,9 @@ import {
   formatEasternDateTimeInput,
   makeStreamRequestId,
   makeStreamRequestModalId,
+  parseFaceitMatchRoomLink,
   parseStreamRequestModalId,
+  validateStreamDelivery,
   validateStreamRequest
 } from './streamRequest.js';
 import { isAuthorizedStaffMember, parseForceDirective } from './operationsPolicy.js';
@@ -291,6 +294,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isModalSubmit() && interaction.customId.startsWith('stream_deny_submit:')) {
       await handleStreamDenialModal(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('stream_delivery_open:')) {
+      await handleStreamDeliveryOpen(interaction);
+      return;
+    }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('stream_delivery_submit:')) {
+      await handleStreamDeliverySubmit(interaction);
       return;
     }
     if (interaction.isButton() && interaction.customId.startsWith('veto_first:')) {
@@ -593,7 +604,7 @@ async function handleCommandHelp(interaction) {
       '`/cf sample` - create a sample match room for testing.',
       '`/cf mappings action:list|inspect|link|repair` - manage persistent team-role mappings.',
       '`/cf veto action:start|inspect|reset|cancel|seeds` - manage a playoff veto.',
-      '`/cf streams action:pending|approved|inspect|revoke|complete` - review stream requests.',
+      '`/cf streams action:pending|approved|inspect|cancel|revoke|complete` - review stream requests.',
       '`/cf auditlog match_id:<optional>` - inspect scheduling and operations decisions.',
       '',
       '**Match Room Commands**',
@@ -604,6 +615,8 @@ async function handleCommandHelp(interaction) {
       '`!decline` - decline the open proposal.',
       '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.',
       '`!request` - open the community stream request workflow.',
+      '`!cancelreq FACEIT_LINK` or `!cancelreq @caster` - staff cancel grouped or individual approved caster requests.',
+      '`!resendip FACEIT_LINK` - staff restart the CSTV/Twitch delivery prompt.',
       '',
       '**Public Slash Commands**',
       '`/request stream` - submit a stream request; `/request cancel` cancels your pending request.',
@@ -646,6 +659,14 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (/^!request\b/i.test(content)) {
       await handleTextStreamRequest(message);
+    }
+
+    if (/^!cancelreq\b/i.test(content)) {
+      await handleCancelStreamRequests(message, content);
+    }
+
+    if (/^!resendip\b/i.test(content)) {
+      await handleResendStreamDelivery(message, content);
     }
   } catch (error) {
     console.error(error);
@@ -2357,21 +2378,25 @@ async function showStreamRequestModal(interaction) {
     .setCustomId(makeStreamRequestModalId(interaction.user.id, interaction.channelId))
     .setTitle('Request to Stream');
   const fields = [
+    ['faceit_url', 'FACEIT matchroom link', stored?.match?.faceitUrl || '', TextInputStyle.Short],
     ['date_time', 'Match date and time (Eastern Time)', matchDateTime, TextInputStyle.Short],
     ['matchup', 'Teams / matchup', stored ? `${stored.match.teamA} vs ${stored.match.teamB}` : '', TextInputStyle.Short],
     ['stream_url', 'Twitch stream URL', '', TextInputStyle.Short],
     ['social_url', 'Caster/streamer X or Twitter URL', '', TextInputStyle.Short]
   ];
   const placeholders = {
+    faceit_url: 'Example: https://www.faceit.com/en/cs2/room/1-...',
     date_time: 'Example: 10/12/2026 8:00 PM ET/EDT/EST',
     matchup: 'Example: Team One vs Team Two',
     stream_url: 'Example: https://twitch.tv/yourchannel',
     social_url: 'Example: https://x.com/yourname'
   };
+  const maxLengths = { faceit_url: 500, date_time: 100, matchup: 200, stream_url: 500, social_url: 500 };
   modal.addComponents(...fields.map(([id, label, value, style]) => {
     const input = new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style).setRequired(true);
     input.setPlaceholder(placeholders[id]);
-    if (value) input.setValue(String(value).slice(0, 4000));
+    input.setMaxLength(maxLengths[id]);
+    if (value) input.setValue(String(value).slice(0, maxLengths[id]));
     return new ActionRowBuilder().addComponents(input);
   }));
   await interaction.showModal(modal);
@@ -2391,15 +2416,31 @@ async function handleStreamRequestModal(interaction) {
   const linkedMatch = sourceChannelId === 'none'
     ? null
     : await getStoredMatchByChannel(sourceChannelId);
-  const matchId = linkedMatch?.match?.id || null;
+  const submittedFaceitUrl = interaction.fields.getTextInputValue('faceit_url');
+  const parsedFaceitLink = parseFaceitMatchRoomLink(submittedFaceitUrl);
+  let verifiedFaceitMatch = null;
+  let faceitValidationError = null;
+  if (parsedFaceitLink) {
+    try {
+      verifiedFaceitMatch = await faceit.getMatch(parsedFaceitLink.matchId);
+      if (!verifiedFaceitMatch) faceitValidationError = 'FACEIT returned no usable match details for this room.';
+    } catch (error) {
+      faceitValidationError = `FACEIT could not verify this matchroom: ${error.message}`;
+    }
+  } else {
+    faceitValidationError = 'The supplied URL is not a valid FACEIT CS2 matchroom link.';
+  }
+  const matchId = verifiedFaceitMatch?.id || null;
   const submittedMatchup = interaction.fields.getTextInputValue('matchup');
-  const expectedMatchup = linkedMatch ? `${linkedMatch.match.teamA} vs ${linkedMatch.match.teamB}` : null;
+  const expectedMatchup = verifiedFaceitMatch
+    ? `${verifiedFaceitMatch.teamA} vs ${verifiedFaceitMatch.teamB}`
+    : linkedMatch ? `${linkedMatch.match.teamA} vs ${linkedMatch.match.teamB}` : null;
   if (expectedMatchup && normalizeTeamKey(submittedMatchup) !== normalizeTeamKey(expectedMatchup)) {
     await interaction.reply({ content: `This request is linked to **${expectedMatchup}**. Do not change the teams in a linked request.`, ephemeral: true });
     return;
   }
   const validation = validateStreamRequest({
-    dateTime: interaction.fields.getTextInputValue('date_time'),
+    dateTime: verifiedFaceitMatch?.scheduledAt || interaction.fields.getTextInputValue('date_time'),
     matchup: expectedMatchup || submittedMatchup,
     streamUrl: interaction.fields.getTextInputValue('stream_url'),
     socialUrl: interaction.fields.getTextInputValue('social_url')
@@ -2424,7 +2465,13 @@ async function handleStreamRequestModal(interaction) {
     requesterTag: interaction.user.tag,
     matchId,
     sourceChannelId: sourceChannelId === 'none' ? interaction.channelId : sourceChannelId,
-    manualVerificationRequired: !matchId,
+    faceitUrl: parsedFaceitLink?.url || submittedFaceitUrl.trim(),
+    faceitLinkValid: Boolean(verifiedFaceitMatch),
+    faceitValidationError,
+    faceitScheduledAtIso: getFaceitScheduledAtIso(verifiedFaceitMatch),
+    faceitStatus: verifiedFaceitMatch?.status || null,
+    faceitLastCheckedAt: verifiedFaceitMatch ? new Date().toISOString() : null,
+    manualVerificationRequired: !verifiedFaceitMatch,
     repeatSubmission: priorRequests.length > 0,
     priorSubmissionCount: priorRequests.length,
     ...validation.value,
@@ -2461,13 +2508,16 @@ function streamRequestEmbed(request) {
     .setTitle(`Stream Request ${request.id}`)
     .setDescription([
       `Status: **${status.toUpperCase()}**`,
-      request.manualVerificationRequired ? 'Manual/unlinked match: staff verification required.' : null,
+      request.faceitLinkValid
+        ? 'FACEIT matchroom verified. Schedule monitoring and grouped delivery are enabled.'
+        : `⚠️ FACEIT LINK NOT VERIFIED: ${String(request.faceitValidationError || 'Unknown validation error').slice(0, 800)} This request cannot be grouped with similar requests or receive automatic schedule/connect updates.`,
       request.repeatSubmission ? `Repeat submission by this requester (${request.priorSubmissionCount} earlier request(s)); review normally.` : null
     ].filter(Boolean).join('\n'))
     .addFields([
       { name: 'Requester', value: `<@${request.requesterId}>`, inline: true },
       { name: 'Match', value: request.matchup, inline: true },
       { name: 'Date/Time', value: request.dateTime, inline: false },
+      { name: 'FACEIT Matchroom', value: request.faceitUrl || 'Not supplied', inline: false },
       { name: 'Stream', value: request.streamUrl, inline: false },
       { name: 'X/Twitter', value: request.socialUrl, inline: false },
       request.reviewedBy ? { name: 'Reviewed By', value: `<@${request.reviewedBy}>`, inline: true } : null,
@@ -2550,6 +2600,186 @@ async function notifyStreamRequester(request, text) {
   return false;
 }
 
+async function dmStreamRequester(request, text) {
+  const user = await client.users.fetch(request.requesterId).catch(() => null);
+  return Boolean(user && await user.send(text).then(() => true).catch(() => false));
+}
+
+function getFaceitScheduledAtIso(match) {
+  const seconds = Number(match?.raw?.scheduled_at);
+  if (Number.isFinite(seconds) && seconds > 0) return new Date(seconds * 1000).toISOString();
+  const parsed = Date.parse(match?.scheduledAt || '');
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+async function refreshStreamRequestStaffMessage(request) {
+  if (!request?.staffChannelId || !request?.staffMessageId) return;
+  const channel = await client.channels.fetch(request.staffChannelId).catch(() => null);
+  const message = await channel?.messages.fetch(request.staffMessageId).catch(() => null);
+  if (!message) return;
+  const reviewable = request.status === 'pending';
+  await message.edit({
+    embeds: [streamRequestEmbed(request)],
+    components: reviewable ? [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`stream_review:${request.id}:approve`).setLabel('Approve').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`stream_review:${request.id}:deny`).setLabel('Deny').setStyle(ButtonStyle.Danger)
+    )] : []
+  }).catch(() => null);
+}
+
+async function sendStreamDeliveryPrompt(matchId, force = false) {
+  const channel = config.streamRequestChannelId
+    ? await client.channels.fetch(config.streamRequestChannelId).catch(() => null)
+    : null;
+  if (!channel?.isTextBased?.()) return false;
+  if (force) {
+    await disableStreamDeliveryPrompts(await listStreamRequests({ matchId, status: 'approved' }));
+  }
+  const requests = await claimStreamDeliveryPrompt(matchId, force);
+  if (!requests?.length) return false;
+  const match = await faceit.getMatch(matchId).catch(() => null);
+  const matchup = match ? `${match.teamA} vs ${match.teamB}` : requests[0].matchup;
+  let message;
+  try {
+    message = await channel.send({
+    content: getStaffMentions(channel.guild),
+    embeds: [new EmbedBuilder()
+      .setColor(EMBED_COLORS.warning)
+      .setTitle('Caster Connection Needed')
+      .setDescription(`**${matchup}** is scheduled now. Submit either the FACEIT CSTV connect command or the official CROSSFIRE Twitch link. It will be DMed only to approved casters for this match.`)
+      .addFields({ name: 'FACEIT Matchroom', value: requests[0].faceitUrl || `Match ${matchId}` })
+      .setTimestamp()],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`stream_delivery_open:cstv:${matchId}`).setLabel('Submit CSTV Connect').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`stream_delivery_open:twitch:${matchId}`).setLabel('Submit Twitch Link').setStyle(ButtonStyle.Secondary)
+    )],
+    allowedMentions: getAdminAllowedMentions(channel.guild)
+    });
+  } catch (error) {
+    for (const request of requests) {
+      await updateStreamRequest(request.id, { deliveryPromptSentAt: null, deliveryPromptMessageId: null }, ['approved']);
+    }
+    throw error;
+  }
+  for (const request of requests) {
+    await updateStreamRequest(request.id, { deliveryPromptMessageId: message.id }, ['approved']);
+  }
+  return true;
+}
+
+async function handleStreamDeliveryOpen(interaction) {
+  if (!isAdminStaff(interaction.member)) {
+    await interaction.reply({ content: 'Only authorized staff can submit caster connection details.', ephemeral: true });
+    return;
+  }
+  const [, type, matchId] = interaction.customId.split(':');
+  const label = type === 'cstv' ? 'CSTV connect command' : 'CROSSFIRE Twitch link';
+  const modal = new ModalBuilder()
+    .setCustomId(`stream_delivery_submit:${type}:${matchId}`)
+    .setTitle(type === 'cstv' ? 'Submit CSTV Connect' : 'Submit Twitch Link')
+    .addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('delivery')
+        .setLabel(label)
+        .setPlaceholder(type === 'cstv' ? 'Example: connect 123.45.67.89:27020' : 'Example: https://twitch.tv/crossfire')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+    ));
+  await interaction.showModal(modal);
+}
+
+async function handleStreamDeliverySubmit(interaction) {
+  if (!isAdminStaff(interaction.member)) {
+    await interaction.reply({ content: 'Only authorized staff can submit caster connection details.', ephemeral: true });
+    return;
+  }
+  const [, type, matchId] = interaction.customId.split(':');
+  const delivery = validateStreamDelivery(type, interaction.fields.getTextInputValue('delivery'));
+  if (!delivery.valid) {
+    await interaction.reply({ content: delivery.error, ephemeral: true });
+    return;
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const requests = await listStreamRequests({ matchId, status: 'approved' });
+  let delivered = 0;
+  const deliveryByCaster = new Map();
+  for (const request of new Map(requests.map((entry) => [entry.requesterId, entry])).values()) {
+    const label = type === 'cstv' ? 'FACEIT CSTV connect' : 'official CROSSFIRE stream';
+    const detail = type === 'cstv' ? `\`${delivery.value}\`` : delivery.value;
+    const sent = await dmStreamRequester(request, `**${request.matchup}** is ready. ${label}:\n${detail}`);
+    if (sent) delivered += 1;
+    deliveryByCaster.set(request.requesterId, sent);
+  }
+  for (const request of requests) {
+    const sent = deliveryByCaster.get(request.requesterId) || false;
+    await updateStreamRequest(request.id, {
+      deliveryType: type,
+      deliverySentAt: new Date().toISOString(),
+      deliverySentBy: interaction.user.id,
+      deliveryStatus: sent ? 'delivered' : 'failed'
+    }, ['approved']);
+  }
+  await interaction.message?.edit({ components: [] }).catch(() => null);
+  await appendAuditLog({ type: 'stream_connection_delivered', actorId: interaction.user.id, matchId, delivered, requestCount: requests.length });
+  await interaction.editReply(`Sent the ${type === 'cstv' ? 'CSTV connect' : 'Twitch link'} to ${delivered}/${deliveryByCaster.size} approved caster(s).`);
+}
+
+async function disableStreamDeliveryPrompts(requests) {
+  const messageIds = [...new Set(requests.map((request) => request.deliveryPromptMessageId).filter(Boolean))];
+  if (!messageIds.length || !config.streamRequestChannelId) return;
+  const channel = await client.channels.fetch(config.streamRequestChannelId).catch(() => null);
+  for (const messageId of messageIds) {
+    const message = await channel?.messages.fetch(messageId).catch(() => null);
+    await message?.edit({ components: [] }).catch(() => null);
+  }
+}
+
+async function handleCancelStreamRequests(message, content) {
+  if (!isAdminStaff(message.member)) {
+    await message.reply('Only authorized staff can cancel caster requests.');
+    return;
+  }
+  const target = content.replace(/^!cancelreq\b/i, '').trim();
+  const parsed = parseFaceitMatchRoomLink(target);
+  const mentionedId = message.mentions.users.first()?.id || (/^\d{15,25}$/.test(target) ? target : null);
+  if (!parsed && !mentionedId) {
+    await message.reply('Use `!cancelreq FACEIT_MATCHROOM_LINK` or `!cancelreq @caster`.');
+    return;
+  }
+  const requests = await listStreamRequests();
+  const matches = requests.filter((request) => {
+    if (parsed) return request.matchId === parsed.matchId && ['pending', 'approved'].includes(request.status);
+    return request.requesterId === mentionedId && request.status === 'approved';
+  });
+  for (const request of matches) {
+    const updated = await updateStreamRequest(request.id, {
+      status: 'canceled',
+      canceledBy: message.author.id,
+      canceledAt: new Date().toISOString(),
+      denialReason: 'Canceled by staff'
+    }, ['pending', 'approved']);
+    if (!updated) continue;
+    await refreshStreamRequestStaffMessage(updated);
+    await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} for ${updated.matchup} was canceled by staff.`);
+  }
+  await appendAuditLog({ type: 'stream_requests_canceled', actorId: message.author.id, matchId: parsed?.matchId || null, requesterId: mentionedId, count: matches.length });
+  await message.reply(`Canceled ${matches.length} matching request(s).`);
+}
+
+async function handleResendStreamDelivery(message, content) {
+  if (!isAdminStaff(message.member)) {
+    await message.reply('Only authorized staff can restart caster connection delivery.');
+    return;
+  }
+  const parsed = parseFaceitMatchRoomLink(content.replace(/^!resendip\b/i, '').trim());
+  if (!parsed) {
+    await message.reply('Use `!resendip FACEIT_MATCHROOM_LINK`.');
+    return;
+  }
+  const sent = await sendStreamDeliveryPrompt(parsed.matchId, true);
+  await message.reply(sent ? 'Restarted the staff CSTV/Twitch prompt.' : 'No approved caster requests were found for that FACEIT matchroom.');
+}
+
 async function handleAdminStreams(interaction) {
   await interaction.deferReply({ ephemeral: true });
   const action = interaction.options.getString('action', true);
@@ -2569,6 +2799,20 @@ async function handleAdminStreams(interaction) {
   }
   if (action === 'inspect') {
     await interaction.editReply({ embeds: [streamRequestEmbed(request)] });
+    return;
+  }
+  if (action === 'cancel') {
+    const updated = await updateStreamRequest(requestId, {
+      status: 'canceled',
+      canceledBy: interaction.user.id,
+      canceledAt: new Date().toISOString(),
+      denialReason: reason || 'Canceled by staff'
+    }, ['pending', 'approved']);
+    await interaction.editReply(updated ? 'Request canceled and the caster will be notified.' : 'Only a pending or approved request can be canceled.');
+    if (updated) {
+      await refreshStreamRequestStaffMessage(updated);
+      await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} was canceled by staff. Reason: ${updated.denialReason}`);
+    }
     return;
   }
   if (action === 'revoke') {
@@ -4139,6 +4383,7 @@ function makeProposalId() {
 
 async function runOperationsTick() {
   const now = Date.now();
+  await runStreamOperationsTick(now);
   const schedules = await listSchedules();
   for (const schedule of schedules) {
     if (!schedule.adminApproved) continue;
@@ -4173,6 +4418,86 @@ async function runOperationsTick() {
           .setDescription(error.message)
           .setFooter({ text: 'No seed or map-pool values were guessed. Staff can configure them and run /cf veto action:start.' })]
       });
+    }
+  }
+}
+
+async function runStreamOperationsTick(now = Date.now()) {
+  const active = (await listStreamRequests()).filter((request) =>
+    request.faceitLinkValid && request.matchId && ['pending', 'approved'].includes(request.status)
+  );
+  const byMatch = new Map();
+  for (const request of active) {
+    if (!byMatch.has(request.matchId)) byMatch.set(request.matchId, []);
+    byMatch.get(request.matchId).push(request);
+  }
+  const intervalMs = config.streamScheduleCheckMinutes * 60 * 1000;
+  for (const [matchId, requests] of byMatch) {
+    const lastChecked = Math.max(...requests.map((request) => Date.parse(request.faceitLastCheckedAt || '') || 0));
+    let currentRequests = requests;
+    if (now - lastChecked >= intervalMs) {
+      try {
+        const match = await faceit.getMatch(matchId);
+        const nextIso = getFaceitScheduledAtIso(match);
+        const previousIso = requests.find((request) => request.faceitScheduledAtIso)?.faceitScheduledAtIso || null;
+        const scheduleChanged = Boolean(previousIso && nextIso && previousIso !== nextIso);
+        const nextLabel = nextIso ? formatEasternDateTimeInput(nextIso) : null;
+        if (scheduleChanged) await disableStreamDeliveryPrompts(requests);
+        currentRequests = [];
+        for (const request of requests) {
+          const updated = await updateStreamRequest(request.id, {
+            faceitLastCheckedAt: new Date(now).toISOString(),
+            faceitScheduledAtIso: nextIso,
+            faceitStatus: match.status,
+            faceitCheckError: null,
+            ...(scheduleChanged ? { deliveryPromptSentAt: null, deliveryPromptMessageId: null } : {}),
+            ...(nextIso ? { dateTimeIso: nextIso, dateTime: nextLabel } : {})
+          }, ['pending', 'approved']);
+          if (updated) {
+            currentRequests.push(updated);
+            await refreshStreamRequestStaffMessage(updated);
+          }
+        }
+        if (scheduleChanged) {
+          const staffChannel = config.streamRequestChannelId
+            ? await client.channels.fetch(config.streamRequestChannelId).catch(() => null)
+            : null;
+          await staffChannel?.send({
+            content: getStaffMentions(staffChannel.guild),
+            embeds: [new EmbedBuilder()
+              .setColor(EMBED_COLORS.warning)
+              .setTitle('FACEIT Stream Schedule Changed')
+              .setDescription(`**${currentRequests[0]?.matchup || matchId}** moved from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**.`)
+              .addFields({ name: 'FACEIT Matchroom', value: currentRequests[0]?.faceitUrl || match.faceitUrl })
+              .setTimestamp()],
+            allowedMentions: getAdminAllowedMentions(staffChannel.guild)
+          }).catch(() => null);
+          const byCaster = new Map(currentRequests.map((request) => [request.requesterId, request]));
+          const failedCasterIds = [];
+          for (const request of byCaster.values()) {
+            const sent = await dmStreamRequester(request, `FACEIT changed **${request.matchup}** from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**. Your stream request has been updated automatically.`);
+            if (!sent) failedCasterIds.push(request.requesterId);
+          }
+          if (failedCasterIds.length) {
+            await staffChannel?.send(`Could not DM schedule changes to: ${failedCasterIds.map((id) => `<@${id}>`).join(', ')}`).catch(() => null);
+          }
+          await appendAuditLog({ type: 'stream_schedule_changed', matchId, previousIso, nextIso, requestCount: currentRequests.length });
+        }
+      } catch (error) {
+        for (const request of requests) {
+          await updateStreamRequest(request.id, {
+            faceitLastCheckedAt: new Date(now).toISOString(),
+            faceitCheckError: error.message
+          }, ['pending', 'approved']);
+        }
+      }
+    }
+    const terminal = currentRequests.every((request) => /finished|completed|canceled|cancelled/.test(String(request.faceitStatus || '').toLowerCase()));
+    if (terminal) continue;
+    const approved = currentRequests.filter((request) => request.status === 'approved');
+    const scheduledIso = approved.find((request) => request.dateTimeIso)?.dateTimeIso;
+    if (scheduledIso && Date.parse(scheduledIso) <= now && approved.some((request) => !request.deliveryPromptSentAt)) {
+      await sendStreamDeliveryPrompt(matchId);
     }
   }
 }

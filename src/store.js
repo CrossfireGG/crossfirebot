@@ -324,6 +324,26 @@ export async function updateStreamRequest(id, patch, allowedStatuses = null) {
   });
 }
 
+export async function claimStreamDeliveryPrompt(matchId, force = false) {
+  return mutateDb((db) => {
+    const requests = Object.values(db.streamRequests).filter((request) =>
+      request.matchId === matchId && request.status === 'approved'
+    );
+    if (!requests.length || (!force && requests.every((request) => request.deliveryPromptSentAt))) return null;
+    const claimedAt = new Date().toISOString();
+    for (const request of requests) {
+      db.streamRequests[request.id] = {
+        ...request,
+        deliveryPromptSentAt: claimedAt,
+        deliveryPromptMessageId: null,
+        version: Number(request.version || 0) + 1,
+        updatedAt: claimedAt
+      };
+    }
+    return requests.map((request) => db.streamRequests[request.id]);
+  });
+}
+
 export async function claimPostCastReminder(id) {
   return mutateDb((db) => {
     const existing = db.streamRequests[id];

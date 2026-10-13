@@ -12,8 +12,10 @@ import { applyVetoAction, chooseFirstAction, createVeto } from '../src/vetoEngin
 import {
   formatEasternDateTimeInput,
   makeStreamRequestModalId,
+  parseFaceitMatchRoomLink,
   parseEasternDateTime,
   parseStreamRequestModalId,
+  validateStreamDelivery,
   validateStreamRequest
 } from '../src/streamRequest.js';
 
@@ -138,6 +140,24 @@ test('stream request modal IDs stay below Discord limits for long sample match r
   });
 });
 
+test('FACEIT matchroom links are canonicalized and non-FACEIT links are rejected', () => {
+  assert.deepEqual(
+    parseFaceitMatchRoomLink('https://www.faceit.com/en/cs2/room/1-ea866b15-315d-4c3f-a41c-2093b63b6c41'),
+    {
+      matchId: '1-ea866b15-315d-4c3f-a41c-2093b63b6c41',
+      url: 'https://www.faceit.com/en/cs2/room/1-ea866b15-315d-4c3f-a41c-2093b63b6c41'
+    }
+  );
+  assert.equal(parseFaceitMatchRoomLink('https://hltv.org/matches/123'), null);
+});
+
+test('caster delivery accepts CSTV connect commands and Twitch links', () => {
+  assert.equal(validateStreamDelivery('cstv', 'connect 123.45.67.89:27020').valid, true);
+  assert.equal(validateStreamDelivery('cstv', '123.45.67.89:27020').valid, false);
+  assert.equal(validateStreamDelivery('twitch', 'https://twitch.tv/crossfire').valid, true);
+  assert.equal(validateStreamDelivery('twitch', 'https://example.com/live').valid, false);
+});
+
 test('persistent decisions are serialized and survive a fresh module load', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crossfire-store-'));
   const dbPath = path.join(tempDir, 'bot-data.json');
@@ -186,6 +206,21 @@ test('post-cast reminder claims are atomic and survive restart', async () => {
   assert.equal(claims.filter(Boolean).length, 1);
   const reloaded = await import(`../src/store.js?reminder-b=${Date.now()}`);
   assert.equal(await reloaded.claimPostCastReminder('approved-1'), null);
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('caster connection prompts are claimed once per approved match unless forced', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crossfire-delivery-'));
+  process.env.BOT_DATA_PATH = path.join(tempDir, 'bot-data.json');
+  const store = await import(`../src/store.js?delivery-a=${Date.now()}`);
+  await store.createStreamRequest({ id: 'caster-1', requesterId: 'user-1', matchId: 'match-1', status: 'approved' });
+  await store.createStreamRequest({ id: 'caster-2', requesterId: 'user-2', matchId: 'match-1', status: 'approved' });
+  const [first, second] = await Promise.all([
+    store.claimStreamDeliveryPrompt('match-1'),
+    store.claimStreamDeliveryPrompt('match-1')
+  ]);
+  assert.equal([first, second].filter(Boolean).length, 1);
+  assert.equal((await store.claimStreamDeliveryPrompt('match-1', true)).length, 2);
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 

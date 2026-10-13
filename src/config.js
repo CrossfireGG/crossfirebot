@@ -192,6 +192,7 @@ export function getConfig() {
     vetoAdvantageTeam: process.env.VETO_ADVANTAGE_TEAM || null,
     vetoStaffChannelId: process.env.VETO_STAFF_CHANNEL_ID || process.env.ADMIN_SCHEDULE_CHANNEL_ID || null,
     streamRequestChannelId: process.env.STREAM_REQUEST_CHANNEL_ID || null,
+    streamScheduleCheckMinutes: Math.max(15, Math.min(30, Number(process.env.STREAM_SCHEDULE_CHECK_MINUTES || 20))),
     streamGuidelinesUrl: process.env.STREAM_GUIDELINES_URL || null,
     streamGuidelinesText: process.env.STREAM_GUIDELINES_TEXT || 'Follow all CROSSFIRE co-streaming rules and do not restream the official broadcast without explicit permission.',
     postCastFormUrl: process.env.POST_CAST_FORM_URL || 'https://forms.gle/6zwVr2ArfFngGQ2NA',
