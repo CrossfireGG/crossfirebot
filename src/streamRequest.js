@@ -6,8 +6,9 @@ export function validateStreamRequest(input) {
   const socialUrl = normalizeHttpUrl(input.socialUrl);
   const dateTimeMs = parseEasternDateTime(dateTime, input.now);
 
-  if (!matchup) errors.push('Matchup is required.');
-  if (!dateTime || !Number.isFinite(dateTimeMs)) {
+  const matchDetailsRequired = input.matchDetailsRequired !== false;
+  if (matchDetailsRequired && !matchup) errors.push('Matchup is required.');
+  if (matchDetailsRequired && (!dateTime || !Number.isFinite(dateTimeMs))) {
     errors.push('Enter the match date and time in Eastern Time using `ET`, `EDT`, or `EST`, for example `10/12/2026 8:00 PM EDT` or `October 12, 2026 8 PM EST`.');
   }
   if (!streamUrl || !isAllowedHost(streamUrl, ['twitch.tv', 'www.twitch.tv'])) errors.push('Stream URL must be a valid twitch.tv link.');
@@ -19,7 +20,7 @@ export function validateStreamRequest(input) {
     value: {
       matchup,
       dateTime,
-      dateTimeIso: errors.some((error) => error.includes('date and time')) ? null : new Date(dateTimeMs).toISOString(),
+      dateTimeIso: Number.isFinite(dateTimeMs) ? new Date(dateTimeMs).toISOString() : null,
       streamUrl: streamUrl?.toString() || '',
       socialUrl: socialUrl?.toString() || ''
     }

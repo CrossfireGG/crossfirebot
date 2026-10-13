@@ -2372,26 +2372,20 @@ async function showStreamRequestModal(interaction) {
     return;
   }
   const stored = interaction.channel?.id ? await getStoredMatchForChannel(interaction.channel) : null;
-  const schedule = stored ? await getSchedule(stored.match.id) : null;
-  const matchDateTime = formatEasternDateTimeInput(schedule?.scheduledAt || stored?.match?.scheduledAt || '');
   const modal = new ModalBuilder()
     .setCustomId(makeStreamRequestModalId(interaction.user.id, interaction.channelId))
     .setTitle('Request to Stream');
   const fields = [
     ['faceit_url', 'FACEIT matchroom link', stored?.match?.faceitUrl || '', TextInputStyle.Short],
-    ['date_time', 'Match date and time (Eastern Time)', matchDateTime, TextInputStyle.Short],
-    ['matchup', 'Teams / matchup', stored ? `${stored.match.teamA} vs ${stored.match.teamB}` : '', TextInputStyle.Short],
     ['stream_url', 'Twitch stream URL', '', TextInputStyle.Short],
     ['social_url', 'Caster/streamer X or Twitter URL', '', TextInputStyle.Short]
   ];
   const placeholders = {
     faceit_url: 'Example: https://www.faceit.com/en/cs2/room/1-...',
-    date_time: 'Example: 10/12/2026 8:00 PM ET/EDT/EST',
-    matchup: 'Example: Team One vs Team Two',
     stream_url: 'Example: https://twitch.tv/yourchannel',
     social_url: 'Example: https://x.com/yourname'
   };
-  const maxLengths = { faceit_url: 500, date_time: 100, matchup: 200, stream_url: 500, social_url: 500 };
+  const maxLengths = { faceit_url: 500, stream_url: 500, social_url: 500 };
   modal.addComponents(...fields.map(([id, label, value, style]) => {
     const input = new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style).setRequired(true);
     input.setPlaceholder(placeholders[id]);
@@ -2431,19 +2425,20 @@ async function handleStreamRequestModal(interaction) {
     faceitValidationError = 'The supplied URL is not a valid FACEIT CS2 matchroom link.';
   }
   const matchId = verifiedFaceitMatch?.id || null;
-  const submittedMatchup = interaction.fields.getTextInputValue('matchup');
   const expectedMatchup = verifiedFaceitMatch
     ? `${verifiedFaceitMatch.teamA} vs ${verifiedFaceitMatch.teamB}`
     : linkedMatch ? `${linkedMatch.match.teamA} vs ${linkedMatch.match.teamB}` : null;
-  if (expectedMatchup && normalizeTeamKey(submittedMatchup) !== normalizeTeamKey(expectedMatchup)) {
-    await interaction.reply({ content: `This request is linked to **${expectedMatchup}**. Do not change the teams in a linked request.`, ephemeral: true });
-    return;
-  }
+  const verifiedScheduleIso = getFaceitScheduledAtIso(verifiedFaceitMatch);
+  const derivedMatchup = expectedMatchup || 'Unknown matchup - FACEIT link not verified';
+  const derivedDateTime = verifiedScheduleIso
+    ? formatEasternDateTimeInput(verifiedScheduleIso)
+    : 'Not scheduled on FACEIT yet';
   const validation = validateStreamRequest({
-    dateTime: verifiedFaceitMatch?.scheduledAt || interaction.fields.getTextInputValue('date_time'),
-    matchup: expectedMatchup || submittedMatchup,
+    dateTime: derivedDateTime,
+    matchup: derivedMatchup,
     streamUrl: interaction.fields.getTextInputValue('stream_url'),
-    socialUrl: interaction.fields.getTextInputValue('social_url')
+    socialUrl: interaction.fields.getTextInputValue('social_url'),
+    matchDetailsRequired: false
   });
   if (!validation.valid) {
     await interaction.reply({ content: validation.errors.join('\n'), ephemeral: true });
@@ -2468,7 +2463,7 @@ async function handleStreamRequestModal(interaction) {
     faceitUrl: parsedFaceitLink?.url || submittedFaceitUrl.trim(),
     faceitLinkValid: Boolean(verifiedFaceitMatch),
     faceitValidationError,
-    faceitScheduledAtIso: getFaceitScheduledAtIso(verifiedFaceitMatch),
+    faceitScheduledAtIso: verifiedScheduleIso,
     faceitStatus: verifiedFaceitMatch?.status || null,
     faceitLastCheckedAt: verifiedFaceitMatch ? new Date().toISOString() : null,
     manualVerificationRequired: !verifiedFaceitMatch,
@@ -2552,7 +2547,15 @@ async function handleStreamReview(interaction) {
     return;
   }
   await interaction.message.edit({ embeds: [streamRequestEmbed(updated)], components: [] });
-  await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} was **approved** for ${updated.matchup}.`);
+  const approvedScheduleIso = updated.faceitScheduledAtIso || updated.dateTimeIso;
+  const approvalMessage = [
+    `Your CROSSFIRE stream request ${updated.id} was **approved** for **${updated.matchup}**.`,
+    approvedScheduleIso
+      ? `Scheduled for **${formatEasternDateTimeInput(approvedScheduleIso)}**.`
+      : 'FACEIT has not scheduled this match yet. I will DM you when a date and time are posted.',
+    updated.faceitUrl ? `FACEIT matchroom: ${updated.faceitUrl}` : null
+  ].filter(Boolean).join('\n');
+  await notifyStreamRequester(updated, approvalMessage);
   await appendAuditLog({ type: 'stream_request_approved', actorId: interaction.user.id, matchId: updated.matchId, requestId });
   await interaction.editReply('Stream request approved.');
 }
@@ -4440,9 +4443,11 @@ async function runStreamOperationsTick(now = Date.now()) {
         const match = await faceit.getMatch(matchId);
         const nextIso = getFaceitScheduledAtIso(match);
         const previousIso = requests.find((request) => request.faceitScheduledAtIso)?.faceitScheduledAtIso || null;
+        const newlyScheduled = Boolean(!previousIso && nextIso);
         const scheduleChanged = Boolean(previousIso && nextIso && previousIso !== nextIso);
+        const scheduleUpdated = newlyScheduled || scheduleChanged;
         const nextLabel = nextIso ? formatEasternDateTimeInput(nextIso) : null;
-        if (scheduleChanged) await disableStreamDeliveryPrompts(requests);
+        if (scheduleUpdated) await disableStreamDeliveryPrompts(requests);
         currentRequests = [];
         for (const request of requests) {
           const updated = await updateStreamRequest(request.id, {
@@ -4450,7 +4455,7 @@ async function runStreamOperationsTick(now = Date.now()) {
             faceitScheduledAtIso: nextIso,
             faceitStatus: match.status,
             faceitCheckError: null,
-            ...(scheduleChanged ? { deliveryPromptSentAt: null, deliveryPromptMessageId: null } : {}),
+            ...(scheduleUpdated ? { deliveryPromptSentAt: null, deliveryPromptMessageId: null } : {}),
             ...(nextIso ? { dateTimeIso: nextIso, dateTime: nextLabel } : {})
           }, ['pending', 'approved']);
           if (updated) {
@@ -4458,7 +4463,7 @@ async function runStreamOperationsTick(now = Date.now()) {
             await refreshStreamRequestStaffMessage(updated);
           }
         }
-        if (scheduleChanged) {
+        if (scheduleUpdated) {
           const staffChannel = config.streamRequestChannelId
             ? await client.channels.fetch(config.streamRequestChannelId).catch(() => null)
             : null;
@@ -4466,22 +4471,34 @@ async function runStreamOperationsTick(now = Date.now()) {
             content: getStaffMentions(staffChannel.guild),
             embeds: [new EmbedBuilder()
               .setColor(EMBED_COLORS.warning)
-              .setTitle('FACEIT Stream Schedule Changed')
-              .setDescription(`**${currentRequests[0]?.matchup || matchId}** moved from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**.`)
+              .setTitle(newlyScheduled ? 'FACEIT Stream Match Scheduled' : 'FACEIT Stream Schedule Changed')
+              .setDescription(newlyScheduled
+                ? `**${currentRequests[0]?.matchup || matchId}** is now scheduled for **${nextLabel}**.`
+                : `**${currentRequests[0]?.matchup || matchId}** moved from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**.`)
               .addFields({ name: 'FACEIT Matchroom', value: currentRequests[0]?.faceitUrl || match.faceitUrl })
               .setTimestamp()],
             allowedMentions: getAdminAllowedMentions(staffChannel.guild)
           }).catch(() => null);
-          const byCaster = new Map(currentRequests.map((request) => [request.requesterId, request]));
+          const approvedRequests = currentRequests.filter((request) => request.status === 'approved');
+          const byCaster = new Map(approvedRequests.map((request) => [request.requesterId, request]));
           const failedCasterIds = [];
           for (const request of byCaster.values()) {
-            const sent = await dmStreamRequester(request, `FACEIT changed **${request.matchup}** from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**. Your stream request has been updated automatically.`);
+            const message = newlyScheduled
+              ? `FACEIT scheduled **${request.matchup}** for **${nextLabel}**. Your approved stream request has been updated automatically.`
+              : `FACEIT changed **${request.matchup}** from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**. Your approved stream request has been updated automatically.`;
+            const sent = await dmStreamRequester(request, message);
             if (!sent) failedCasterIds.push(request.requesterId);
           }
           if (failedCasterIds.length) {
             await staffChannel?.send(`Could not DM schedule changes to: ${failedCasterIds.map((id) => `<@${id}>`).join(', ')}`).catch(() => null);
           }
-          await appendAuditLog({ type: 'stream_schedule_changed', matchId, previousIso, nextIso, requestCount: currentRequests.length });
+          await appendAuditLog({
+            type: newlyScheduled ? 'stream_match_scheduled' : 'stream_schedule_changed',
+            matchId,
+            previousIso,
+            nextIso,
+            requestCount: currentRequests.length
+          });
         }
       } catch (error) {
         for (const request of requests) {

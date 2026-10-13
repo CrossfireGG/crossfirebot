@@ -91,6 +91,18 @@ test('stream request validates host allowlists without a typed acknowledgment', 
   assert.equal(invalid.valid, false);
 });
 
+test('stream request can derive matchup and schedule from a FACEIT room', () => {
+  const result = validateStreamRequest({
+    dateTime: '',
+    matchup: '',
+    streamUrl: 'https://twitch.tv/example',
+    socialUrl: 'https://x.com/example',
+    matchDetailsRequired: false
+  });
+  assert.equal(result.valid, true);
+  assert.equal(result.value.dateTimeIso, null);
+});
+
 test('stream request date errors explain the required Eastern Time format', () => {
   const result = validateStreamRequest({
     dateTime: 'tomorrow sometime',
