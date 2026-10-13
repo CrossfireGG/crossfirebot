@@ -4,8 +4,7 @@ export function validateStreamRequest(input) {
   const dateTime = String(input.dateTime || '').trim();
   const streamUrl = normalizeHttpUrl(input.streamUrl);
   const socialUrl = normalizeHttpUrl(input.socialUrl);
-  const acknowledged = /^(?:yes|y|agree|i agree)$/i.test(String(input.acknowledged || '').trim());
-  const dateTimeMs = parseEasternDateTime(dateTime);
+  const dateTimeMs = parseEasternDateTime(dateTime, input.now);
 
   if (!matchup) errors.push('Matchup is required.');
   if (!dateTime || !Number.isFinite(dateTimeMs)) {
@@ -13,7 +12,6 @@ export function validateStreamRequest(input) {
   }
   if (!streamUrl || !isAllowedHost(streamUrl, ['twitch.tv', 'www.twitch.tv'])) errors.push('Stream URL must be a valid twitch.tv link.');
   if (!socialUrl || !isAllowedHost(socialUrl, ['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'])) errors.push('Social URL must be a valid x.com or twitter.com link.');
-  if (!acknowledged) errors.push('You must acknowledge the configured co-streaming guidelines.');
 
   return {
     valid: errors.length === 0,
@@ -23,13 +21,12 @@ export function validateStreamRequest(input) {
       dateTime,
       dateTimeIso: errors.some((error) => error.includes('date and time')) ? null : new Date(dateTimeMs).toISOString(),
       streamUrl: streamUrl?.toString() || '',
-      socialUrl: socialUrl?.toString() || '',
-      acknowledged
+      socialUrl: socialUrl?.toString() || ''
     }
   };
 }
 
-function parseEasternDateTime(value) {
+export function parseEasternDateTime(value, now = new Date()) {
   const text = String(value || '').trim();
   const normalized = text
     .replace(/\b(EDT|EST|ET|eastern)\b/gi, ' ')
@@ -41,7 +38,16 @@ function parseEasternDateTime(value) {
   if (!time) return Number.NaN;
 
   const withoutTime = normalized.replace(time[0], ' ').replace(/\s+/g, ' ').trim();
-  const parsedDate = Date.parse(`${withoutTime} 12:00 UTC`);
+  const currentDate = datePartsInTimeZone(now, 'America/New_York');
+  let parsedDate;
+  if (/^today$/i.test(withoutTime)) {
+    parsedDate = Date.UTC(currentDate.year, currentDate.month - 1, currentDate.day, 12);
+  } else if (/^tomorrow$/i.test(withoutTime)) {
+    parsedDate = Date.UTC(currentDate.year, currentDate.month - 1, currentDate.day + 1, 12);
+  } else {
+    const hasYear = /\b\d{4}\b/.test(withoutTime);
+    parsedDate = Date.parse(`${withoutTime}${hasYear ? '' : ` ${currentDate.year}`} 12:00 UTC`);
+  }
   if (!Number.isFinite(parsedDate)) return Number.NaN;
 
   let hour = Number(time[1]);
@@ -58,6 +64,34 @@ function parseEasternDateTime(value) {
     minute,
     'America/New_York'
   ).getTime();
+}
+
+export function formatEasternDateTimeInput(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return String(value);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  }).formatToParts(date);
+  const part = (type) => parts.find((entry) => entry.type === type)?.value;
+  return `${part('month')}/${part('day')}/${part('year')} ${part('hour')}:${part('minute')} ${part('dayPeriod')} ET`;
+}
+
+function datePartsInTimeZone(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(date);
+  const number = (type) => Number(parts.find((part) => part.type === type)?.value);
+  return { year: number('year'), month: number('month'), day: number('day') };
 }
 
 function zonedTimeToUtc(year, month, day, hour, minute, timeZone) {

@@ -10,7 +10,9 @@ import { isAuthorizedStaffMember, parseForceDirective } from '../src/operationsP
 import { extractFaceitTeamId } from '../src/sheetRoles.js';
 import { applyVetoAction, chooseFirstAction, createVeto } from '../src/vetoEngine.js';
 import {
+  formatEasternDateTimeInput,
   makeStreamRequestModalId,
+  parseEasternDateTime,
   parseStreamRequestModalId,
   validateStreamRequest
 } from '../src/streamRequest.js';
@@ -75,16 +77,15 @@ test('match permissions hide everyone and include only both teams and privileged
   assert(overwrites.slice(1).every((entry) => entry.allow.includes(PermissionFlagsBits.ViewChannel)));
 });
 
-test('stream request validates host allowlists and guidelines acknowledgment', () => {
+test('stream request validates host allowlists without a typed acknowledgment', () => {
   const valid = validateStreamRequest({
     dateTime: 'October 10, 2026 8 PM EDT',
     matchup: 'Alpha vs Bravo',
     streamUrl: 'https://twitch.tv/example',
-    socialUrl: 'https://x.com/example',
-    acknowledged: 'I AGREE'
+    socialUrl: 'https://x.com/example'
   });
   assert.equal(valid.valid, true);
-  const invalid = validateStreamRequest({ ...valid.value, streamUrl: 'https://example.com', acknowledged: 'no' });
+  const invalid = validateStreamRequest({ ...valid.value, streamUrl: 'https://example.com' });
   assert.equal(invalid.valid, false);
 });
 
@@ -93,12 +94,31 @@ test('stream request date errors explain the required Eastern Time format', () =
     dateTime: 'tomorrow sometime',
     matchup: 'Alpha vs Bravo',
     streamUrl: 'https://twitch.tv/example',
-    socialUrl: 'https://x.com/example',
-    acknowledged: 'I AGREE'
+    socialUrl: 'https://x.com/example'
   });
   assert.equal(result.valid, false);
   assert.match(result.errors.join('\n'), /Eastern Time/);
   assert.match(result.errors.join('\n'), /10\/12\/2026 8:00 PM ET/);
+});
+
+test('stream request accepts common Eastern Time date formats and relative dates', () => {
+  const now = new Date('2026-10-12T16:00:00.000Z');
+  assert.equal(
+    new Date(parseEasternDateTime('10/12/2026 8 PM', now)).toISOString(),
+    '2026-10-13T00:00:00.000Z'
+  );
+  assert.equal(
+    new Date(parseEasternDateTime('tomorrow at 8:30 PM ET', now)).toISOString(),
+    '2026-10-14T00:30:00.000Z'
+  );
+  assert.equal(
+    new Date(parseEasternDateTime('October 14 at 7 PM', now)).toISOString(),
+    '2026-10-14T23:00:00.000Z'
+  );
+});
+
+test('FACEIT ISO times are formatted as readable Eastern Time form values', () => {
+  assert.equal(formatEasternDateTimeInput('2026-10-13T00:00:00.000Z'), '10/12/2026 8:00 PM ET');
 });
 
 test('stream request modal IDs stay below Discord limits for long sample match rooms', () => {

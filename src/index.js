@@ -63,6 +63,7 @@ import { auditMissingCaptains, auditMissingPlayers, getTeamMappingScope, syncRol
 import { startWebhookServer } from './webhookServer.js';
 import { applyVetoAction, chooseFirstAction, createVeto, expectedVetoAction } from './vetoEngine.js';
 import {
+  formatEasternDateTimeInput,
   makeStreamRequestId,
   makeStreamRequestModalId,
   parseStreamRequestModalId,
@@ -2351,21 +2352,25 @@ async function showStreamRequestModal(interaction) {
   }
   const stored = interaction.channel?.id ? await getStoredMatchForChannel(interaction.channel) : null;
   const schedule = stored ? await getSchedule(stored.match.id) : null;
+  const matchDateTime = formatEasternDateTimeInput(schedule?.scheduledAt || stored?.match?.scheduledAt || '');
   const modal = new ModalBuilder()
     .setCustomId(makeStreamRequestModalId(interaction.user.id, interaction.channelId))
     .setTitle('Request to Stream');
   const fields = [
-    ['date_time', 'Match date and time (Eastern Time)', schedule?.scheduledAt || stored?.match?.scheduledAt || '', TextInputStyle.Short],
+    ['date_time', 'Match date and time (Eastern Time)', matchDateTime, TextInputStyle.Short],
     ['matchup', 'Teams / matchup', stored ? `${stored.match.teamA} vs ${stored.match.teamB}` : '', TextInputStyle.Short],
     ['stream_url', 'Twitch stream URL', '', TextInputStyle.Short],
-    ['social_url', 'Caster/streamer X or Twitter URL', '', TextInputStyle.Short],
-    ['ack', 'Type I AGREE to the co-streaming guidelines', '', TextInputStyle.Short]
+    ['social_url', 'Caster/streamer X or Twitter URL', '', TextInputStyle.Short]
   ];
+  const placeholders = {
+    date_time: 'Example: 10/12/2026 8:00 PM ET',
+    matchup: 'Example: Team One vs Team Two',
+    stream_url: 'Example: https://twitch.tv/yourchannel',
+    social_url: 'Example: https://x.com/yourname'
+  };
   modal.addComponents(...fields.map(([id, label, value, style]) => {
     const input = new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style).setRequired(true);
-    if (id === 'date_time') {
-      input.setPlaceholder('Example: 10/12/2026 8:00 PM ET');
-    }
+    input.setPlaceholder(placeholders[id]);
     if (value) input.setValue(String(value).slice(0, 4000));
     return new ActionRowBuilder().addComponents(input);
   }));
@@ -2397,8 +2402,7 @@ async function handleStreamRequestModal(interaction) {
     dateTime: interaction.fields.getTextInputValue('date_time'),
     matchup: expectedMatchup || submittedMatchup,
     streamUrl: interaction.fields.getTextInputValue('stream_url'),
-    socialUrl: interaction.fields.getTextInputValue('social_url'),
-    acknowledged: interaction.fields.getTextInputValue('ack')
+    socialUrl: interaction.fields.getTextInputValue('social_url')
   });
   if (!validation.valid) {
     await interaction.reply({ content: validation.errors.join('\n'), ephemeral: true });
