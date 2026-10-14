@@ -45,6 +45,11 @@ export function parseFaceitMatchRoomLink(value) {
 
 export function validateStreamDelivery(type, value) {
   const text = String(value || '').trim();
+  if (type === 'custom') {
+    return text && text.length <= 1500
+      ? { valid: true, value: text }
+      : { valid: false, error: 'Enter the connection details or instructions to DM, up to 1500 characters.' };
+  }
   if (type === 'twitch') {
     const url = normalizeHttpUrl(text);
     return url && isAllowedHost(url, ['twitch.tv', 'www.twitch.tv'])

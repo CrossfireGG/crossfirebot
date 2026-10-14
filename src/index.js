@@ -617,7 +617,7 @@ async function handleCommandHelp(interaction) {
       '`!request` - open the community stream request workflow.',
       '`!cancelreq FACEIT_LINK` or `!cancelreq @caster` - staff cancel grouped or individual approved caster requests.',
       '`!resendip FACEIT_LINK` - staff restart the CSTV/Twitch delivery prompt.',
-      '`!sendip FACEIT_LINK connect IP:PORT` - staff immediately DM the CSTV connect command to approved casters.',
+      '`!sendip FACEIT_LINK MESSAGE` - staff immediately DM connection details or instructions to approved casters.',
       '',
       '**Public Slash Commands**',
       '`/request stream` - submit a stream request; `/request cancel` cancels your pending request.',
@@ -2528,7 +2528,7 @@ function streamRequestEmbed(request) {
 }
 
 async function handleStreamReview(interaction) {
-  if (!isAdminStaff(interaction.member)) {
+  if (!canManageStreamRequests(interaction.member)) {
     await interaction.reply({ content: 'Only authorized staff can review stream requests.', ephemeral: true });
     return;
   }
@@ -2566,7 +2566,7 @@ async function handleStreamReview(interaction) {
 }
 
 async function handleStreamDenialModal(interaction) {
-  if (!isAdminStaff(interaction.member)) {
+  if (!canManageStreamRequests(interaction.member)) {
     await interaction.reply({ content: 'Only authorized staff can review stream requests.', ephemeral: true });
     return;
   }
@@ -2676,7 +2676,7 @@ async function sendStreamDeliveryPrompt(matchId, force = false) {
 }
 
 async function handleStreamDeliveryOpen(interaction) {
-  if (!isAdminStaff(interaction.member)) {
+  if (!canManageStreamRequests(interaction.member)) {
     await interaction.reply({ content: 'Only authorized staff can submit caster connection details.', ephemeral: true });
     return;
   }
@@ -2697,7 +2697,7 @@ async function handleStreamDeliveryOpen(interaction) {
 }
 
 async function handleStreamDeliverySubmit(interaction) {
-  if (!isAdminStaff(interaction.member)) {
+  if (!canManageStreamRequests(interaction.member)) {
     await interaction.reply({ content: 'Only authorized staff can submit caster connection details.', ephemeral: true });
     return;
   }
@@ -2718,7 +2718,9 @@ async function deliverStreamConnection(matchId, type, value, actorId) {
   let delivered = 0;
   const deliveryByCaster = new Map();
   for (const request of new Map(requests.map((entry) => [entry.requesterId, entry])).values()) {
-    const label = type === 'cstv' ? 'FACEIT CSTV connect' : 'official CROSSFIRE stream';
+    const label = type === 'cstv'
+      ? 'FACEIT CSTV connect'
+      : type === 'twitch' ? 'official CROSSFIRE stream' : 'connection details from Tournament Operations';
     const detail = type === 'cstv' ? `\`${value}\`` : value;
     const sent = await dmStreamRequester(request, `**${request.matchup}** is ready. ${label}:\n${detail}`);
     if (sent) delivered += 1;
@@ -2748,7 +2750,7 @@ async function disableStreamDeliveryPrompts(requests) {
 }
 
 async function handleCancelStreamRequests(message, content) {
-  if (!isAdminStaff(message.member)) {
+  if (!canManageStreamRequests(message.member)) {
     await message.reply('Only authorized staff can cancel caster requests.');
     return;
   }
@@ -2780,7 +2782,7 @@ async function handleCancelStreamRequests(message, content) {
 }
 
 async function handleResendStreamDelivery(message, content) {
-  if (!isAdminStaff(message.member)) {
+  if (!canManageStreamRequests(message.member)) {
     await message.reply('Only authorized staff can restart caster connection delivery.');
     return;
   }
@@ -2794,29 +2796,29 @@ async function handleResendStreamDelivery(message, content) {
 }
 
 async function handleSendIp(message, content) {
-  if (!isAdminStaff(message.member)) {
+  if (!canManageStreamRequests(message.member)) {
     await message.reply('Only authorized staff can send caster connection details.');
     return;
   }
   const input = content.replace(/^!sendip\b/i, '').trim();
   const separator = input.search(/\s/);
   const faceitUrl = separator === -1 ? input : input.slice(0, separator);
-  const connectCommand = separator === -1 ? '' : input.slice(separator).trim();
+  const deliveryText = separator === -1 ? '' : input.slice(separator).trim();
   const parsed = parseFaceitMatchRoomLink(faceitUrl);
-  const delivery = validateStreamDelivery('cstv', connectCommand);
+  const delivery = validateStreamDelivery('custom', deliveryText);
   if (!parsed || !delivery.valid) {
-    await message.reply('Use `!sendip FACEIT_MATCHROOM_LINK connect IP:PORT`, for example `!sendip https://www.faceit.com/en/cs2/room/1-... connect 123.45.67.89:27020`.');
+    await message.reply('Use `!sendip FACEIT_MATCHROOM_LINK MESSAGE`, for example `!sendip https://www.faceit.com/en/cs2/room/1-... connect 123.45.67.89:27020`.');
     return;
   }
   await message.delete().catch(() => null);
-  const result = await deliverStreamConnection(parsed.matchId, 'cstv', delivery.value, message.author.id);
+  const result = await deliverStreamConnection(parsed.matchId, 'custom', delivery.value, message.author.id);
   if (!result.requests.length) {
     const channel = message.channel;
     await channel.send('No approved caster requests were found for that FACEIT matchroom.').catch(() => null);
     return;
   }
   await disableStreamDeliveryPrompts(result.requests);
-  await message.channel.send(`Sent the CSTV connect command to ${result.delivered}/${result.casterCount} approved caster(s).`).catch(() => null);
+  await message.channel.send(`Sent the connection details to ${result.delivered}/${result.casterCount} approved caster(s).`).catch(() => null);
 }
 
 async function handleAdminStreams(interaction) {
@@ -3690,6 +3692,12 @@ function adminDecisionEmbed({ approved, stored, proposal, adminId }) {
 
 function isAdminStaff(member) {
   return isAuthorizedStaffMember(member, config);
+}
+
+function canManageStreamRequests(member) {
+  if (isAdminStaff(member)) return true;
+  if (!member || member.guild?.id !== config.streamStaffGuildId) return false;
+  return config.streamStaffRoleIds.some((roleId) => member.roles?.cache?.has(roleId));
 }
 
 function canUseBotAdminCommand(member) {

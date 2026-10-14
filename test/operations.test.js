@@ -168,6 +168,8 @@ test('caster delivery accepts CSTV connect commands and Twitch links', () => {
   assert.equal(validateStreamDelivery('cstv', '123.45.67.89:27020').valid, false);
   assert.equal(validateStreamDelivery('twitch', 'https://twitch.tv/crossfire').valid, true);
   assert.equal(validateStreamDelivery('twitch', 'https://example.com/live').valid, false);
+  assert.equal(validateStreamDelivery('custom', 'Use the CSTV details from tonight\'s lobby.').valid, true);
+  assert.equal(validateStreamDelivery('custom', '   ').valid, false);
 });
 
 test('persistent decisions are serialized and survive a fresh module load', async () => {
