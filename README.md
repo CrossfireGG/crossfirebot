@@ -173,7 +173,9 @@ Reschedule rules:
 
 ### Google Sheet schedule log
 
-Every confirmed schedule is written to the `Game Schedules` tab of the "CF Game and Staff Schedule" spreadsheet, using the same columns as the older `Game Schedule` tab: Date, TIME, TEAM 1, VS, TEAM 2, FACEIT LINK, ROUND, GROUP, then Admin, scores, Stream Link/s, Stats Collected? and Key. The bot fills the first eight columns and never touches the rest. One row per match: a reschedule updates the existing row for that FACEIT link. After every write the tab is sorted by date and time using a hidden `Sort Key` column (O); rows added by hand are given a key from their Date and Time cells so they sort too. Rows are written when staff approve a schedule or reschedule in the staff channel, and when Tournament Ops sets a time directly with `!schedule`.
+Every confirmed schedule is written to the `Game Schedules` tab of the "CF Game and Staff Schedule" spreadsheet: Date, TIME, TEAM 1, VS, TEAM 2, FACEIT LINK, ROUND, GROUP in columns A to H, then the staff columns (Stream Link/s, Stats Collected? and checkboxes). The bot fills the first eight columns and never touches the staff columns except `Stream Link/s`. One row per match, matched on the FACEIT room ID in the FACEIT LINK column: a reschedule updates the existing row. After every write the tab is sorted by date and time using a hidden `Sort Key` column (O); rows added by hand are given a key from their Date and Time cells so they sort too. Rows are written when staff approve a schedule or reschedule in the staff channel, and when Tournament Ops sets a time directly with `!schedule`.
+
+When a community caster's stream request is approved (and the website publish succeeds), the bot appends the caster's stream URL to the `Stream Link/s` cell of that match's row, one link per line, skipping links already there. The column is found by its header text, so it can be moved. Casters can only request confirmed matches, so the row is expected to exist; if it does not, or the request's FACEIT link could not be parsed, the sheet is left alone and the approver is told to add the link by hand.
 
 Setup:
 
@@ -181,7 +183,7 @@ Setup:
 2. Deploy > New deployment > Web app, Execute as **Me**, Who has access **Anyone**. Copy the `/exec` URL. Opening it in a browser should show `ok`.
 3. Set `SCHEDULE_SHEET_WEBHOOK_URL` to that URL and `SCHEDULE_SHEET_SECRET` to the same secret.
 
-Without `SCHEDULE_SHEET_WEBHOOK_URL` the bot runs in log-only mode. A failed sheet write never blocks the Discord approval; the approving staff member sees a warning and the failure is audit logged as `schedule_sheet_failed`. Edits to the script need a new deployment version before the live URL picks them up.
+Without `SCHEDULE_SHEET_WEBHOOK_URL` the bot runs in log-only mode. A failed sheet write never blocks the Discord approval; the approving staff member sees a warning and the failure is audit logged as `schedule_sheet_failed` (schedules) or `stream_link_sheet_failed` (stream links). Edits to the script need a new deployment version before the live URL picks them up.
 
 ## Persistent operations workflows
 

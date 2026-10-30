@@ -2,15 +2,21 @@
  * CROSSFIRE schedule log — Google Apps Script web app.
  *
  * Writes confirmed match schedules into the "Game Schedules" tab of the
- * "CF Game and Staff Schedule" spreadsheet, using the same column layout as the
- * older "Game Schedule" tab:
+ * "CF Game and Staff Schedule" spreadsheet:
  *
  *   A Date | B TIME | C TEAM 1 | D VS | E TEAM 2 | F FACEIT LINK | G ROUND | H GROUP:
- *   I Admin | J Team 1 Score | K Team 2 Score | L Stream Link/s | M Stats Collected? | N Key
+ *   I Stream Link/s | J Stats Collected? | K–N staff checkboxes
  *   O Sort Key (hidden; ISO timestamp used to keep the tab sorted by date and time)
  *
- * The bot fills columns A–H and O. Columns I–N are left for staff and are never touched.
- * One row per match: a reschedule updates the row whose FACEIT LINK matches.
+ * Two actions, picked by `action` in the POST body:
+ *   "schedule" (default)  fills columns A–H and O for a match. One row per match: a
+ *                         reschedule updates the row whose FACEIT LINK matches.
+ *   "streamLink"          appends an approved caster's stream URL to the "Stream Link/s"
+ *                         cell of the row whose FACEIT LINK matches. The column is found by
+ *                         its header text, so it may be moved. Casters can only request
+ *                         confirmed matches, so a missing row is reported as an error.
+ *
+ * Everything else in columns I–N is left for staff and is never touched.
  * After every write the tab is sorted by date and time. Rows added by hand get a
  * Sort Key computed from their Date and Time cells, so they sort as well.
  *
@@ -27,13 +33,15 @@ const SHEET_NAME = 'Game Schedules';
 
 const HEADERS = [
   '', 'TIME', 'TEAM 1', '', 'TEAM 2', 'FACEIT LINK', 'ROUND', 'GROUP:',
-  'Admin', 'Team 1 Score', 'Team 2 Score', 'Stream Link/s', 'Stats Collected?', 'Key',
+  'Stream Link/s', 'Stats Collected?', '', '', '', '',
   'Sort Key'
 ];
 const BOT_COLUMNS = 8; // A–H
 const DATE_COLUMN = 1; // A
 const TIME_COLUMN = 2; // B
 const FACEIT_LINK_COLUMN = 6; // F
+const STREAM_LINK_HEADER = 'Stream Link/s';
+const DEFAULT_STREAM_LINK_COLUMN = 9; // I, used only if the header cannot be found
 const SORT_KEY_COLUMN = 15; // O
 
 // Opening the /exec URL in a browser should show "ok". Handy for checking the deployment.
@@ -49,28 +57,11 @@ function doPost(e) {
     if (!body.secret || body.secret !== SHARED_SECRET) {
       return reply(401, { ok: false, error: 'bad secret' });
     }
-    const row = body.row || {};
     const sheet = getOrCreateSheet();
-    const values = [
-      row.date || '',
-      row.time || '',
-      row.team1 || '',
-      'VS',
-      row.team2 || '',
-      row.faceitLink || '',
-      row.round || '',
-      row.group || ''
-    ];
-    const sortKey = row.scheduledAtIso || sortKeyFromText(row.date, row.time);
-
-    const existingRow = row.faceitLink ? findRowByFaceitLink(sheet, row.faceitLink) : 0;
-    const targetRow = existingRow || sheet.getLastRow() + 1;
-    sheet.getRange(targetRow, 1, 1, BOT_COLUMNS).setValues([values]);
-    sheet.getRange(targetRow, SORT_KEY_COLUMN).setValue(sortKey);
-
-    sortByDate(sheet);
-    const finalRow = row.faceitLink ? findRowByFaceitLink(sheet, row.faceitLink) : targetRow;
-    return reply(200, { ok: true, row: finalRow, updated: Boolean(existingRow) });
+    const action = body.action || 'schedule';
+    if (action === 'schedule') return writeSchedule(sheet, body.row || {});
+    if (action === 'streamLink') return writeStreamLink(sheet, body.row || {});
+    return reply(400, { ok: false, error: 'unknown action: ' + action });
   } catch (error) {
     return reply(500, { ok: false, error: String(error) });
   } finally {
@@ -78,15 +69,80 @@ function doPost(e) {
   }
 }
 
+function writeSchedule(sheet, row) {
+  const values = [
+    row.date || '',
+    row.time || '',
+    row.team1 || '',
+    'VS',
+    row.team2 || '',
+    row.faceitLink || '',
+    row.round || '',
+    row.group || ''
+  ];
+  const sortKey = row.scheduledAtIso || sortKeyFromText(row.date, row.time);
+
+  const existingRow = row.faceitLink ? findRowByFaceitLink(sheet, row.faceitLink) : 0;
+  const targetRow = existingRow || sheet.getLastRow() + 1;
+  sheet.getRange(targetRow, 1, 1, BOT_COLUMNS).setValues([values]);
+  sheet.getRange(targetRow, SORT_KEY_COLUMN).setValue(sortKey);
+
+  sortByDate(sheet);
+  const finalRow = row.faceitLink ? findRowByFaceitLink(sheet, row.faceitLink) : targetRow;
+  return reply(200, { ok: true, row: finalRow, updated: Boolean(existingRow) });
+}
+
+// Appends an approved stream URL to the match's "Stream Link/s" cell, one link per line.
+function writeStreamLink(sheet, row) {
+  const streamUrl = String(row.streamUrl || '').trim();
+  if (!streamUrl) return reply(400, { ok: false, error: 'streamUrl is required' });
+  if (!row.faceitLink) return reply(400, { ok: false, error: 'faceitLink is required to find the match row' });
+
+  const targetRow = findRowByFaceitLink(sheet, row.faceitLink);
+  if (!targetRow) {
+    return reply(404, { ok: false, error: 'no row on the ' + SHEET_NAME + ' tab has FACEIT link ' + row.faceitLink });
+  }
+
+  const cell = sheet.getRange(targetRow, findStreamLinkColumn(sheet));
+  const existing = String(cell.getValue() || '').trim();
+  const links = existing ? existing.split(/\r?\n/).map((link) => link.trim()).filter(Boolean) : [];
+  const alreadyThere = links.some((link) => link.toLowerCase() === streamUrl.toLowerCase());
+  if (!alreadyThere) {
+    links.push(streamUrl);
+    cell.setValue(links.join('\n'));
+  }
+  return reply(200, { ok: true, row: targetRow, duplicate: alreadyThere, links: links.length });
+}
+
+// Looks the column up by header so staff can move it; falls back to column I.
+function findStreamLinkColumn(sheet) {
+  const lastColumn = Math.max(sheet.getLastColumn(), DEFAULT_STREAM_LINK_COLUMN);
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const wanted = STREAM_LINK_HEADER.toLowerCase();
+  for (let i = 0; i < headers.length; i++) {
+    if (String(headers[i]).trim().toLowerCase() === wanted) return i + 1;
+  }
+  return DEFAULT_STREAM_LINK_COLUMN;
+}
+
+// Rows match on the FACEIT room ID when both links contain one, so a link typed by hand
+// with a different language prefix or trailing slash still finds the bot's row.
 function findRowByFaceitLink(sheet, faceitLink) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return 0;
   const links = sheet.getRange(2, FACEIT_LINK_COLUMN, lastRow - 1, 1).getValues();
-  const wanted = String(faceitLink).trim().toLowerCase();
+  const wanted = faceitLinkKey(faceitLink);
+  if (!wanted) return 0;
   for (let i = 0; i < links.length; i++) {
-    if (String(links[i][0]).trim().toLowerCase() === wanted) return i + 2;
+    if (faceitLinkKey(links[i][0]) === wanted) return i + 2;
   }
   return 0;
+}
+
+function faceitLinkKey(value) {
+  const text = String(value || '').trim().toLowerCase();
+  const room = text.match(/\/room\/(1-[0-9a-f-]{36})/);
+  return room ? room[1] : text.replace(/\/+$/, '');
 }
 
 // Fills in missing Sort Keys for rows people typed by hand, then sorts rows 2..last.

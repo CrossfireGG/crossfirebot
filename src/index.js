@@ -86,7 +86,7 @@ import {
   validateStreamRequest
 } from './streamRequest.js';
 import { createWebsitePublisher } from './websitePublisher.js';
-import { buildScheduleSheetRow, createScheduleSheet } from './scheduleSheet.js';
+import { buildScheduleSheetRow, buildStreamLinkSheetRow, createScheduleSheet } from './scheduleSheet.js';
 import { isAuthorizedStaffMember, parseForceDirective } from './operationsPolicy.js';
 
 const config = getConfig();
@@ -2799,10 +2799,12 @@ async function publishStreamApproval(request, interaction) {
   await refreshStreamRequestStaffMessage(updated);
   if (updated.status === 'approved') {
     const notified = await announceStreamApproval(updated);
+    const sheetWarning = await logStreamLinkToSheet(updated, interaction.user.id);
     await appendAuditLog({ type: 'stream_request_published', actorId: interaction.user.id, matchId: updated.matchId, requestId: updated.id, websiteId: updated.websiteId, publisher: websitePublisher.mode });
     await interaction.editReply([
       `✅ Request ${updated.id} approved${websitePublisher.mode === 'http' ? ' and published to the website.' : '. Website publishing is in log-only mode (WEBSITE_ENDPOINT is not set).'}`,
-      notified ? null : '⚠️ Could not notify the caster. Check my permissions in their channel and whether their DMs are open.'
+      notified ? null : '⚠️ Could not notify the caster. Check my permissions in their channel and whether their DMs are open.',
+      sheetWarning ? `⚠️ ${sheetWarning}` : null
     ].filter(Boolean).join('\n'));
     return;
   }
@@ -4150,6 +4152,45 @@ async function logScheduleToSheet({ stored, proposal, approvedBy = null, accepte
   } catch (error) {
     console.error('Schedule sheet write crashed:', error);
     return `The Google Sheet was not updated: ${error?.message || error}`;
+  }
+}
+
+// Puts an approved caster's stream URL on the match's row in the Google Sheet ("Stream Link/s").
+// Never throws; returns a short warning for staff when the sheet could not be updated.
+async function logStreamLinkToSheet(request, approvedBy = null) {
+  if (!request?.streamUrl) return null;
+  if (!parseFaceitMatchRoomLink(request.faceitUrl)) {
+    return 'The Google Sheet was not updated: this request has no valid FACEIT matchroom link to find the match row. Add the stream link to the Game Schedules tab by hand.';
+  }
+  const row = buildStreamLinkSheetRow(request, { approvedBy });
+  try {
+    const result = await scheduleSheet.addStreamLink(row);
+    if (result.ok) {
+      if (!result.skipped) {
+        console.log(`Schedule sheet: stream link ${result.duplicate ? 'already on' : 'added to'} row ${result.row ?? '?'} for ${request.matchup}.`);
+      }
+      await appendAuditLog({
+        type: 'stream_link_sheet_logged',
+        matchId: request.matchId || null,
+        requestId: request.id,
+        actorId: approvedBy,
+        skipped: Boolean(result.skipped),
+        duplicate: Boolean(result.duplicate)
+      }).catch(() => null);
+      return null;
+    }
+    console.error(`Schedule sheet stream link write failed for ${request.matchup}: ${result.error}`);
+    await appendAuditLog({
+      type: 'stream_link_sheet_failed',
+      matchId: request.matchId || null,
+      requestId: request.id,
+      actorId: approvedBy,
+      error: result.error
+    }).catch(() => null);
+    return `The Google Sheet was not updated with the stream link: ${result.error}`;
+  } catch (error) {
+    console.error('Schedule sheet stream link write crashed:', error);
+    return `The Google Sheet was not updated with the stream link: ${error?.message || error}`;
   }
 }
 

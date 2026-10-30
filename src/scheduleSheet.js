@@ -1,5 +1,6 @@
-// Posts confirmed match schedules to a Google Sheet through an Apps Script web app.
-// See docs/schedule-log-apps-script.gs for the script the sheet owner deploys.
+// Posts confirmed match schedules and approved caster stream links to a Google Sheet
+// through an Apps Script web app. See docs/schedule-log-apps-script.gs for the script
+// the sheet owner deploys.
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
@@ -50,6 +51,25 @@ export function buildScheduleSheetRow({ stored, proposal, details = {}, approved
   };
 }
 
+// Everything the sheet needs to put an approved caster's link on the match's row.
+// The FACEIT link is how the script finds the row; the rest is context for logging.
+export function buildStreamLinkSheetRow(request, { approvedBy = null } = {}) {
+  const [team1 = '', team2 = ''] = String(request?.matchup || '').split(/\s+vs\.?\s+/i).map((team) => team.trim());
+  return {
+    faceitLink: request?.faceitUrl || '',
+    streamUrl: request?.streamUrl || '',
+    streamPlatform: request?.streamPlatform || '',
+    team1,
+    team2,
+    matchId: request?.matchId || '',
+    requestId: request?.id || '',
+    requesterId: request?.requesterId || '',
+    requesterTag: request?.requesterTag || '',
+    approvedBy: approvedBy || request?.reviewedBy || '',
+    loggedAt: new Date().toISOString()
+  };
+}
+
 export class LogOnlyScheduleSheet {
   mode = 'log-only';
 
@@ -59,6 +79,11 @@ export class LogOnlyScheduleSheet {
 
   async append(row) {
     this.log.info?.(`Schedule sheet (log-only): ${row.team1} vs ${row.team2} on ${row.date} ${row.time}`.trim());
+    return { ok: true, skipped: true, error: null };
+  }
+
+  async addStreamLink(row) {
+    this.log.info?.(`Schedule sheet (log-only): stream link ${row.streamUrl} for ${row.team1} vs ${row.team2} (${row.faceitLink})`);
     return { ok: true, skipped: true, error: null };
   }
 }
@@ -74,7 +99,21 @@ export class AppsScriptScheduleSheet {
     this.log = log;
   }
 
+  // Adds or updates the match's schedule row (columns A-H).
   async append(row) {
+    const { body, ...result } = await this.post('schedule', row);
+    if (!result.ok) return result;
+    return { ...result, row: body.row ?? null, updated: Boolean(body.updated) };
+  }
+
+  // Appends an approved stream URL to the match's "Stream Link/s" cell.
+  async addStreamLink(row) {
+    const { body, ...result } = await this.post('streamLink', row);
+    if (!result.ok) return result;
+    return { ...result, row: body.row ?? null, duplicate: Boolean(body.duplicate) };
+  }
+
+  async post(action, row) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -82,7 +121,7 @@ export class AppsScriptScheduleSheet {
         method: 'POST',
         // text/plain keeps Apps Script from rejecting the body and still exposes postData.contents.
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ secret: this.secret, row }),
+        body: JSON.stringify({ secret: this.secret, action, row }),
         redirect: 'follow',
         signal: controller.signal
       });
@@ -103,7 +142,7 @@ export class AppsScriptScheduleSheet {
           || (text.includes('<html') ? 'Apps Script returned an HTML page (check the deployment is set to "Anyone")' : text.slice(0, 200));
         return { ok: false, skipped: false, error: reason || 'unexpected response' };
       }
-      return { ok: true, skipped: false, error: null, row: body.row ?? null, updated: Boolean(body.updated) };
+      return { ok: true, skipped: false, error: null, body };
     } catch (error) {
       const message = error?.name === 'AbortError' ? `timed out after ${this.timeoutMs}ms` : (error?.message || String(error));
       return { ok: false, skipped: false, error: message };

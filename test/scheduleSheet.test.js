@@ -5,6 +5,7 @@ import {
   AppsScriptScheduleSheet,
   LogOnlyScheduleSheet,
   buildScheduleSheetRow,
+  buildStreamLinkSheetRow,
   createScheduleSheet,
   splitScheduleForSheet
 } from '../src/scheduleSheet.js';
@@ -69,7 +70,44 @@ test('Apps Script sheet posts the secret and row and reads the JSON outcome', as
   assert.equal(calls[0].init.method, 'POST');
   const sent = JSON.parse(calls[0].init.body);
   assert.equal(sent.secret, 's3cret');
+  assert.equal(sent.action, 'schedule');
   assert.equal(sent.row.team1, 'Alpha');
+});
+
+test('stream link row is built from an approved caster request', () => {
+  const row = buildStreamLinkSheetRow({
+    id: 'SR-1',
+    matchId: '1-abc',
+    matchup: 'Alpha vs Bravo',
+    faceitUrl: 'https://www.faceit.com/en/cs2/room/1-abc',
+    streamUrl: 'https://twitch.tv/caster',
+    streamPlatform: 'twitch',
+    faceitScheduledAtIso: '2026-11-03T01:00:00.000Z',
+    requesterId: '42',
+    requesterTag: 'caster#0001'
+  }, { approvedBy: '7' });
+  assert.equal(row.faceitLink, 'https://www.faceit.com/en/cs2/room/1-abc');
+  assert.equal(row.streamUrl, 'https://twitch.tv/caster');
+  assert.equal(row.team1, 'Alpha');
+  assert.equal(row.team2, 'Bravo');
+  assert.equal(row.requestId, 'SR-1');
+  assert.equal(row.approvedBy, '7');
+});
+
+test('Apps Script sheet posts stream links with the streamLink action', async () => {
+  const { fetchImpl, calls } = fakeFetch({ status: 200, body: '{"status":200,"ok":true,"row":9,"duplicate":true,"links":2}' });
+  const sheet = new AppsScriptScheduleSheet({ webhookUrl: 'https://x/exec', secret: 's3cret', fetchImpl, log: quietLog });
+  const result = await sheet.addStreamLink({ faceitLink: 'https://faceit/1', streamUrl: 'https://twitch.tv/caster' });
+  assert.deepEqual(result, { ok: true, skipped: false, error: null, row: 9, duplicate: true });
+  const sent = JSON.parse(calls[0].init.body);
+  assert.equal(sent.action, 'streamLink');
+  assert.equal(sent.row.streamUrl, 'https://twitch.tv/caster');
+
+  const missingRow = new AppsScriptScheduleSheet({ webhookUrl: 'https://x/exec', secret: 'k', fetchImpl: fakeFetch({ status: 200, body: '{"status":404,"ok":false,"error":"no row on the Game Schedules tab has FACEIT link https://faceit/1"}' }).fetchImpl, log: quietLog });
+  assert.match((await missingRow.addStreamLink({ faceitLink: 'https://faceit/1', streamUrl: 'y' })).error, /no row on the Game Schedules tab/);
+
+  const logOnly = new LogOnlyScheduleSheet({ log: quietLog });
+  assert.deepEqual(await logOnly.addStreamLink({ streamUrl: 'y', team1: 'A', team2: 'B', faceitLink: 'f' }), { ok: true, skipped: true, error: null });
 });
 
 test('Apps Script sheet reports bad secrets, HTML pages, and network errors without throwing', async () => {
