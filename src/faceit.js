@@ -270,13 +270,13 @@ function extractGroupStageRoundNumber(raw) {
   ];
 
   for (const candidate of textCandidates) {
-    const roundMatch = cleanName(candidate || '').match(/\bround\s*(1|2|3)\b/i);
+    const roundMatch = cleanName(candidate || '').match(/\bround\s*(\d+)\b/i);
     if (roundMatch) return Number(roundMatch[1]);
   }
 
   for (const value of [raw.round_number, raw.round]) {
     const number = Number(value);
-    if ([1, 2, 3].includes(number)) return number;
+    if (Number.isInteger(number) && number > 0) return number;
   }
 
   return null;

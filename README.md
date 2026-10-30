@@ -148,31 +148,20 @@ Inside each match channel:
 - If FACEIT already has a scheduled time, the pinned message shows that below the FACEIT room link.
 - The pinned first message explains the full schedule flow: one team member proposes with `!schedule`, a member from the other team confirms with `!accept`, then admins are alerted to schedule it on FACEIT.
 - Scheduling is command-only in match rooms; the bot does not add a propose-time button.
-- `!schedule September 14 8 PM EDT`, `!schedule Tuesday 3 PM EDT`, or `!schedule September 14 9 PM EDT` proposes a match time, detects the timezone, and pings the other team to confirm.
-- `!propose September 14 8:00 PM EDT` also proposes a match time.
-- `!reschedule September 14 9:00 PM EDT` requests a reschedule.
+- `!schedule November 2 8 PM ET`, `!schedule Tuesday 3 PM ET`, or `!schedule November 2 9 PM ET` proposes a match time, detects the timezone, and pings the other team to confirm.
+- `!propose November 2 8:00 PM ET` also proposes a match time.
+- `!reschedule November 2 9:00 PM ET` requests a reschedule.
 - `!accept` lets a member from the other team accept it.
 - `!decline` lets a member from the other team decline it.
 - Users with a role in `SCHEDULE_OVERRIDE_ROLE_IDS` can run `!schedule` in a match room to set the schedule directly without both teams accepting.
 - `!admin reason here` or `!calladmin reason here` alerts admins with the match channel and FACEIT link.
 - Old schedule buttons are disabled. Scheduling is command-only inside match rooms.
 
-Season 6 schedule windows and default round dates are built into the bot:
+The active FACEIT source is the Season 7 Group Stage championship. Before FACEIT publishes matches, `/cf sync target:matches` safely reports that there is nothing to create. Once matches exist, it detects group letters and round numbers from FACEIT and creates categories such as `Group Stage - Round 1` in bracket order.
 
-- Group Stage scheduling window: August 31, 2026 - September 8, 2026
-- Round 1: August 31, 2026 - September 2, 2026, default September 1, 2026 at 8:00 PM EST
-- Round 2: September 3, 2026 - September 5, 2026, default September 4, 2026 at 8:00 PM EST
-- Round 3: September 6, 2026 - September 8, 2026, default September 7, 2026 at 8:00 PM EST
-- Upper Bracket - Round 1: September 12, 2026 - September 14, 2026, default Mon, 14 Sep 2026, 20:00 EDT
-- Upper Bracket - Round 2 and Lower Bracket - Round 1: September 15, 2026 - September 17, 2026, default Wed, 16 Sep 2026, 20:00 EDT
-- Upper Bracket - Round 3 and Lower Bracket - Round 2: September 18, 2026 - September 20, 2026, default Sat, 19 Sep 2026, 20:00 EDT
-- Lower Bracket - Round 3: September 21, 2026 - September 23, 2026, default Tue, 22 Sep 2026, 20:00 EDT
-- Upper Bracket - Round 4 and Lower Bracket - Round 4: September 24, 2026 - September 26, 2026, default Fri, 25 Sep 2026, 20:00 EDT
-- Lower Bracket - Round 5: September 27, 2026 - September 29, 2026, default Mon, 28 Sep 2026, 20:00 EDT
-- Upper Bracket - Round 5 and Lower Bracket - Round 6: September 30, 2026 - October 2, 2026, default Thu, 01 Oct 2026, 20:00 EDT
-- Lower Bracket - Round 7: October 3, 2026 - October 5, 2026, default Sun, 04 Oct 2026, 20:00 EDT
-- Lower Bracket - Round 8: October 6, 2026 - October 8, 2026, default Wed, 07 Oct 2026, 20:00 EDT
-- Grand Final (BO5): October 9, 2026 - October 11, 2026, default Saturday, 10 Oct 2026, 20:00 EDT
+Run `/cf sync target:teams` before syncing match rooms so the new Season 7 role mappings exist. The Season 7 mapping scope does not reuse hard-coded Season 6 channel or category IDs.
+
+Season 7 round windows are not guessed. Configure them with `ROUND_WINDOWS` after the official dates are announced. Until then, match-room intros use FACEIT's scheduled time when available and tell admins that the scheduling window still requires verification.
 
 Reschedule rules:
 

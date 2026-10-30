@@ -48,6 +48,29 @@ test('extracts FACEIT match scores from map wins', async (context) => {
   assert.equal(match.resultScore, '2-1');
 });
 
+test('reads Season 7 group-stage rounds and groups from FACEIT', async (context) => {
+  context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+    match_id: 'season-7-match',
+    status: 'SCHEDULED',
+    round_number: 4,
+    group_name: 'Group J',
+    teams: {
+      faction1: { name: 'Team One' },
+      faction2: { name: 'Team Two' }
+    }
+  }), { status: 200 }));
+
+  const match = await new FaceitClient('api-key', []).getMatch('season-7-match', {
+    type: 'championship',
+    id: 'db2dfb5f-0569-40bd-b489-84bb759e72ed',
+    name: 'Crossfire Season 7 - Group Stage'
+  });
+
+  assert.equal(match.categoryName, 'Group Stage - Round 4');
+  assert.equal(match.round, 'Group Stage - Round 4');
+  assert.equal(match.group, 'Group J');
+});
+
 test('keeps winners bracket playoff round names distinct', async (context) => {
   context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
     match_id: 'match-1',

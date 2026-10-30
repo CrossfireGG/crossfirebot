@@ -2,6 +2,9 @@ import { SlashCommandBuilder } from 'discord.js';
 
 const roundChoices = [
   { name: 'All detected rounds', value: 'all' },
+  { name: 'Group Stage - Round 1', value: '1' },
+  { name: 'Group Stage - Round 2', value: '2' },
+  { name: 'Group Stage - Round 3', value: '3' },
   { name: 'Upper Bracket - Round 1', value: 'upper-r1' },
   { name: 'Upper Bracket - Round 2 + Lower Bracket - Round 1', value: 'upper-r2-lower-r1' },
   { name: 'Upper Bracket - Round 3 + Lower Bracket - Round 2', value: 'upper-r3-lower-r2' },
@@ -35,7 +38,7 @@ export const commands = [
         .addStringOption((option) =>
           option
             .setName('round')
-            .setDescription('For match sync: only sync one playoff round window')
+            .setDescription('For match sync: only sync one group-stage or playoff round')
             .setRequired(false)
             .addChoices(...roundChoices)
         )
@@ -70,7 +73,7 @@ export const commands = [
         .addStringOption((option) =>
           option
             .setName('round')
-            .setDescription('For match audit: only audit one playoff round window')
+            .setDescription('For match audit: only audit one group-stage or playoff round')
             .setRequired(false)
             .addChoices(...roundChoices)
         )

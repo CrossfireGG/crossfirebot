@@ -254,10 +254,6 @@ function parseTeamRoleIds(value) {
 
 function parseMatchChannelIds(value) {
   const channels = new Map();
-  for (const [pair, channelId] of Object.entries(defaultMatchChannelIds)) {
-    const [teamA, teamB] = pair.split('|');
-    channels.set(matchPairKey(teamA, teamB), channelId);
-  }
 
   for (const entry of value.split(';').map((part) => part.trim()).filter(Boolean)) {
     const [pair, channelId] = entry.split('=').map((part) => part.trim());
@@ -272,9 +268,6 @@ function parseMatchChannelIds(value) {
 
 function parseRoundCategoryIds(value) {
   const categories = new Map();
-  for (const [roundName, categoryId] of Object.entries(defaultRoundCategoryIds)) {
-    categories.set(normalizeTeamKey(roundName), categoryId);
-  }
 
   for (const entry of value.split(';').map((part) => part.trim()).filter(Boolean)) {
     const [roundName, categoryId] = entry.split('=').map((part) => part.trim());

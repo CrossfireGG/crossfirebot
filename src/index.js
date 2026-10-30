@@ -96,6 +96,9 @@ const EMBED_COLORS = {
   warning: 0xe67e22
 };
 
+const SEASON6_GROUP_STAGE_ID = '6301070e-7096-42b3-830c-d72dfb586398';
+const SEASON6_PLAYOFF_ID = 'c0c0b1fd-fa0b-4488-98b8-be7fdeaee7c0';
+
 const SEASON_SCHEDULE = [
   { name: 'Group Stage', start: 'August 31, 2026', end: 'September 8, 2026', defaultDate: 'September 4, 2026' },
   { name: 'Round 1', start: 'August 31, 2026', end: 'September 2, 2026', defaultDate: 'September 1, 2026' },
@@ -495,6 +498,7 @@ async function handleBotStatus(interaction) {
   await interaction.reply({
     content: [
       `Known matches: ${matches.length}`,
+      `Configured FACEIT source(s): ${config.faceitSources.map((source) => `${source.name} (${source.id})`).join(', ')}`,
       `Pending schedules: ${proposals.filter((entry) => entry.accepted && !entry.adminApproved && !entry.adminDenied).length}`,
       `Open admin tickets: ${tickets.filter((entry) => entry.status === 'open').length}`,
       `Pending streamer requests: ${streams.filter((entry) => entry.status === 'pending').length}`,
@@ -514,10 +518,11 @@ async function handleCrossfireCommand(interaction) {
   const storedMatches = await listStoredMatches();
 
   if (subcommand === 'rounds') {
-    await interaction.editReply(truncateDiscordMessage(SEASON_SCHEDULE
-      .filter((round) => /bracket|grand final/i.test(round.name))
-      .map((round) => `- **${round.name}**: ${round.start} - ${round.end}; default ${round.defaultDateTime || `${round.defaultDate} 8:00 PM ET`}`)
-      .join('\n')));
+    const configuredRounds = Object.entries(config.roundWindows)
+      .map(([name, window]) => `- **${name}**: ${window.start} - ${window.end}`);
+    await interaction.editReply(truncateDiscordMessage(configuredRounds.length
+      ? configuredRounds.join('\n')
+      : `No round windows are configured yet for ${configuredFaceitSourceSummary()}. FACEIT scheduled times will be shown once matches are published.`));
     return;
   }
   if (subcommand === 'help') {
@@ -590,7 +595,7 @@ async function handleCommandHelp(interaction) {
     content: [
       '**CROSSFIRE Admin Commands**',
       '`/cf sync target:matches` - create/update FACEIT match rooms.',
-      '`/cf sync target:matches round:Upper Bracket - Round 1` - sync one playoff round window only.',
+      '`/cf sync target:matches round:Group Stage - Round 1` - sync one Season 7 group-stage round only.',
       '`/cf sync target:teams` - sync roles, captains, participants, and nicknames from the sheet.',
       '`/cf sync target:teams notify_captains:true` - also DM captains about missing players.',
       '`/cf sync target:teams dry_run:true` - preview roster changes without changing Discord.',
@@ -608,9 +613,9 @@ async function handleCommandHelp(interaction) {
       '`/cf auditlog match_id:<optional>` - inspect scheduling and operations decisions.',
       '',
       '**Match Room Commands**',
-      '`!schedule September 14 8 PM EDT` - propose a match time.',
-      '`!propose September 14 8 PM EDT` - same as `!schedule`.',
-      '`!reschedule September 14 9 PM EDT` - request a new time.',
+      '`!schedule November 2 8 PM ET` - propose a match time.',
+      '`!propose November 2 8 PM ET` - same as `!schedule`.',
+      '`!reschedule November 2 9 PM ET` - request a new time.',
       '`!accept` - accept the open proposal from the other team.',
       '`!decline` - decline the open proposal.',
       '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.',
@@ -1063,7 +1068,7 @@ async function handleSyncMatches(interaction) {
   await guild.channels.fetch();
   await guild.roles.fetch();
 
-  const allMatches = (await faceit.getMatches()).map(normalizeSeason6PlayoffMatch);
+  const allMatches = (await faceit.getMatches()).map(normalizeConfiguredMatch);
   const matches = filterAndSortMatchesForSync(allMatches, roundFilter);
   let created = 0;
   let skipped = 0;
@@ -1086,6 +1091,10 @@ async function handleSyncMatches(interaction) {
 
   const roundText = roundFilter?.label || 'all detected rounds';
   const coverage = summarizeSyncCoverage(matches);
+  if (!allMatches.length) {
+    await interaction.editReply(`FACEIT has not published any matches yet for ${configuredFaceitSourceSummary()}. No Discord channels were created.`);
+    return;
+  }
   await interaction.editReply(truncateDiscordMessage([
     `Synced ${created} match channel(s) for ${roundText}. Skipped ${skipped}.`,
     coverage
@@ -1098,7 +1107,7 @@ async function handleRefreshMatchStatuses(interaction) {
   const guild = await client.guilds.fetch(config.discordGuildId);
   await guild.channels.fetch();
 
-  const matches = (await faceit.getMatches()).map(normalizeSeason6PlayoffMatch);
+  const matches = (await faceit.getMatches()).map(normalizeConfiguredMatch);
   const result = {
     checked: matches.length,
     found: 0,
@@ -1193,7 +1202,7 @@ async function handleAuditMatches(interaction) {
   await guild.channels.fetch();
   await guild.roles.fetch();
 
-  const matches = filterAndSortMatchesForSync((await faceit.getMatches()).map(normalizeSeason6PlayoffMatch), roundFilter);
+  const matches = filterAndSortMatchesForSync((await faceit.getMatches()).map(normalizeConfiguredMatch), roundFilter);
   const result = {
     checked: 0,
     ok: 0,
@@ -1269,7 +1278,7 @@ async function handleCreateMatchChat(interaction) {
 
   const match = await findFaceitMatchForLink(link, matchId);
   if (!match) {
-    await interaction.editReply('I could not find that match in the configured FACEIT Season 6 sources. Make sure `FACEIT_SOURCES` includes the Season 6 playoff championship.');
+    await interaction.editReply(`I could not find that match in the configured FACEIT source(s): ${configuredFaceitSourceSummary()}.`);
     return;
   }
 
@@ -1301,7 +1310,7 @@ async function handleCreateMatchChat(interaction) {
 async function findFaceitMatchForLink(link, matchId) {
   const normalizedLink = normalizeSubmittedFaceitLink(link).toLowerCase();
   const normalizedMatchId = matchId.toLowerCase();
-  const matches = (await faceit.getMatches()).map(normalizeSeason6PlayoffMatch);
+  const matches = (await faceit.getMatches()).map(normalizeConfiguredMatch);
 
   return matches.find((match) => {
     const faceitUrl = String(match.faceitUrl || '').toLowerCase();
@@ -1580,11 +1589,14 @@ function findAuditMatchChannel(guild, match, expectedName) {
   return guild.channels.cache.find((channel) => {
     if (!channel.isTextBased?.() || !channel.permissionOverwrites?.cache) return false;
 
-    const channelName = normalizeDiscordChannelName(stripMatchStatusPrefix(channel.name));
-    if (channelName === normalizedExpected) return true;
-
     const topic = String(channel.topic || '').toLowerCase();
-    return (matchId && topic.includes(matchId)) || (faceitUrl && topic.includes(faceitUrl));
+    if ((matchId && topic.includes(matchId)) || (faceitUrl && topic.includes(faceitUrl))) return true;
+    if (topic) return false;
+
+    const channelName = normalizeDiscordChannelName(stripMatchStatusPrefix(channel.name));
+    const expectedCategory = normalizeRoundCategory(match.categoryName || match.round);
+    const actualCategory = normalizeRoundCategory(channel.parent?.name || '');
+    return channelName === normalizedExpected && actualCategory === expectedCategory;
   }) || null;
 }
 
@@ -1609,7 +1621,7 @@ function getRequestedRoundFilter(interaction) {
   };
 }
 
-function normalizeSeason6PlayoffMatch(match) {
+function normalizeConfiguredMatch(match) {
   if (!match || !isPlayoffMatch(match)) return match;
   return {
     ...match,
@@ -1648,7 +1660,9 @@ function compareMatchesForChannelOrder(a, b) {
 }
 
 function getBracketSortIndex(match) {
-  const manualOrder = SEASON6_WB_ROUND_OF_32_PAIR_ORDER.get(matchPairKey(match.teamA, match.teamB));
+  const manualOrder = match.source?.id === SEASON6_PLAYOFF_ID
+    ? SEASON6_WB_ROUND_OF_32_PAIR_ORDER.get(matchPairKey(match.teamA, match.teamB))
+    : null;
   if (Number.isInteger(manualOrder)) return manualOrder;
 
   const bracketOrder = Number(match.bracketOrder ?? match.raw?.bracket_position ?? match.raw?.match_position);
@@ -1707,7 +1721,7 @@ function getGroupStageRoundNumber(match) {
   if (categoryMatch) return Number(categoryMatch[1]);
 
   const rawRound = Number(match.raw?.round_number ?? match.raw?.round);
-  return [1, 2, 3].includes(rawRound) ? rawRound : 999;
+  return Number.isInteger(rawRound) && rawRound > 0 ? rawRound : 999;
 }
 
 function getGroupSortIndex(match) {
@@ -1749,18 +1763,9 @@ function summarizeSyncCoverage(matches) {
     .sort(([roundA], [roundB]) => roundA - roundB)
     .map(([round, groups]) => {
       const sortedGroups = [...groups].sort((a, b) => lettersToNumber(a) - lettersToNumber(b));
-      const missingGroups = expectedGroupLetters()
-        .filter((group) => !groups.has(group));
-      const missingText = missingGroups.length
-        ? ` Missing groups: ${missingGroups.join(', ')}.`
-        : ' All groups A-L detected.';
-      return `Group Stage - Round ${round}: groups ${sortedGroups.join(', ')}.${missingText}`;
+      return `Group Stage - Round ${round}: detected groups ${sortedGroups.join(', ')}.`;
     })
     .join('\n');
-}
-
-function expectedGroupLetters() {
-  return Array.from({ length: 12 }, (_, index) => String.fromCharCode(65 + index));
 }
 
 function numberToLetters(value) {
@@ -1847,7 +1852,8 @@ function normalizeGroupLetter(value) {
 }
 
 function normalizeGroupStageRound(value) {
-  return [1, 2, 3].includes(Number(value)) ? Number(value) : 1;
+  const round = Number(value);
+  return Number.isInteger(round) && round > 0 ? round : 1;
 }
 
 function cleanSampleName(value) {
@@ -2960,7 +2966,7 @@ async function getStoredMatchForChannel(channel) {
 }
 
 async function buildUnlinkedMatchChannelMessage(channel, baseLines) {
-  const matches = (await faceit.getMatches().catch(() => [])).map(normalizeSeason6PlayoffMatch);
+  const matches = (await faceit.getMatches().catch(() => [])).map(normalizeConfiguredMatch);
   const likelyMatches = matches
     .filter((match) => channelLooksLikeMatch(channel, match))
     .slice(0, 5);
@@ -2990,7 +2996,7 @@ async function buildUnlinkedMatchChannelMessage(channel, baseLines) {
 async function recoverStoredMatchFromChannel(channel) {
   if (!channel.guild) return null;
 
-  const matches = (await faceit.getMatches().catch(() => [])).map(normalizeSeason6PlayoffMatch);
+  const matches = (await faceit.getMatches().catch(() => [])).map(normalizeConfiguredMatch);
   const match = matches.find((candidate) => channelMatchesFaceitMatch(channel, candidate));
   if (!match) return null;
 
@@ -3025,6 +3031,7 @@ function channelMatchesFaceitMatch(channel, match) {
 
   if (matchId && topic.includes(matchId)) return true;
   if (faceitUrl && topic.includes(faceitUrl)) return true;
+  if (topic) return false;
 
   const channelName = normalizeDiscordChannelName(stripMatchStatusPrefix(channel.name));
   return recoverableMatchChannelNames(match).includes(channelName);
@@ -3086,7 +3093,7 @@ function truncateText(value, maxLength) {
 
 async function handleDeprecatedScheduleInteraction(interaction) {
   const response = {
-    content: 'Scheduling is command-only now. In the match room, use `!schedule September 14 8 PM EDT`; teams confirm with `!accept`, and Tournament Ops can schedule directly.',
+    content: 'Scheduling is command-only now. In the match room, use `!schedule November 2 8 PM ET`; teams confirm with `!accept`, and Tournament Ops can schedule directly.',
     components: [],
     ephemeral: true
   };
@@ -3272,24 +3279,30 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     `Round: **${matchDetails.round}**`,
     matchDetails.group ? `Group: **${matchDetails.group}**` : null,
     scheduleWindow ? `${scheduleWindow.label}: **${formatScheduleWindow(scheduleWindow)}**` : 'Scheduling window: **not configured yet**',
-    roundInfo ? `Default match date/time: **${formatDefaultMatchDateTime(roundInfo)}**` : 'Default match date/time: **admins will announce**',
+    roundInfo
+      ? `Default match date/time: **${formatDefaultMatchDateTime(roundInfo)}**`
+      : displayMatch.scheduledAt
+        ? `Default match date/time: **${displayMatch.scheduledAt}**`
+        : 'Default match date/time: **admins will announce after FACEIT publishes the schedule**',
     `Discord match chat: <#${channel.id}>`,
     faceitRoomLine(displayMatch),
     getFaceitScheduledTimeLine(displayMatch),
     '',
     '**How to schedule this match**',
-    '1. One team member posts `!schedule 9/14/2026 8 PM EDT`, `!schedule Tuesday 3 PM EDT`, or `!schedule September 14 8:00 PM EDT`.',
+    '1. One team member posts `!schedule 11/2/2026 8 PM ET`, `!schedule Tuesday 3 PM ET`, or `!schedule November 2 8:00 PM ET`.',
     '2. The bot detects the timezone, records the proposed time, and pings the other team role.',
     '3. A member from the other team posts `!accept` to confirm or `!decline` to reject.',
     `4. After \`!accept\`, ${adminNotificationLine}`,
-    'Tournament Ops can use `!schedule September 14 8 PM EDT` to set the time directly without team approval.',
+    'Tournament Ops can use `!schedule November 2 8 PM ET` to set the time directly without team approval.',
     '',
     '**Other commands**',
-    '`!propose September 14 8:00 PM EDT` - same as `!schedule`',
-    '`!reschedule September 14 9:00 PM EDT` - team member requests a new time',
+    '`!propose November 2 8:00 PM ET` - same as `!schedule`',
+    '`!reschedule November 2 9:00 PM ET` - team member requests a new time',
     'Schedules and reschedules must stay inside this match window. Reschedules within 24 hours of match time require admin override.',
     isGroupStageMatch(displayMatch)
-      ? 'Group Stage note: any Group Stage match can be scheduled by mutual agreement from August 31, 2026 through September 8, 2026.'
+      ? scheduleWindow
+        ? `Group Stage note: teams may schedule by mutual agreement inside ${formatScheduleWindow(scheduleWindow)}.`
+        : 'Season 7 Group Stage note: the scheduling window is not configured yet; admins must verify proposed times until the dates are announced.'
       : 'Playoff note: teams may agree to schedule their match any time during the assigned three-day window.',
     `Roster changes: go to ${ticketChannel}.`,
     '',
@@ -3308,7 +3321,9 @@ function formatScheduleWindow(window) {
 }
 
 function formatDefaultMatchDateTime(roundInfo) {
-  return roundInfo.defaultDateTime || `${roundInfo.defaultDate} at 8:00 PM EDT`;
+  if (roundInfo.defaultDateTime) return roundInfo.defaultDateTime;
+  if (roundInfo.defaultDate) return `${roundInfo.defaultDate} at 8:00 PM ET`;
+  return 'admins will announce after FACEIT publishes the schedule';
 }
 
 function getMatchDisplayDetails(match) {
@@ -3357,6 +3372,17 @@ function getIntroAllowedMentions(discordIds = {}) {
 }
 
 function getSeasonRoundInfo(match) {
+  const configuredWindow = getConfiguredRoundWindow(match);
+  if (configuredWindow) {
+    return {
+      name: match.categoryName || match.round,
+      ...configuredWindow,
+      defaultDateTime: match.scheduledAt || null
+    };
+  }
+
+  if (!isLegacySeason6Match(match)) return null;
+
   const stageName = String(match.source?.name || match.round || '').toLowerCase();
   const roundName = String(match.round || '').toLowerCase();
 
@@ -3393,6 +3419,24 @@ function getSeasonRoundInfo(match) {
 
 function seasonWindow(name) {
   return SEASON_SCHEDULE.find((entry) => entry.name === name) || null;
+}
+
+function isLegacySeason6Match(match) {
+  return [SEASON6_GROUP_STAGE_ID, SEASON6_PLAYOFF_ID].includes(match?.source?.id);
+}
+
+function getConfiguredRoundWindow(match) {
+  const keys = [match?.round, match?.categoryName]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase());
+  for (const key of keys) {
+    if (config.roundWindows[key]) return config.roundWindows[key];
+  }
+  return null;
+}
+
+function configuredFaceitSourceSummary() {
+  return config.faceitSources.map((source) => `**${source.name}** (${source.id})`).join(', ');
 }
 
 function isGroupStageMatch(match) {
@@ -3938,11 +3982,15 @@ function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) 
     result.warning = 'I could not read that date automatically. Admins must verify it is inside the scheduling window.';
   }
 
+  if (!window && isGroupStageMatch(stored.match)) {
+    result.warning = 'Season 7 round windows are not configured yet. Admins must verify this proposed time before approval.';
+  }
+
   return result;
 }
 
 function getScheduleWindowForMatch(match) {
-  const configuredWindow = config.roundWindows[String(match.round || '').toLowerCase()] ||
+  const configuredWindow = getConfiguredRoundWindow(match) ||
     config.roundWindows[String(canonicalPlayoffRoundName(match.round || match.categoryName)).toLowerCase()];
   if (configuredWindow) {
     return {
@@ -3952,6 +4000,7 @@ function getScheduleWindowForMatch(match) {
   }
 
   if (isGroupStageMatch(match)) {
+    if (!isLegacySeason6Match(match)) return null;
     const groupStage = seasonWindow('Group Stage');
     if (!groupStage) return null;
 

@@ -308,10 +308,13 @@ function findExistingMatchChannel(guild, category, name, match) {
 
     const channelName = channel.name.toLowerCase();
     const unprefixedChannelName = stripMatchStatusPrefix(channelName);
-    if (channel.parentId === category.id && channelName === exactName) return true;
-    if (channelName === exactName || channelName === legacyName || unprefixedChannelName === baseName) return true;
+    const topic = String(channel.topic || '').toLowerCase();
+    if (faceitUrl && topic.includes(faceitUrl)) return true;
+    if (String(match.id || '') && topic.includes(String(match.id).toLowerCase())) return true;
+    if (topic) return false;
 
-    return faceitUrl && String(channel.topic || '').toLowerCase().includes(faceitUrl);
+    return channel.parentId === category.id &&
+      (channelName === exactName || channelName === legacyName || unprefixedChannelName === baseName);
   }) || null;
 }
 
