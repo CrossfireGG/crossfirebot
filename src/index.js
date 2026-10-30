@@ -29,7 +29,7 @@ import {
   approveScheduleProposal,
   claimPostCastReminder,
   claimStreamDeliveryPrompt,
-  createStreamRequest,
+  createStreamRequestUnlessActive,
   denyScheduleProposal,
   declineScheduleProposal,
   getLatestOpenScheduleProposalForMatch,
@@ -64,7 +64,10 @@ import { auditMissingCaptains, auditMissingPlayers, getTeamMappingScope, syncRol
 import { startWebhookServer } from './webhookServer.js';
 import { applyVetoAction, chooseFirstAction, createVeto, expectedVetoAction } from './vetoEngine.js';
 import {
+  classifyFaceitScheduleChange,
   formatEasternDateTimeInput,
+  isCanceledFaceitStatus,
+  isTerminalFaceitStatus,
   makeStreamRequestId,
   makeStreamRequestModalId,
   parseFaceitMatchRoomLink,
@@ -285,6 +288,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isButton() && interaction.customId.startsWith('stream_request_open:')) {
       await showStreamRequestModal(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('stream_request_cancel:')) {
+      await handleStreamRequestCancelButton(interaction);
       return;
     }
     if (interaction.isModalSubmit() && interaction.customId.startsWith('stream_request_submit:')) {
@@ -2364,11 +2371,12 @@ async function handleStreamRequestCommand(interaction) {
   if (subcommand === 'cancel') {
     const requestId = interaction.options.getString('request_id', true);
     const request = await getStreamRequest(requestId);
-    if (!request || request.requesterId !== interaction.user.id || request.status !== 'pending') {
-      await interaction.reply({ content: 'I could not find a pending request with that ID belonging to you.', ephemeral: true });
+    if (!request || request.requesterId !== interaction.user.id || !['pending', 'approved'].includes(request.status)) {
+      await interaction.reply({ content: 'I could not find an active request with that ID belonging to you.', ephemeral: true });
       return;
     }
-    await updateStreamRequest(requestId, { status: 'canceled', canceledBy: interaction.user.id, canceledAt: new Date().toISOString() }, ['pending']);
+    const updated = await updateStreamRequest(requestId, { status: 'canceled', canceledBy: interaction.user.id, canceledAt: new Date().toISOString() }, ['pending', 'approved']);
+    await refreshStreamRequestStaffMessage(updated);
     await interaction.reply({ content: `Canceled stream request ${requestId}.`, ephemeral: true });
     return;
   }
@@ -2465,7 +2473,7 @@ async function handleStreamRequestModal(interaction) {
   const priorRequests = (await listStreamRequests({ requesterId: interaction.user.id })).filter((entry) =>
     matchId ? entry.matchId === matchId : normalizeTeamKey(entry.matchup) === normalizeTeamKey(validation.value.matchup)
   );
-  const request = await createStreamRequest({
+  const creation = await createStreamRequestUnlessActive({
     id: makeStreamRequestId(),
     requesterId: interaction.user.id,
     requesterTag: interaction.user.tag,
@@ -2484,8 +2492,66 @@ async function handleStreamRequestModal(interaction) {
     guidelinesSnapshot: config.streamGuidelinesText,
     guidelinesUrl: config.streamGuidelinesUrl
   });
-  await sendStreamRequestToStaff(request, staffChannel);
-  await interaction.reply({ content: `Request ${request.id} was submitted for staff review. This is not approval to stream.`, ephemeral: true });
+  const request = creation.request;
+  if (!creation.created) {
+    await interaction.reply({
+      content: `You already have active request **${request.id}** for this FACEIT match. Its status is **${request.status}**. Cancel it before submitting another request.`,
+      components: [streamRequesterCancelRow(request)],
+      ephemeral: true
+    });
+    return;
+  }
+  try {
+    await sendStreamRequestToStaff(request, staffChannel);
+  } catch (error) {
+    await updateStreamRequest(request.id, {
+      status: 'submission_failed',
+      denialReason: `Could not post to staff review: ${error.message}`
+    }, ['pending']);
+    throw error;
+  }
+  await interaction.reply({
+    embeds: [new EmbedBuilder()
+      .setColor(EMBED_COLORS.warning)
+      .setTitle('Stream Request Submitted')
+      .setDescription(`Request **${request.id}** is waiting for staff review. This is not permission to stream.`)
+      .addFields(
+        { name: 'Match', value: request.matchup },
+        { name: 'Schedule', value: request.dateTime },
+        { name: 'FACEIT Matchroom', value: request.faceitUrl }
+      )],
+    components: [streamRequesterCancelRow(request)],
+    ephemeral: true
+  });
+}
+
+function streamRequesterCancelRow(request) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`stream_request_cancel:${request.id}:${request.requesterId}`)
+      .setLabel('Cancel Request')
+      .setStyle(ButtonStyle.Danger)
+  );
+}
+
+async function handleStreamRequestCancelButton(interaction) {
+  const [, requestId, requesterId] = interaction.customId.split(':');
+  if (interaction.user.id !== requesterId) {
+    await interaction.reply({ content: 'Only the requester can cancel this request.', ephemeral: true });
+    return;
+  }
+  const updated = await updateStreamRequest(requestId, {
+    status: 'canceled',
+    canceledBy: interaction.user.id,
+    canceledAt: new Date().toISOString()
+  }, ['pending', 'approved']);
+  if (!updated) {
+    await interaction.update({ content: 'This request is no longer active.', embeds: [], components: [] });
+    return;
+  }
+  await refreshStreamRequestStaffMessage(updated);
+  await appendAuditLog({ type: 'stream_request_canceled_by_requester', actorId: interaction.user.id, matchId: updated.matchId, requestId });
+  await interaction.update({ content: `Canceled stream request **${requestId}**.`, embeds: [], components: [] });
 }
 
 async function sendStreamRequestToStaff(request, suppliedChannel = null) {
@@ -2497,10 +2563,7 @@ async function sendStreamRequestToStaff(request, suppliedChannel = null) {
   const message = await channel.send({
     content: getStaffMentions(channel.guild),
     embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`stream_review:${request.id}:approve`).setLabel('Approve').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`stream_review:${request.id}:deny`).setLabel('Deny').setStyle(ButtonStyle.Danger)
-    )],
+    components: streamReviewComponents(request),
     allowedMentions: getAdminAllowedMentions(channel.guild)
   });
   await updateStreamRequest(request.id, { staffChannelId: channel.id, staffMessageId: message.id }, ['pending']);
@@ -2508,7 +2571,7 @@ async function sendStreamRequestToStaff(request, suppliedChannel = null) {
 
 function streamRequestEmbed(request) {
   const status = request.status || 'pending';
-  const colors = { pending: EMBED_COLORS.warning, approved: EMBED_COLORS.accepted, denied: EMBED_COLORS.declined, revoked: EMBED_COLORS.declined, canceled: 0x7f8c8d };
+  const colors = { pending: EMBED_COLORS.warning, approved: EMBED_COLORS.accepted, denied: EMBED_COLORS.declined, revoked: EMBED_COLORS.declined, canceled: 0x7f8c8d, expired: 0x7f8c8d, submission_failed: EMBED_COLORS.declined };
   return new EmbedBuilder()
     .setColor(colors[status] || EMBED_COLORS.admin)
     .setTitle(`Stream Request ${request.id}`)
@@ -2517,7 +2580,7 @@ function streamRequestEmbed(request) {
       request.faceitLinkValid
         ? 'FACEIT matchroom verified. Schedule monitoring and grouped delivery are enabled.'
         : `⚠️ FACEIT LINK NOT VERIFIED: ${String(request.faceitValidationError || 'Unknown validation error').slice(0, 800)} This request cannot be grouped with similar requests or receive automatic schedule/connect updates.`,
-      request.repeatSubmission ? `Repeat submission by this requester (${request.priorSubmissionCount} earlier request(s)); review normally.` : null
+      request.repeatSubmission ? `This requester has ${request.priorSubmissionCount} closed earlier request(s) for this match.` : null
     ].filter(Boolean).join('\n'))
     .addFields([
       { name: 'Requester', value: `<@${request.requesterId}>`, inline: true },
@@ -2531,6 +2594,17 @@ function streamRequestEmbed(request) {
     ].filter(Boolean))
     .setFooter({ text: 'A request is not permission until staff approves it.' })
     .setTimestamp(new Date(request.updatedAt || request.createdAt || Date.now()));
+}
+
+function streamReviewComponents(request) {
+  if (request.status !== 'pending') return [];
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`stream_review:${request.id}:approve`)
+      .setLabel(request.faceitLinkValid ? 'Approve' : 'Approve Manually')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`stream_review:${request.id}:deny`).setLabel('Deny').setStyle(ButtonStyle.Danger)
+  )];
 }
 
 async function handleStreamReview(interaction) {
@@ -2548,6 +2622,31 @@ async function handleStreamReview(interaction) {
     return;
   }
   await interaction.deferReply({ ephemeral: true });
+  const existing = await getStreamRequest(requestId);
+  if (!existing || existing.status !== 'pending') {
+    await interaction.editReply('This request was already reviewed or no longer exists.');
+    return;
+  }
+  if (existing.matchId && existing.faceitLinkValid) {
+    const latestMatch = await faceit.getMatch(existing.matchId).catch(() => null);
+    if (!latestMatch) {
+      await interaction.editReply('FACEIT could not be reached to verify this match right now. Nothing was approved; try again in a few minutes.');
+      return;
+    }
+    if (isTerminalFaceitStatus(latestMatch.status)) {
+      await interaction.editReply(`This FACEIT match is already **${latestMatch.status}**, so the request cannot be approved.`);
+      return;
+    }
+    const latestScheduleIso = getFaceitScheduledAtIso(latestMatch);
+    await updateStreamRequest(requestId, {
+      matchup: `${latestMatch.teamA} vs ${latestMatch.teamB}`,
+      faceitStatus: latestMatch.status,
+      faceitScheduledAtIso: latestScheduleIso,
+      faceitLastCheckedAt: new Date().toISOString(),
+      dateTimeIso: latestScheduleIso,
+      dateTime: latestScheduleIso ? formatEasternDateTimeInput(latestScheduleIso) : 'Not scheduled on FACEIT yet'
+    }, ['pending']);
+  }
   const updated = await updateStreamRequest(requestId, {
     status: 'approved',
     reviewedBy: interaction.user.id,
@@ -2561,6 +2660,9 @@ async function handleStreamReview(interaction) {
   const approvedScheduleIso = updated.faceitScheduledAtIso || updated.dateTimeIso;
   const approvalMessage = [
     `Your CROSSFIRE stream request ${updated.id} was **approved** for **${updated.matchup}**.`,
+    !updated.faceitLinkValid
+      ? 'This was a manual approval because the FACEIT link could not be verified. Automatic schedule updates and connection delivery are unavailable for this request.'
+      : null,
     approvedScheduleIso
       ? `Scheduled for **${formatEasternDateTimeInput(approvedScheduleIso)}**.`
       : 'FACEIT has not scheduled this match yet. I will DM you when a date and time are posted.',
@@ -2634,10 +2736,7 @@ async function refreshStreamRequestStaffMessage(request) {
   const reviewable = request.status === 'pending';
   await message.edit({
     embeds: [streamRequestEmbed(request)],
-    components: reviewable ? [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`stream_review:${request.id}:approve`).setLabel('Approve').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`stream_review:${request.id}:deny`).setLabel('Deny').setStyle(ButtonStyle.Danger)
-    )] : []
+    components: reviewable ? streamReviewComponents(request) : []
   }).catch(() => null);
 }
 
@@ -4520,7 +4619,7 @@ async function runOperationsTick() {
 
 async function runStreamOperationsTick(now = Date.now()) {
   const active = (await listStreamRequests()).filter((request) =>
-    request.faceitLinkValid && request.matchId && ['pending', 'approved'].includes(request.status)
+    request.faceitLinkValid && request.matchId && !request.terminalNotifiedAt && ['pending', 'approved'].includes(request.status)
   );
   const byMatch = new Map();
   for (const request of active) {
@@ -4536,9 +4635,8 @@ async function runStreamOperationsTick(now = Date.now()) {
         const match = await faceit.getMatch(matchId);
         const nextIso = getFaceitScheduledAtIso(match);
         const previousIso = requests.find((request) => request.faceitScheduledAtIso)?.faceitScheduledAtIso || null;
-        const newlyScheduled = Boolean(!previousIso && nextIso);
-        const scheduleChanged = Boolean(previousIso && nextIso && previousIso !== nextIso);
-        const scheduleUpdated = newlyScheduled || scheduleChanged;
+        const scheduleChange = classifyFaceitScheduleChange(previousIso, nextIso);
+        const scheduleUpdated = scheduleChange !== 'unchanged';
         const nextLabel = nextIso ? formatEasternDateTimeInput(nextIso) : null;
         if (scheduleUpdated) await disableStreamDeliveryPrompts(requests);
         currentRequests = [];
@@ -4549,7 +4647,11 @@ async function runStreamOperationsTick(now = Date.now()) {
             faceitStatus: match.status,
             faceitCheckError: null,
             ...(scheduleUpdated ? { deliveryPromptSentAt: null, deliveryPromptMessageId: null } : {}),
-            ...(nextIso ? { dateTimeIso: nextIso, dateTime: nextLabel } : {})
+            ...(nextIso
+              ? { dateTimeIso: nextIso, dateTime: nextLabel }
+              : scheduleChange === 'unscheduled'
+                ? { dateTimeIso: null, dateTime: 'Not scheduled on FACEIT yet' }
+                : {})
           }, ['pending', 'approved']);
           if (updated) {
             currentRequests.push(updated);
@@ -4564,10 +4666,12 @@ async function runStreamOperationsTick(now = Date.now()) {
             content: getStaffMentions(staffChannel.guild),
             embeds: [new EmbedBuilder()
               .setColor(EMBED_COLORS.warning)
-              .setTitle(newlyScheduled ? 'FACEIT Stream Match Scheduled' : 'FACEIT Stream Schedule Changed')
-              .setDescription(newlyScheduled
+              .setTitle(scheduleChange === 'scheduled' ? 'FACEIT Stream Match Scheduled' : scheduleChange === 'unscheduled' ? 'FACEIT Stream Schedule Removed' : 'FACEIT Stream Schedule Changed')
+              .setDescription(scheduleChange === 'scheduled'
                 ? `**${currentRequests[0]?.matchup || matchId}** is now scheduled for **${nextLabel}**.`
-                : `**${currentRequests[0]?.matchup || matchId}** moved from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**.`)
+                : scheduleChange === 'unscheduled'
+                  ? `FACEIT removed the scheduled time for **${currentRequests[0]?.matchup || matchId}**. Caster delivery is paused until a new time is posted.`
+                  : `**${currentRequests[0]?.matchup || matchId}** moved from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**.`)
               .addFields({ name: 'FACEIT Matchroom', value: currentRequests[0]?.faceitUrl || match.faceitUrl })
               .setTimestamp()],
             allowedMentions: getAdminAllowedMentions(staffChannel.guild)
@@ -4576,9 +4680,11 @@ async function runStreamOperationsTick(now = Date.now()) {
           const byCaster = new Map(approvedRequests.map((request) => [request.requesterId, request]));
           const failedCasterIds = [];
           for (const request of byCaster.values()) {
-            const message = newlyScheduled
+            const message = scheduleChange === 'scheduled'
               ? `FACEIT scheduled **${request.matchup}** for **${nextLabel}**. Your approved stream request has been updated automatically.`
-              : `FACEIT changed **${request.matchup}** from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**. Your approved stream request has been updated automatically.`;
+              : scheduleChange === 'unscheduled'
+                ? `FACEIT removed the scheduled time for **${request.matchup}**. I will notify you when a new time is posted.`
+                : `FACEIT changed **${request.matchup}** from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**. Your approved stream request has been updated automatically.`;
             const sent = await dmStreamRequester(request, message);
             if (!sent) failedCasterIds.push(request.requesterId);
           }
@@ -4586,7 +4692,7 @@ async function runStreamOperationsTick(now = Date.now()) {
             await staffChannel?.send(`Could not DM schedule changes to: ${failedCasterIds.map((id) => `<@${id}>`).join(', ')}`).catch(() => null);
           }
           await appendAuditLog({
-            type: newlyScheduled ? 'stream_match_scheduled' : 'stream_schedule_changed',
+            type: scheduleChange === 'scheduled' ? 'stream_match_scheduled' : scheduleChange === 'unscheduled' ? 'stream_schedule_removed' : 'stream_schedule_changed',
             matchId,
             previousIso,
             nextIso,
@@ -4602,8 +4708,35 @@ async function runStreamOperationsTick(now = Date.now()) {
         }
       }
     }
-    const terminal = currentRequests.every((request) => /finished|completed|canceled|cancelled/.test(String(request.faceitStatus || '').toLowerCase()));
-    if (terminal) continue;
+    const terminal = currentRequests.length > 0 && currentRequests.every((request) => isTerminalFaceitStatus(request.faceitStatus));
+    if (terminal) {
+      await disableStreamDeliveryPrompts(currentRequests);
+      const terminalAt = new Date(now).toISOString();
+      const canceled = currentRequests.every((request) => isCanceledFaceitStatus(request.faceitStatus));
+      for (const request of currentRequests) {
+        const updated = await updateStreamRequest(request.id, {
+          terminalNotifiedAt: terminalAt,
+          ...(request.status === 'pending' ? {
+            status: 'expired',
+            denialReason: canceled ? 'FACEIT canceled the match before staff review.' : 'The FACEIT match finished before staff review.'
+          } : {})
+        }, ['pending', 'approved']);
+        if (updated) await refreshStreamRequestStaffMessage(updated);
+      }
+      if (canceled) {
+        for (const request of new Map(currentRequests.filter((entry) => entry.status === 'approved').map((entry) => [entry.requesterId, entry])).values()) {
+          await notifyStreamRequester(request, `FACEIT marked **${request.matchup}** as canceled. No connection details will be sent for this match.`);
+        }
+      } else {
+        await sendPostCastReminder(matchId);
+      }
+      for (const request of new Map(currentRequests.filter((entry) => entry.status === 'pending').map((entry) => [entry.requesterId, entry])).values()) {
+        await notifyStreamRequester(request, canceled
+          ? `Your stream request for **${request.matchup}** was closed because FACEIT canceled the match.`
+          : `Your stream request for **${request.matchup}** expired because the match finished before it was approved.`);
+      }
+      continue;
+    }
     const approved = currentRequests.filter((request) => request.status === 'approved');
     const scheduledIso = approved.find((request) => request.dateTimeIso)?.dateTimeIso;
     if (scheduledIso && Date.parse(scheduledIso) <= now && approved.some((request) => !request.deliveryPromptSentAt)) {

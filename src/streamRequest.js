@@ -43,6 +43,21 @@ export function parseFaceitMatchRoomLink(value) {
   }
 }
 
+export function classifyFaceitScheduleChange(previousIso, nextIso) {
+  if (!previousIso && nextIso) return 'scheduled';
+  if (previousIso && !nextIso) return 'unscheduled';
+  if (previousIso && nextIso && previousIso !== nextIso) return 'rescheduled';
+  return 'unchanged';
+}
+
+export function isTerminalFaceitStatus(status) {
+  return /finished|completed|done|canceled|cancelled/.test(String(status || '').toLowerCase());
+}
+
+export function isCanceledFaceitStatus(status) {
+  return /canceled|cancelled/.test(String(status || '').toLowerCase());
+}
+
 export function validateStreamDelivery(type, value) {
   const text = String(value || '').trim();
   if (type === 'custom') {

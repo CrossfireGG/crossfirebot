@@ -297,6 +297,27 @@ export async function createStreamRequest(request) {
   });
 }
 
+export async function createStreamRequestUnlessActive(request) {
+  return mutateDb((db) => {
+    const activeStatuses = new Set(['pending', 'approved']);
+    const existing = Object.values(db.streamRequests).find((entry) => {
+      if (entry.requesterId !== request.requesterId || !activeStatuses.has(entry.status)) return false;
+      if (request.matchId) return entry.matchId === request.matchId;
+      return !entry.matchId && entry.faceitUrl === request.faceitUrl;
+    });
+    if (existing) return { created: false, request: existing };
+
+    db.streamRequests[request.id] = {
+      ...request,
+      status: request.status || 'pending',
+      version: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    return { created: true, request: db.streamRequests[request.id] };
+  });
+}
+
 export async function getStreamRequest(id) {
   return (await snapshot()).streamRequests[id] || null;
 }

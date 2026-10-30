@@ -10,7 +10,10 @@ import { isAuthorizedStaffMember, parseForceDirective } from '../src/operationsP
 import { extractFaceitTeamId } from '../src/sheetRoles.js';
 import { applyVetoAction, chooseFirstAction, createVeto } from '../src/vetoEngine.js';
 import {
+  classifyFaceitScheduleChange,
   formatEasternDateTimeInput,
+  isCanceledFaceitStatus,
+  isTerminalFaceitStatus,
   makeStreamRequestModalId,
   parseFaceitMatchRoomLink,
   parseEasternDateTime,
@@ -172,6 +175,23 @@ test('caster delivery accepts CSTV connect commands and Twitch links', () => {
   assert.equal(validateStreamDelivery('custom', '   ').valid, false);
 });
 
+test('stream schedule monitoring distinguishes scheduled, moved, and removed times', () => {
+  const first = '2026-11-01T00:00:00.000Z';
+  const second = '2026-11-01T01:00:00.000Z';
+  assert.equal(classifyFaceitScheduleChange(null, first), 'scheduled');
+  assert.equal(classifyFaceitScheduleChange(first, second), 'rescheduled');
+  assert.equal(classifyFaceitScheduleChange(first, null), 'unscheduled');
+  assert.equal(classifyFaceitScheduleChange(first, first), 'unchanged');
+});
+
+test('stream monitoring recognizes completed and canceled FACEIT states', () => {
+  assert.equal(isTerminalFaceitStatus('FINISHED'), true);
+  assert.equal(isTerminalFaceitStatus('CANCELLED'), true);
+  assert.equal(isTerminalFaceitStatus('SCHEDULED'), false);
+  assert.equal(isCanceledFaceitStatus('CANCELED'), true);
+  assert.equal(isCanceledFaceitStatus('FINISHED'), false);
+});
+
 test('persistent decisions are serialized and survive a fresh module load', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crossfire-store-'));
   const dbPath = path.join(tempDir, 'bot-data.json');
@@ -205,6 +225,24 @@ test('persistent decisions are serialized and survive a fresh module load', asyn
   assert.equal((await storeB.listTeamMappings('guild:season'))[0].teamName, 'New Team Name');
   assert.equal((await storeB.listTeamMappings('guild:season'))[0].discordRoleId, 'role-1');
   assert.equal((await storeB.getSchedule('match-1')).scheduledAtIso, '2026-10-11T00:00:00.000Z');
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('duplicate active stream requests are rejected atomically per caster and match', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crossfire-stream-dedupe-'));
+  process.env.BOT_DATA_PATH = path.join(tempDir, 'bot-data.json');
+  const store = await import(`../src/store.js?dedupe=${Date.now()}`);
+  const base = {
+    requesterId: 'caster-1',
+    matchId: 'match-1',
+    faceitUrl: 'https://www.faceit.com/en/cs2/room/1-00000000-0000-0000-0000-000000000000'
+  };
+  const results = await Promise.all([
+    store.createStreamRequestUnlessActive({ ...base, id: 'request-a' }),
+    store.createStreamRequestUnlessActive({ ...base, id: 'request-b' })
+  ]);
+  assert.equal(results.filter((result) => result.created).length, 1);
+  assert.equal((await store.listStreamRequests({ requesterId: 'caster-1' })).length, 1);
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 

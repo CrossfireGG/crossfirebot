@@ -203,7 +203,7 @@ export const commands = [
     .setName('request')
     .setDescription('Request permission to stream a CROSSFIRE match')
     .addSubcommand((subcommand) => subcommand.setName('stream').setDescription('Open the stream request form'))
-    .addSubcommand((subcommand) => subcommand.setName('cancel').setDescription('Cancel one of your pending requests')
+    .addSubcommand((subcommand) => subcommand.setName('cancel').setDescription('Cancel one of your active stream requests')
       .addStringOption((option) => option.setName('request_id').setDescription('Your request ID').setRequired(true))),
   new SlashCommandBuilder()
     .setName('crossfire')
