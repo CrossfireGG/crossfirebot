@@ -191,7 +191,7 @@ Authorized staff can schedule directly inside a match room. Normal direct schedu
 
 Veto setup requires the playoff championship ID in `PLAYOFF_SOURCE_IDS`, exactly seven maps in `VETO_MAP_POOL`, and actual tournament seeds in `VETO_SEEDS`. The FACEIT Open API match payload does not provide a verified tournament seed, so the bot never substitutes Elo, standings, or bracket position. `/cf veto action:seeds` stores a persistent per-match override; for the Grand Final, also set `advantage_team` to the actual upper-bracket winner (or configure `VETO_ADVANTAGE_TEAM`). `/cf veto action:start|inspect|reset|cancel` manages a linked playoff room. BO3 uses ban, ban, pick, pick, ban, ban, decider. Grand Final uses two bans and four picks; the remaining map is awarded to the explicitly configured upper-bracket winner for a 1-0 start and is not played. Veto output is Discord-only and must be entered into FACEIT by staff.
 
-Streamers use `!request` or `/request stream`. Requests require only a FACEIT matchroom link, Twitch URL, and X/Twitter URL. The bot reads the matchup and schedule from FACEIT, prevents duplicate active requests from the same caster, and gives the requester a one-click cancel button. Valid FACEIT links are grouped by match ID and checked every `STREAM_SCHEDULE_CHECK_MINUTES` (15-30 minutes); newly posted schedules, reschedules, removed schedules, cancellations, and completion update every active request and notify approved casters when appropriate. Invalid links remain reviewable but are clearly marked as ineligible for grouping, automatic schedule monitoring, and connection delivery. `STREAM_REQUEST_CHANNEL_ID` receives race-safe Approve/Deny controls, and FACEIT is refreshed immediately before approval.
+Streamers use `!request` or `/request stream`. Requests require only a FACEIT matchroom link, a Twitch/YouTube/Kick channel URL, and an X/Twitter profile URL. Any number of casters may be approved for the same match. The bot reads the matchup and schedule from FACEIT, prevents duplicate active requests from the same caster, and gives the requester a one-click cancel button. Valid FACEIT links are grouped by match ID and checked every `STREAM_SCHEDULE_CHECK_MINUTES` (15-30 minutes); newly posted schedules, reschedules, removed schedules, cancellations, and completion update every active request and notify approved casters when appropriate. Invalid links remain reviewable but are clearly marked as ineligible for grouping, automatic schedule monitoring, and connection delivery. `STREAM_REQUEST_CHANNEL_ID` receives race-safe Approve/Deny controls, and FACEIT is refreshed immediately before approval.
 
 At the scheduled time, staff receive one prompt per FACEIT match to submit either the CSTV connect command or official CROSSFIRE Twitch link. The value is DMed only to approved casters and is never posted to their source channel. `STREAM_STAFF_GUILD_ID` and `STREAM_STAFF_ROLE_IDS` explicitly authorize the internal Tournament Operations role to approve requests and deliver connection details. Staff can use `!sendip FACEIT_MATCHROOM_LINK MESSAGE` to immediately DM any connection details or instructions, plus `!cancelreq FACEIT_MATCHROOM_LINK`, `!cancelreq @caster`, `!resendip FACEIT_MATCHROOM_LINK`, or `/cf streams action:cancel|revoke|complete`. The bot deletes a valid `!sendip` command message when it has permission so its contents are not left in the channel. Verified FACEIT completion sends the configured post-cast form once; delivery state is persisted.
 
@@ -202,6 +202,69 @@ Operations reporting:
 - `/cf auditlog` shows recent persistent scheduling and operations events.
 - Roster changes should go to `#make-a-ticket`.
 - Set `ROSTER_TICKET_CHANNEL_ID=1418725495545004175` so pinned match messages link directly to the roster ticket channel.
+
+## Community caster streams and website publishing
+
+Casters request to stream a match from the community server, staff approve or deny from the staff channel, approved streams are pushed to the Crossfire website, and decisions are posted back where the request came from.
+
+Flow:
+
+| Step | What happens |
+|---|---|
+| Caster runs `/request stream` or `!request` | Modal with a FACEIT matchroom link, a stream channel URL (Twitch, YouTube or Kick), and an X/Twitter profile URL. Matchup and schedule are read from FACEIT. Every validation error is listed at once. If `STREAM_COMMUNITY_CHANNEL_IDS` is set, requests only work in those channels. |
+| Duplicate check | The same caster cannot have two active requests for the same FACEIT match. Different casters may each request the same match. |
+| Posted to `STREAM_REQUEST_CHANNEL_ID` | Request saved as `pending` and posted with **Approve** / **Deny** buttons. If the staff channel is unreachable, the request is kept and re-posted automatically on the next tick or restart. |
+| **Approve** | FACEIT is re-checked (finished or canceled matches cannot be approved), then the request moves atomically `pending -> approving`; a second staff member gets "already decided by @X". The website publish runs with retries. Success -> `approved`: card turns green, the caster is DMed, and an approval embed is posted in the originating channel tagging the caster. Failure -> `publish_failed`: card turns red with the error and a **Retry website publish** button, staff are pinged, and the caster is **not** told until it succeeds. |
+| **Deny** | Modal requiring a 5-400 character reason. A denial embed with the reason is posted in the originating channel tagging the caster (DM fallback). |
+| Schedule monitoring | FACEIT is polled every `STREAM_SCHEDULE_CHECK_MINUTES`. Schedule changes update the staff card, DM approved casters, and re-publish already-published streams to the website. Cancels, revokes and completed matches are also sent to the website as status updates. |
+| Restart | Buttons keep working. Anything stuck in `approving` becomes `publish_failed` with a retry button and a staff alert. The bot audits that it can see and post in the stream channels and reports problems to staff. |
+
+Staff management: `/cf streams action:pending|approved|publish_failed|inspect|retry|cancel|revoke|complete`, plus `!cancelreq`, `!resendip`, and `!sendip` as described above. Embeds use Discord timestamps so each viewer sees the match time in their own time zone.
+
+### Website contract
+
+Leave `WEBSITE_ENDPOINT` empty for **log-only mode**: approvals succeed and the payload is printed to the log, so the Discord flow can be tested before the site integration exists. Set `WEBSITE_ENDPOINT` and `WEBSITE_API_KEY` to publish for real.
+
+The bot sends one HTTP request per approval, per retry, and per later status or schedule update:
+
+```
+POST {WEBSITE_ENDPOINT}
+Authorization: Bearer {WEBSITE_API_KEY}
+Content-Type: application/json
+Idempotency-Key: caster-request-{request_id}
+```
+
+```json
+{
+  "version": 1,
+  "source": "crossfirebot",
+  "request_id": "stream-abc123-xyz",
+  "status": "approved",
+  "event": { "title": "Team Alpha vs Team Beta", "starts_at": "2026-11-04T19:00:00.000Z" },
+  "match": {
+    "faceit_match_id": "1-0000...",
+    "faceit_url": "https://www.faceit.com/en/cs2/room/1-0000...",
+    "faceit_verified": true,
+    "faceit_status": "SCHEDULED",
+    "team_a": "Team Alpha",
+    "team_b": "Team Beta",
+    "scheduled_at": "2026-11-04T19:00:00.000Z"
+  },
+  "stream": {
+    "url": "https://twitch.tv/somecaster",
+    "platform": "twitch",
+    "caster": { "discord_id": "1234", "discord_name": "somecaster", "social_url": "https://x.com/somecaster" }
+  },
+  "approved_at": "2026-10-30T15:41:12.000Z",
+  "approved_by_discord_id": "9876",
+  "sent_at": "2026-10-30T15:41:14.000Z"
+}
+```
+
+- `status` is `approved`, `canceled`, `revoked`, or `completed`. The site should **upsert on `request_id`** and hide streams that are no longer `approved`.
+- `starts_at` and `scheduled_at` are `null` until FACEIT schedules the match; a follow-up `approved` payload arrives when it does.
+- Reply `2xx`, optionally `{"id": "..."}` which is stored on the request for audit. `5xx`, `429`, and timeouts are retried with exponential backoff up to `WEBSITE_MAX_ATTEMPTS`; any other `4xx` is a hard failure surfaced to staff immediately.
+- To swap the integration, implement another publisher in `src/websitePublisher.js` with a single `publish(request, context)` method and select it in `createWebsitePublisher`. Nothing in the Discord code changes.
 
 ## Important FACEIT Note
 

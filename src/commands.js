@@ -184,13 +184,15 @@ export const commands = [
         .addStringOption((option) => option.setName('action').setDescription('Request action').setRequired(true).addChoices(
           { name: 'list pending', value: 'pending' },
           { name: 'list approved', value: 'approved' },
+          { name: 'list website publish failures', value: 'publish_failed' },
           { name: 'inspect', value: 'inspect' },
+          { name: 'retry website publish', value: 'retry' },
           { name: 'cancel request', value: 'cancel' },
           { name: 'revoke approval', value: 'revoke' },
           { name: 'mark match completed', value: 'complete' }
         ))
         .addStringOption((option) => option.setName('request_id').setDescription('Streamer request ID').setRequired(false))
-        .addStringOption((option) => option.setName('reason').setDescription('Reason for revoke/completion').setRequired(false))
+        .addStringOption((option) => option.setName('reason').setDescription('Reason for cancel/revoke/completion').setRequired(false))
     )
     .addSubcommand((subcommand) =>
       subcommand

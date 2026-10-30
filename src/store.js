@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { STREAM_ACTIVE_STATUSES } from './streamRequest.js';
+
 const dbPath = path.resolve(process.env.BOT_DATA_PATH || 'bot-data.json');
 let mutationQueue = Promise.resolve();
 
@@ -299,7 +301,7 @@ export async function createStreamRequest(request) {
 
 export async function createStreamRequestUnlessActive(request) {
   return mutateDb((db) => {
-    const activeStatuses = new Set(['pending', 'approved']);
+    const activeStatuses = new Set(STREAM_ACTIVE_STATUSES);
     const existing = Object.values(db.streamRequests).find((entry) => {
       if (entry.requesterId !== request.requesterId || !activeStatuses.has(entry.status)) return false;
       if (request.matchId) return entry.matchId === request.matchId;
@@ -338,6 +340,87 @@ export async function updateStreamRequest(id, patch, allowedStatuses = null) {
     db.streamRequests[id] = {
       ...existing,
       ...patch,
+      version: Number(existing.version || 0) + 1,
+      updatedAt: new Date().toISOString()
+    };
+    return db.streamRequests[id];
+  });
+}
+
+// Approval is a two-step claim so that two staff members racing on the same
+// card cannot both approve, and so a website publish that fails or is
+// interrupted by a restart is visible and retryable instead of silently lost.
+export async function claimStreamApproval(id, actorId) {
+  return transitionStreamRequest(id, ['pending'], 'approving', {
+    reviewedBy: actorId,
+    reviewedAt: new Date().toISOString(),
+    denialReason: null,
+    lastPublishError: null
+  });
+}
+
+export async function claimStreamRepublish(id, actorId = null) {
+  return transitionStreamRequest(id, ['publish_failed'], 'approving', {
+    ...(actorId ? { republishRequestedBy: actorId } : {}),
+    lastPublishError: null
+  });
+}
+
+export async function recordStreamPublishResult(id, { ok, websiteId = null, error = null }) {
+  return mutateDb((db) => {
+    const existing = db.streamRequests[id];
+    if (!existing || existing.status !== 'approving') return null;
+    const now = new Date().toISOString();
+    db.streamRequests[id] = {
+      ...existing,
+      status: ok ? 'approved' : 'publish_failed',
+      publishAttempts: Number(existing.publishAttempts || 0) + 1,
+      websiteId: ok ? (websiteId || existing.websiteId || null) : existing.websiteId || null,
+      websitePublishedAt: ok ? now : existing.websitePublishedAt || null,
+      websiteSyncError: ok ? null : existing.websiteSyncError || null,
+      lastPublishError: ok ? null : String(error || 'unknown error'),
+      version: Number(existing.version || 0) + 1,
+      updatedAt: now
+    };
+    return db.streamRequests[id];
+  });
+}
+
+// Called on startup: anything still `approving` was interrupted mid-publish.
+export async function recoverInterruptedStreamPublishes() {
+  return mutateDb((db) => {
+    const recovered = [];
+    const now = new Date().toISOString();
+    for (const request of Object.values(db.streamRequests)) {
+      if (request.status !== 'approving') continue;
+      db.streamRequests[request.id] = {
+        ...request,
+        status: 'publish_failed',
+        lastPublishError: 'Bot restarted while publishing to the website; retry needed.',
+        version: Number(request.version || 0) + 1,
+        updatedAt: now
+      };
+      recovered.push(db.streamRequests[request.id]);
+    }
+    return recovered;
+  });
+}
+
+// Requests saved while the staff channel was unreachable, so they can be re-posted.
+export async function listStreamRequestsAwaitingStaffPost() {
+  return Object.values((await snapshot()).streamRequests).filter((request) =>
+    ['pending', 'submission_failed'].includes(request.status) && !request.staffMessageId
+  );
+}
+
+function transitionStreamRequest(id, fromStatuses, toStatus, patch = {}) {
+  return mutateDb((db) => {
+    const existing = db.streamRequests[id];
+    if (!existing || !fromStatuses.includes(existing.status)) return null;
+    db.streamRequests[id] = {
+      ...existing,
+      ...patch,
+      status: toStatus,
       version: Number(existing.version || 0) + 1,
       updatedAt: new Date().toISOString()
     };

@@ -1,9 +1,75 @@
+// Request lifecycle. "Active" requests block duplicate submissions and are
+// monitored against FACEIT. `approving` and `publish_failed` are approved by
+// staff but not yet confirmed by the website, so the caster is not told yet.
+export const STREAM_ACTIVE_STATUSES = ['pending', 'approving', 'approved', 'publish_failed'];
+export const STREAM_STAFF_ACTION_STATUSES = ['pending', 'publish_failed'];
+export const STREAM_STATUS_LABELS = {
+  pending: '⏳ Pending review',
+  approving: '🔄 Approved - publishing to website…',
+  approved: '✅ Approved - live on website',
+  publish_failed: '⚠️ Approved - WEBSITE PUBLISH FAILED',
+  denied: '❌ Denied',
+  revoked: '❌ Approval revoked',
+  canceled: '🚫 Canceled',
+  expired: '⌛ Expired',
+  submission_failed: '⚠️ Could not reach staff channel'
+};
+
+export const STREAM_HOSTS = {
+  'twitch.tv': 'twitch',
+  'www.twitch.tv': 'twitch',
+  'm.twitch.tv': 'twitch',
+  'youtube.com': 'youtube',
+  'www.youtube.com': 'youtube',
+  'm.youtube.com': 'youtube',
+  'youtu.be': 'youtube',
+  'kick.com': 'kick',
+  'www.kick.com': 'kick'
+};
+export const SOCIAL_HOSTS = ['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com'];
+const SOCIAL_RESERVED_PATHS = new Set(['home', 'explore', 'i', 'search', 'settings', 'messages', 'notifications', 'login', 'signup']);
+
+export function validateStreamUrl(raw, allowedPlatforms = null) {
+  const url = normalizeHttpUrl(raw);
+  if (!url) return { valid: false, error: 'Stream link is not a valid URL.' };
+  const platform = STREAM_HOSTS[url.hostname.toLowerCase()];
+  const allowed = allowedPlatforms?.length ? allowedPlatforms : [...new Set(Object.values(STREAM_HOSTS))];
+  if (!platform || !allowed.includes(platform)) {
+    return { valid: false, error: `Stream link must be a ${formatPlatformList(allowed)} channel URL.` };
+  }
+  const pathname = url.pathname.replace(/\/+$/, '');
+  if (!pathname.replace(/^\//, '') && !url.searchParams.has('v')) {
+    return { valid: false, error: 'Stream link must point to your channel, not just the site homepage.' };
+  }
+  return { valid: true, value: url.toString(), platform };
+}
+
+export function validateSocialUrl(raw) {
+  const url = normalizeHttpUrl(raw);
+  if (!url) return { valid: false, error: 'X / Twitter link is not a valid URL.' };
+  if (!SOCIAL_HOSTS.includes(url.hostname.toLowerCase())) {
+    return { valid: false, error: 'X / Twitter link must be an x.com or twitter.com URL.' };
+  }
+  const handle = url.pathname.replace(/^\/+/, '').split('/')[0];
+  if (!handle || SOCIAL_RESERVED_PATHS.has(handle.toLowerCase())) {
+    return { valid: false, error: 'X / Twitter link must be your profile, for example `https://x.com/yourhandle`.' };
+  }
+  return { valid: true, value: url.toString() };
+}
+
+export function validateDenialReason(raw, { min = 5, max = 400 } = {}) {
+  const text = String(raw || '').trim();
+  if (text.length < min) return { valid: false, error: `Denial reason must be at least ${min} characters; it is shown to the caster.` };
+  if (text.length > max) return { valid: false, error: `Denial reason must be ${max} characters or fewer.` };
+  return { valid: true, value: text };
+}
+
 export function validateStreamRequest(input) {
   const errors = [];
   const matchup = String(input.matchup || '').trim();
   const dateTime = String(input.dateTime || '').trim();
-  const streamUrl = normalizeHttpUrl(input.streamUrl);
-  const socialUrl = normalizeHttpUrl(input.socialUrl);
+  const stream = validateStreamUrl(input.streamUrl, input.allowedPlatforms);
+  const social = validateSocialUrl(input.socialUrl);
   const dateTimeMs = parseEasternDateTime(dateTime, input.now);
 
   const matchDetailsRequired = input.matchDetailsRequired !== false;
@@ -11,8 +77,8 @@ export function validateStreamRequest(input) {
   if (matchDetailsRequired && (!dateTime || !Number.isFinite(dateTimeMs))) {
     errors.push('Enter the match date and time in Eastern Time using `ET`, `EDT`, or `EST`, for example `10/12/2026 8:00 PM EDT` or `October 12, 2026 8 PM EST`.');
   }
-  if (!streamUrl || !isAllowedHost(streamUrl, ['twitch.tv', 'www.twitch.tv'])) errors.push('Stream URL must be a valid twitch.tv link.');
-  if (!socialUrl || !isAllowedHost(socialUrl, ['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com'])) errors.push('Social URL must be a valid x.com or twitter.com link.');
+  if (!stream.valid) errors.push(stream.error);
+  if (!social.valid) errors.push(social.error);
 
   return {
     valid: errors.length === 0,
@@ -21,10 +87,30 @@ export function validateStreamRequest(input) {
       matchup,
       dateTime,
       dateTimeIso: Number.isFinite(dateTimeMs) ? new Date(dateTimeMs).toISOString() : null,
-      streamUrl: streamUrl?.toString() || '',
-      socialUrl: socialUrl?.toString() || ''
+      streamUrl: stream.valid ? stream.value : '',
+      streamPlatform: stream.valid ? stream.platform : null,
+      socialUrl: social.valid ? social.value : ''
     }
   };
+}
+
+// Discord renders <t:unix:F> in each viewer's own time zone.
+export function discordTimestamp(value, style = 'F') {
+  const ms = Date.parse(value || '');
+  if (!Number.isFinite(ms)) return null;
+  return `<t:${Math.floor(ms / 1000)}:${style}>`;
+}
+
+export function formatScheduleForDiscord(value, fallback = 'Not scheduled on FACEIT yet') {
+  const absolute = discordTimestamp(value, 'F');
+  if (!absolute) return fallback;
+  return `${absolute} (${discordTimestamp(value, 'R')}) · ${formatEasternDateTimeInput(value)}`;
+}
+
+function formatPlatformList(platforms) {
+  const names = platforms.map((platform) => ({ twitch: 'twitch.tv', youtube: 'youtube.com', kick: 'kick.com' }[platform] || platform));
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}`;
 }
 
 export function parseFaceitMatchRoomLink(value) {
@@ -186,9 +272,16 @@ export function parseStreamRequestModalId(customId) {
 }
 
 function normalizeHttpUrl(value) {
+  let text = String(value || '').trim();
+  if (!text) return null;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = `https://${text}`;
   try {
-    const url = new URL(String(value || '').trim());
-    return ['http:', 'https:'].includes(url.protocol) ? url : null;
+    const url = new URL(text);
+    if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) return null;
+    url.protocol = 'https:';
+    url.hostname = url.hostname.toLowerCase();
+    url.hash = '';
+    return url;
   } catch {
     return null;
   }

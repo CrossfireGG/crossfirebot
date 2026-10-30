@@ -140,6 +140,14 @@ export function getConfig() {
     ...parseSnowflakeList(process.env.DISCORD_COMMAND_GUILD_IDS || '')
   ].filter((value, index, values) => value && values.indexOf(value) === index);
 
+  const websiteEndpoint = process.env.WEBSITE_ENDPOINT?.trim() || '';
+  if (websiteEndpoint && !/^https?:\/\//i.test(websiteEndpoint)) {
+    throw new Error('WEBSITE_ENDPOINT must be an http(s) URL');
+  }
+  if (websiteEndpoint && !process.env.WEBSITE_API_KEY?.trim()) {
+    throw new Error('WEBSITE_API_KEY is required when WEBSITE_ENDPOINT is set');
+  }
+
   return {
     discordToken: process.env.DISCORD_TOKEN,
     discordClientId: process.env.DISCORD_CLIENT_ID,
@@ -192,6 +200,15 @@ export function getConfig() {
     vetoAdvantageTeam: process.env.VETO_ADVANTAGE_TEAM || null,
     vetoStaffChannelId: process.env.VETO_STAFF_CHANNEL_ID || process.env.ADMIN_SCHEDULE_CHANNEL_ID || null,
     streamRequestChannelId: process.env.STREAM_REQUEST_CHANNEL_ID || null,
+    // Optional: when set, `/request stream` and `!request` only work in these channels.
+    streamCommunityChannelIds: parseSnowflakeList(process.env.STREAM_COMMUNITY_CHANNEL_IDS || ''),
+    // Optional: restrict accepted stream platforms (twitch, youtube, kick). Empty = all.
+    streamAllowedPlatforms: parseCsvValue(process.env.STREAM_ALLOWED_PLATFORMS || '').map((value) => value.toLowerCase()),
+    // Website integration for approved streams. Empty endpoint = log-only mode.
+    websiteEndpoint: websiteEndpoint || null,
+    websiteApiKey: process.env.WEBSITE_API_KEY?.trim() || null,
+    websiteTimeoutSeconds: Math.max(1, Number(process.env.WEBSITE_TIMEOUT_SECONDS || 10) || 10),
+    websiteMaxAttempts: Math.max(1, Number(process.env.WEBSITE_MAX_ATTEMPTS || 3) || 3),
     streamStaffGuildId: process.env.STREAM_STAFF_GUILD_ID || '1473173377005912074',
     streamStaffRoleIds: parseCsvValue(process.env.STREAM_STAFF_ROLE_IDS || '1474118305169019163'),
     streamScheduleCheckMinutes: Math.max(15, Math.min(30, Number(process.env.STREAM_SCHEDULE_CHECK_MINUTES || 20))),

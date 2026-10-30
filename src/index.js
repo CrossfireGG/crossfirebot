@@ -28,8 +28,13 @@ import {
   appendAuditLog,
   approveScheduleProposal,
   claimPostCastReminder,
+  claimStreamApproval,
   claimStreamDeliveryPrompt,
+  claimStreamRepublish,
   createStreamRequestUnlessActive,
+  listStreamRequestsAwaitingStaffPost,
+  recordStreamPublishResult,
+  recoverInterruptedStreamPublishes,
   denyScheduleProposal,
   declineScheduleProposal,
   getLatestOpenScheduleProposalForMatch,
@@ -64,20 +69,27 @@ import { auditMissingCaptains, auditMissingPlayers, getTeamMappingScope, syncRol
 import { startWebhookServer } from './webhookServer.js';
 import { applyVetoAction, chooseFirstAction, createVeto, expectedVetoAction } from './vetoEngine.js';
 import {
+  STREAM_ACTIVE_STATUSES,
+  STREAM_STAFF_ACTION_STATUSES,
+  STREAM_STATUS_LABELS,
   classifyFaceitScheduleChange,
   formatEasternDateTimeInput,
+  formatScheduleForDiscord,
   isCanceledFaceitStatus,
   isTerminalFaceitStatus,
   makeStreamRequestId,
   makeStreamRequestModalId,
   parseFaceitMatchRoomLink,
   parseStreamRequestModalId,
+  validateDenialReason,
   validateStreamDelivery,
   validateStreamRequest
 } from './streamRequest.js';
+import { createWebsitePublisher } from './websitePublisher.js';
 import { isAuthorizedStaffMember, parseForceDirective } from './operationsPolicy.js';
 
 const config = getConfig();
+const websitePublisher = createWebsitePublisher(config);
 const lockPath = path.resolve('bot.lock');
 claimSingleInstance(lockPath);
 
@@ -257,6 +269,9 @@ client.once(Events.ClientReady, async () => {
   }
 
   await hydratePersistentTeamRoleMappings();
+  console.log(`Website publisher: ${websitePublisher.mode}${config.websiteEndpoint ? ` -> ${config.websiteEndpoint}` : ' (set WEBSITE_ENDPOINT to publish approvals)'}`);
+  await auditStreamChannelPermissions().catch((error) => console.error('Stream channel audit failed:', error));
+  await recoverStreamRequestsOnStartup().catch((error) => console.error('Stream request recovery failed:', error));
   await runOperationsTick().catch((error) => console.error('Operations recovery failed:', error));
   if (!operationsTimer) {
     operationsTimer = setInterval(() => {
@@ -508,8 +523,10 @@ async function handleBotStatus(interaction) {
       `Configured FACEIT source(s): ${config.faceitSources.map((source) => `${source.name} (${source.id})`).join(', ')}`,
       `Pending schedules: ${proposals.filter((entry) => entry.accepted && !entry.adminApproved && !entry.adminDenied).length}`,
       `Open admin tickets: ${tickets.filter((entry) => entry.status === 'open').length}`,
-      `Pending streamer requests: ${streams.filter((entry) => entry.status === 'pending').length}`,
+      `Pending streamer requests: ${streams.filter((entry) => ['pending', 'approving'].includes(entry.status)).length}`,
       `Approved coverage: ${streams.filter((entry) => entry.status === 'approved').length}`,
+      `Website publish failures needing retry: ${streams.filter((entry) => entry.status === 'publish_failed').length}`,
+      `Website publisher: ${websitePublisher.mode}`,
       `Persistent team mappings: ${mappings.length}`,
       `Active/blocked vetoes: ${vetoes.filter((entry) => ['choosing_first_action', 'active', 'blocked'].includes(entry.status)).length}`
     ].join('\n'),
@@ -538,9 +555,10 @@ async function handleCrossfireCommand(interaction) {
       '`/crossfire team name:<team>` - that team’s matches when you have access.',
       '`/crossfire rounds` - round windows and defaults.',
       '`/crossfire veto` - veto status for this linked match room.',
-      '`/request stream` or `!request` - request permission to stream.',
+      `\`/request stream\` or \`!request\` - request permission to stream (${streamPlatformLabel()} links accepted).`,
+      config.streamGuidelinesUrl ? `Streaming guidelines: ${config.streamGuidelinesUrl}` : null,
       config.rulesUrl ? `Rules: ${config.rulesUrl}` : 'Rules link is not configured; ask Tournament Operations for the current rules.'
-    ].join('\n'));
+    ].filter(Boolean).join('\n'));
     return;
   }
   if (subcommand === 'veto') {
@@ -627,6 +645,7 @@ async function handleCommandHelp(interaction) {
       '`!decline` - decline the open proposal.',
       '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.',
       '`!request` - open the community stream request workflow.',
+      '`/cf streams action:pending|approved|publish_failed|inspect|retry|cancel|revoke|complete` - manage caster requests and website publishing.',
       '`!cancelreq FACEIT_LINK` or `!cancelreq @caster` - staff cancel grouped or individual approved caster requests.',
       '`!resendip FACEIT_LINK` - staff restart the CSTV/Twitch delivery prompt.',
       '`!sendip FACEIT_LINK MESSAGE` - staff immediately DM connection details or instructions to approved casters.',
@@ -2350,7 +2369,19 @@ async function handleCallAdmin(message, content) {
   });
 }
 
+function streamRequestChannelAllowed(channelId) {
+  return !config.streamCommunityChannelIds.length || config.streamCommunityChannelIds.includes(channelId);
+}
+
+function streamCommunityChannelHint() {
+  return `Please request streams in ${config.streamCommunityChannelIds.map((id) => `<#${id}>`).join(' or ')}.`;
+}
+
 async function handleTextStreamRequest(message) {
+  if (!streamRequestChannelAllowed(message.channelId)) {
+    await message.reply(streamCommunityChannelHint());
+    return;
+  }
   await message.reply({
     content: [
       '**Stream Request**',
@@ -2371,16 +2402,31 @@ async function handleStreamRequestCommand(interaction) {
   if (subcommand === 'cancel') {
     const requestId = interaction.options.getString('request_id', true);
     const request = await getStreamRequest(requestId);
-    if (!request || request.requesterId !== interaction.user.id || !['pending', 'approved'].includes(request.status)) {
+    if (!request || request.requesterId !== interaction.user.id || !STREAM_ACTIVE_STATUSES.includes(request.status)) {
       await interaction.reply({ content: 'I could not find an active request with that ID belonging to you.', ephemeral: true });
       return;
     }
-    const updated = await updateStreamRequest(requestId, { status: 'canceled', canceledBy: interaction.user.id, canceledAt: new Date().toISOString() }, ['pending', 'approved']);
+    const updated = await updateStreamRequest(requestId, { status: 'canceled', canceledBy: interaction.user.id, canceledAt: new Date().toISOString() }, STREAM_ACTIVE_STATUSES);
+    if (!updated) {
+      await interaction.reply({ content: 'This request is no longer active.', ephemeral: true });
+      return;
+    }
     await refreshStreamRequestStaffMessage(updated);
+    await syncStreamRequestToWebsite(updated, 'canceled');
+    await appendAuditLog({ type: 'stream_request_canceled_by_requester', actorId: interaction.user.id, matchId: updated.matchId, requestId });
     await interaction.reply({ content: `Canceled stream request ${requestId}.`, ephemeral: true });
     return;
   }
+  if (!streamRequestChannelAllowed(interaction.channelId)) {
+    await interaction.reply({ content: streamCommunityChannelHint(), ephemeral: true });
+    return;
+  }
   await showStreamRequestModal(interaction);
+}
+
+function streamPlatformLabel() {
+  const platforms = config.streamAllowedPlatforms.length ? config.streamAllowedPlatforms : ['twitch', 'youtube', 'kick'];
+  return platforms.map((platform) => ({ twitch: 'Twitch', youtube: 'YouTube', kick: 'Kick' }[platform] || platform)).join('/');
 }
 
 async function showStreamRequestModal(interaction) {
@@ -2396,13 +2442,13 @@ async function showStreamRequestModal(interaction) {
     .setTitle('Request to Stream');
   const fields = [
     ['faceit_url', 'FACEIT matchroom link', stored?.match?.faceitUrl || '', TextInputStyle.Short],
-    ['stream_url', 'Twitch stream URL', '', TextInputStyle.Short],
-    ['social_url', 'Caster/streamer X or Twitter URL', '', TextInputStyle.Short]
+    ['stream_url', `${streamPlatformLabel()} channel URL`.slice(0, 45), '', TextInputStyle.Short],
+    ['social_url', 'Your X / Twitter profile URL', '', TextInputStyle.Short]
   ];
   const placeholders = {
     faceit_url: 'Example: https://www.faceit.com/en/cs2/room/1-...',
     stream_url: 'Example: https://twitch.tv/yourchannel',
-    social_url: 'Example: https://x.com/yourname'
+    social_url: 'Example: https://x.com/yourhandle'
   };
   const maxLengths = { faceit_url: 500, stream_url: 500, social_url: 500 };
   modal.addComponents(...fields.map(([id, label, value, style]) => {
@@ -2457,19 +2503,21 @@ async function handleStreamRequestModal(interaction) {
     matchup: derivedMatchup,
     streamUrl: interaction.fields.getTextInputValue('stream_url'),
     socialUrl: interaction.fields.getTextInputValue('social_url'),
+    allowedPlatforms: config.streamAllowedPlatforms,
     matchDetailsRequired: false
   });
   if (!validation.valid) {
-    await interaction.reply({ content: validation.errors.join('\n'), ephemeral: true });
+    await interaction.reply({
+      content: `Your request was not submitted. Please fix the following and try again:\n${validation.errors.map((error) => `• ${error}`).join('\n')}`,
+      ephemeral: true
+    });
     return;
   }
-  const staffChannel = config.streamRequestChannelId
-    ? await client.channels.fetch(config.streamRequestChannelId).catch(() => null)
-    : null;
-  if (!staffChannel?.isTextBased?.()) {
+  if (!config.streamRequestChannelId) {
     await interaction.reply({ content: 'Stream requests are temporarily unavailable because the staff review channel is not configured.', ephemeral: true });
     return;
   }
+  const staffChannel = await client.channels.fetch(config.streamRequestChannelId).catch(() => null);
   const priorRequests = (await listStreamRequests({ requesterId: interaction.user.id })).filter((entry) =>
     matchId ? entry.matchId === matchId : normalizeTeamKey(entry.matchup) === normalizeTeamKey(validation.value.matchup)
   );
@@ -2501,24 +2549,28 @@ async function handleStreamRequestModal(interaction) {
     });
     return;
   }
+  let posted = false;
   try {
-    await sendStreamRequestToStaff(request, staffChannel);
+    await sendStreamRequestToStaff(request, staffChannel?.isTextBased?.() ? staffChannel : null);
+    posted = true;
   } catch (error) {
-    await updateStreamRequest(request.id, {
-      status: 'submission_failed',
-      denialReason: `Could not post to staff review: ${error.message}`
-    }, ['pending']);
-    throw error;
+    // Keep the request pending; startup recovery and the operations tick re-post it.
+    console.error(`Could not post stream request ${request.id} to staff review:`, error);
+    await updateStreamRequest(request.id, { staffPostError: error.message }, ['pending']);
   }
+  await appendAuditLog({ type: 'stream_request_submitted', actorId: interaction.user.id, matchId: request.matchId, requestId: request.id, posted });
   await interaction.reply({
     embeds: [new EmbedBuilder()
       .setColor(EMBED_COLORS.warning)
       .setTitle('Stream Request Submitted')
-      .setDescription(`Request **${request.id}** is waiting for staff review. This is not permission to stream.`)
+      .setDescription(posted
+        ? `Request **${request.id}** is waiting for staff review. This is **not** permission to stream yet; you will be notified when a decision is made.`
+        : `Request **${request.id}** was saved, but I could not reach the staff review channel. It will be delivered automatically once that is fixed; please tell an admin.`)
       .addFields(
         { name: 'Match', value: request.matchup },
-        { name: 'Schedule', value: request.dateTime },
-        { name: 'FACEIT Matchroom', value: request.faceitUrl }
+        { name: 'Schedule', value: formatScheduleForDiscord(request.faceitScheduledAtIso || request.dateTimeIso, request.dateTime) },
+        { name: 'FACEIT Matchroom', value: request.faceitUrl },
+        { name: 'Stream', value: `${request.streamUrl} (${request.streamPlatform || 'unknown platform'})` }
       )],
     components: [streamRequesterCancelRow(request)],
     ephemeral: true
@@ -2544,12 +2596,13 @@ async function handleStreamRequestCancelButton(interaction) {
     status: 'canceled',
     canceledBy: interaction.user.id,
     canceledAt: new Date().toISOString()
-  }, ['pending', 'approved']);
+  }, STREAM_ACTIVE_STATUSES);
   if (!updated) {
     await interaction.update({ content: 'This request is no longer active.', embeds: [], components: [] });
     return;
   }
   await refreshStreamRequestStaffMessage(updated);
+  await syncStreamRequestToWebsite(updated, 'canceled');
   await appendAuditLog({ type: 'stream_request_canceled_by_requester', actorId: interaction.user.id, matchId: updated.matchId, requestId });
   await interaction.update({ content: `Canceled stream request **${requestId}**.`, embeds: [], components: [] });
 }
@@ -2566,37 +2619,64 @@ async function sendStreamRequestToStaff(request, suppliedChannel = null) {
     components: streamReviewComponents(request),
     allowedMentions: getAdminAllowedMentions(channel.guild)
   });
-  await updateStreamRequest(request.id, { staffChannelId: channel.id, staffMessageId: message.id }, ['pending']);
+  await updateStreamRequest(request.id, { staffChannelId: channel.id, staffMessageId: message.id, staffPostError: null }, ['pending']);
 }
 
 function streamRequestEmbed(request) {
   const status = request.status || 'pending';
-  const colors = { pending: EMBED_COLORS.warning, approved: EMBED_COLORS.accepted, denied: EMBED_COLORS.declined, revoked: EMBED_COLORS.declined, canceled: 0x7f8c8d, expired: 0x7f8c8d, submission_failed: EMBED_COLORS.declined };
+  const colors = {
+    pending: EMBED_COLORS.warning,
+    approving: 0x5865f2,
+    approved: EMBED_COLORS.accepted,
+    publish_failed: EMBED_COLORS.declined,
+    denied: 0x7f8c8d,
+    revoked: EMBED_COLORS.declined,
+    canceled: 0x7f8c8d,
+    expired: 0x7f8c8d,
+    submission_failed: EMBED_COLORS.declined
+  };
+  const scheduleIso = request.faceitScheduledAtIso || request.dateTimeIso;
+  const fields = [
+    { name: 'Caster', value: `<@${request.requesterId}>${request.requesterTag ? ` (${request.requesterTag})` : ''}`, inline: true },
+    { name: 'Match', value: request.matchup, inline: true },
+    { name: 'Date/Time', value: formatScheduleForDiscord(scheduleIso, request.dateTime || 'Not scheduled on FACEIT yet'), inline: false },
+    { name: 'FACEIT Matchroom', value: request.faceitUrl || 'Not supplied', inline: false },
+    { name: `Stream${request.streamPlatform ? ` (${request.streamPlatform})` : ''}`, value: request.streamUrl, inline: false },
+    { name: 'X / Twitter', value: request.socialUrl, inline: false },
+    request.reviewedBy ? { name: 'Decided By', value: `<@${request.reviewedBy}>`, inline: true } : null,
+    request.websiteId && status === 'approved' ? { name: 'Website ID', value: String(request.websiteId), inline: true } : null,
+    request.denialReason && ['denied', 'revoked', 'canceled', 'expired'].includes(status)
+      ? { name: 'Reason', value: request.denialReason, inline: false }
+      : null,
+    status === 'publish_failed'
+      ? { name: 'Last website error', value: `\`\`\`${String(request.lastPublishError || 'unknown').slice(0, 900)}\`\`\`\nAttempts: ${request.publishAttempts || 0}. The caster has **not** been notified yet.`, inline: false }
+      : null,
+    request.websiteSyncError && status === 'approved'
+      ? { name: 'Website sync warning', value: String(request.websiteSyncError).slice(0, 500), inline: false }
+      : null
+  ].filter(Boolean);
   return new EmbedBuilder()
     .setColor(colors[status] || EMBED_COLORS.admin)
-    .setTitle(`Stream Request ${request.id}`)
+    .setTitle(`Stream Request ${request.id} - ${request.matchup}`)
     .setDescription([
-      `Status: **${status.toUpperCase()}**`,
+      STREAM_STATUS_LABELS[status] || `Status: **${status.toUpperCase()}**`,
       request.faceitLinkValid
         ? 'FACEIT matchroom verified. Schedule monitoring and grouped delivery are enabled.'
         : `⚠️ FACEIT LINK NOT VERIFIED: ${String(request.faceitValidationError || 'Unknown validation error').slice(0, 800)} This request cannot be grouped with similar requests or receive automatic schedule/connect updates.`,
       request.repeatSubmission ? `This requester has ${request.priorSubmissionCount} closed earlier request(s) for this match.` : null
     ].filter(Boolean).join('\n'))
-    .addFields([
-      { name: 'Requester', value: `<@${request.requesterId}>`, inline: true },
-      { name: 'Match', value: request.matchup, inline: true },
-      { name: 'Date/Time', value: request.dateTime, inline: false },
-      { name: 'FACEIT Matchroom', value: request.faceitUrl || 'Not supplied', inline: false },
-      { name: 'Stream', value: request.streamUrl, inline: false },
-      { name: 'X/Twitter', value: request.socialUrl, inline: false },
-      request.reviewedBy ? { name: 'Reviewed By', value: `<@${request.reviewedBy}>`, inline: true } : null,
-      request.denialReason ? { name: 'Reason', value: request.denialReason, inline: false } : null
-    ].filter(Boolean))
-    .setFooter({ text: 'A request is not permission until staff approves it.' })
+    .addFields(fields)
+    .setFooter({ text: `Request ${request.id}${request.sourceChannelId ? ` • from #${request.sourceChannelId}` : ''} • A request is not permission until staff approves it.` })
     .setTimestamp(new Date(request.updatedAt || request.createdAt || Date.now()));
 }
 
 function streamReviewComponents(request) {
+  if (request.status === 'publish_failed') {
+    return [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`stream_review:${request.id}:retry`).setLabel('Retry website publish').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`stream_review:${request.id}:revoke`).setLabel('Revoke approval').setStyle(ButtonStyle.Danger)
+    )];
+  }
   if (request.status !== 'pending') return [];
   return [new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -2614,19 +2694,47 @@ async function handleStreamReview(interaction) {
   }
   const [, requestId, decision] = interaction.customId.split(':');
   if (decision === 'deny') {
+    const current = await getStreamRequest(requestId);
+    if (!current || current.status !== 'pending') {
+      await reportStreamAlreadyDecided(interaction, current);
+      return;
+    }
     const modal = new ModalBuilder().setCustomId(`stream_deny_submit:${requestId}`).setTitle('Deny Stream Request');
     modal.addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('reason').setLabel('Denial reason').setStyle(TextInputStyle.Paragraph).setRequired(true)
+      new TextInputBuilder()
+        .setCustomId('reason')
+        .setLabel('Reason (shown to the caster)')
+        .setPlaceholder('e.g. This match already has official coverage.')
+        .setStyle(TextInputStyle.Paragraph)
+        .setMinLength(5)
+        .setMaxLength(400)
+        .setRequired(true)
     ));
     await interaction.showModal(modal);
     return;
   }
+  if (decision === 'retry') {
+    await handleStreamRetryPublish(interaction, requestId);
+    return;
+  }
+  if (decision === 'revoke') {
+    await interaction.deferReply({ ephemeral: true });
+    const revoked = await revokeStreamRequest(requestId, interaction.user.id, 'Approval revoked by staff');
+    await interaction.editReply(revoked ? `Approval for request ${requestId} revoked; the caster has been notified.` : 'Only an approved or publish-failed request can be revoked.');
+    return;
+  }
+  if (decision !== 'approve') {
+    await interaction.reply({ content: 'Unknown review action.', ephemeral: true });
+    return;
+  }
+
   await interaction.deferReply({ ephemeral: true });
   const existing = await getStreamRequest(requestId);
   if (!existing || existing.status !== 'pending') {
-    await interaction.editReply('This request was already reviewed or no longer exists.');
+    await reportStreamAlreadyDecided(interaction, existing);
     return;
   }
+  // FACEIT is refreshed immediately before approval so staff never approve a finished match.
   if (existing.matchId && existing.faceitLinkValid) {
     const latestMatch = await faceit.getMatch(existing.matchId).catch(() => null);
     if (!latestMatch) {
@@ -2647,30 +2755,144 @@ async function handleStreamReview(interaction) {
       dateTime: latestScheduleIso ? formatEasternDateTimeInput(latestScheduleIso) : 'Not scheduled on FACEIT yet'
     }, ['pending']);
   }
-  const updated = await updateStreamRequest(requestId, {
-    status: 'approved',
-    reviewedBy: interaction.user.id,
-    reviewedAt: new Date().toISOString()
-  }, ['pending']);
-  if (!updated) {
-    await interaction.editReply('This request was already reviewed or no longer exists.');
+  // Atomic pending -> approving. A second staff member clicking at the same time loses the race.
+  const claimed = await claimStreamApproval(requestId, interaction.user.id);
+  if (!claimed) {
+    await reportStreamAlreadyDecided(interaction, await getStreamRequest(requestId));
     return;
   }
-  await interaction.message.edit({ embeds: [streamRequestEmbed(updated)], components: [] });
-  const approvedScheduleIso = updated.faceitScheduledAtIso || updated.dateTimeIso;
-  const approvalMessage = [
-    `Your CROSSFIRE stream request ${updated.id} was **approved** for **${updated.matchup}**.`,
-    !updated.faceitLinkValid
+  await refreshStreamRequestStaffMessage(claimed);
+  await appendAuditLog({ type: 'stream_request_approved', actorId: interaction.user.id, matchId: claimed.matchId, requestId });
+  await publishStreamApproval(claimed, interaction);
+}
+
+async function handleStreamRetryPublish(interaction, requestId) {
+  await interaction.deferReply({ ephemeral: true });
+  const claimed = await claimStreamRepublish(requestId, interaction.user.id);
+  if (!claimed) {
+    await reportStreamAlreadyDecided(interaction, await getStreamRequest(requestId));
+    return;
+  }
+  await refreshStreamRequestStaffMessage(claimed);
+  await appendAuditLog({ type: 'stream_request_publish_retry', actorId: interaction.user.id, matchId: claimed.matchId, requestId });
+  await publishStreamApproval(claimed, interaction);
+}
+
+// Publishes an `approving` request to the website and finalises it as
+// `approved` or `publish_failed`. The caster is only told on success.
+async function publishStreamApproval(request, interaction) {
+  const result = await websitePublisher.publish(request, { status: 'approved' })
+    .catch((error) => ({ ok: false, websiteId: null, error: error?.message || String(error) }));
+  const updated = await recordStreamPublishResult(request.id, result);
+  if (!updated) {
+    await interaction.editReply('State conflict while finishing the approval. Check the request card.');
+    return;
+  }
+  await refreshStreamRequestStaffMessage(updated);
+  if (updated.status === 'approved') {
+    const notified = await announceStreamApproval(updated);
+    await appendAuditLog({ type: 'stream_request_published', actorId: interaction.user.id, matchId: updated.matchId, requestId: updated.id, websiteId: updated.websiteId, publisher: websitePublisher.mode });
+    await interaction.editReply([
+      `✅ Request ${updated.id} approved${websitePublisher.mode === 'http' ? ' and published to the website.' : '. Website publishing is in log-only mode (WEBSITE_ENDPOINT is not set).'}`,
+      notified ? null : '⚠️ Could not notify the caster. Check my permissions in their channel and whether their DMs are open.'
+    ].filter(Boolean).join('\n'));
+    return;
+  }
+  await appendAuditLog({ type: 'stream_request_publish_failed', actorId: interaction.user.id, matchId: updated.matchId, requestId: updated.id, error: updated.lastPublishError, attempts: updated.publishAttempts });
+  await interaction.editReply([
+    `⚠️ Request ${updated.id} is approved but the website call failed after ${updated.publishAttempts} attempt(s):`,
+    `\`\`\`${String(updated.lastPublishError || 'unknown').slice(0, 500)}\`\`\``,
+    'The caster has **not** been told yet. Fix the site/endpoint and press **Retry website publish** on the card.'
+  ].join('\n'));
+  await alertStreamStaff(`⚠️ Website publish failed for stream request ${updated.id} (${updated.matchup}). Retry from the request card above.`);
+}
+
+async function announceStreamApproval(request) {
+  const scheduleIso = request.faceitScheduledAtIso || request.dateTimeIso;
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLORS.accepted)
+    .setTitle(`✅ Stream approved: ${request.matchup}`)
+    .setDescription(`<@${request.requesterId}>'s cast is confirmed${websitePublisher.mode === 'http' ? ' and listed on the CROSSFIRE website' : ''}.`)
+    .addFields([
+      { name: 'When', value: formatScheduleForDiscord(scheduleIso, 'Not scheduled on FACEIT yet - the caster will be notified when a time is posted.'), inline: false },
+      { name: `Watch${request.streamPlatform ? ` (${request.streamPlatform})` : ''}`, value: request.streamUrl, inline: false },
+      { name: 'Caster on X', value: request.socialUrl, inline: false },
+      request.faceitUrl ? { name: 'FACEIT Matchroom', value: request.faceitUrl, inline: false } : null
+    ].filter(Boolean))
+    .setFooter({ text: `Request ${request.id}` })
+    .setTimestamp();
+  const dmText = [
+    `Your CROSSFIRE stream request ${request.id} was **approved** for **${request.matchup}**.`,
+    !request.faceitLinkValid
       ? 'This was a manual approval because the FACEIT link could not be verified. Automatic schedule updates and connection delivery are unavailable for this request.'
       : null,
-    approvedScheduleIso
-      ? `Scheduled for **${formatEasternDateTimeInput(approvedScheduleIso)}**.`
+    scheduleIso
+      ? `Scheduled for ${discordTimestamp(scheduleIso, 'F')} (${formatEasternDateTimeInput(scheduleIso)}).`
       : 'FACEIT has not scheduled this match yet. I will DM you when a date and time are posted.',
-    updated.faceitUrl ? `FACEIT matchroom: ${updated.faceitUrl}` : null
+    request.faceitUrl ? `FACEIT matchroom: ${request.faceitUrl}` : null,
+    config.streamGuidelinesUrl ? `Guidelines: ${config.streamGuidelinesUrl}` : config.streamGuidelinesText
   ].filter(Boolean).join('\n');
-  await notifyStreamRequester(updated, approvalMessage);
-  await appendAuditLog({ type: 'stream_request_approved', actorId: interaction.user.id, matchId: updated.matchId, requestId });
-  await interaction.editReply('Stream request approved.');
+  const dmSent = await dmStreamRequester(request, dmText);
+  const posted = await postToStreamOrigin(request, { embeds: [embed] });
+  if (!dmSent && !posted) await alertStreamStaff(`Could not notify <@${request.requesterId}> that stream request ${request.id} was approved.`);
+  return dmSent || posted;
+}
+
+async function announceStreamDenial(request) {
+  const scheduleIso = request.faceitScheduledAtIso || request.dateTimeIso;
+  const embed = new EmbedBuilder()
+    .setColor(EMBED_COLORS.declined)
+    .setTitle(`❌ Stream request denied: ${request.matchup}`)
+    .setDescription(`<@${request.requesterId}>, your request was not approved.`)
+    .addFields(
+      { name: 'Reason', value: request.denialReason || 'No reason given', inline: false },
+      { name: 'Match time', value: formatScheduleForDiscord(scheduleIso, request.dateTime || 'Not scheduled on FACEIT yet'), inline: false }
+    )
+    .setFooter({ text: `Request ${request.id} • You may submit a new request if the issue is fixed.` })
+    .setTimestamp();
+  const posted = await postToStreamOrigin(request, { embeds: [embed] });
+  if (posted) return true;
+  return notifyStreamRequester(request, `Your CROSSFIRE stream request ${request.id} for **${request.matchup}** was **denied**. Reason: ${request.denialReason}`);
+}
+
+// Posts a decision back to the channel the request came from, tagging the caster.
+async function postToStreamOrigin(request, payload) {
+  const channel = request.sourceChannelId ? await client.channels.fetch(request.sourceChannelId).catch(() => null) : null;
+  if (!channel?.isTextBased?.()) return false;
+  return channel.send({
+    content: `<@${request.requesterId}>`,
+    ...payload,
+    allowedMentions: { users: [request.requesterId], roles: [], repliedUser: false }
+  }).then(() => true).catch(() => false);
+}
+
+async function reportStreamAlreadyDecided(interaction, request) {
+  let text = 'That request no longer exists.';
+  if (request) {
+    const label = STREAM_STATUS_LABELS[request.status] || request.status;
+    text = `Request ${request.id} is already **${label}**${request.reviewedBy ? ` (decided by <@${request.reviewedBy}>)` : ''}.`;
+    await refreshStreamRequestStaffMessage(request);
+  }
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply(text);
+  } else {
+    await interaction.reply({ content: text, ephemeral: true });
+  }
+}
+
+async function revokeStreamRequest(requestId, actorId, reason) {
+  const updated = await updateStreamRequest(requestId, {
+    status: 'revoked',
+    reviewedBy: actorId,
+    revokedAt: new Date().toISOString(),
+    denialReason: reason
+  }, ['approved', 'publish_failed']);
+  if (!updated) return null;
+  await refreshStreamRequestStaffMessage(updated);
+  await syncStreamRequestToWebsite(updated, 'revoked');
+  await notifyStreamRequester(updated, `Your CROSSFIRE stream approval ${updated.id} for **${updated.matchup}** was revoked. Reason: ${reason}`);
+  await appendAuditLog({ type: 'stream_request_revoked', actorId, matchId: updated.matchId, requestId, reason });
+  return updated;
 }
 
 async function handleStreamDenialModal(interaction) {
@@ -2679,25 +2901,117 @@ async function handleStreamDenialModal(interaction) {
     return;
   }
   const requestId = interaction.customId.split(':')[1];
-  const reason = interaction.fields.getTextInputValue('reason').trim();
+  const reason = validateDenialReason(interaction.fields.getTextInputValue('reason'));
+  if (!reason.valid) {
+    await interaction.reply({ content: reason.error, ephemeral: true });
+    return;
+  }
+  await interaction.deferReply({ ephemeral: true });
   const updated = await updateStreamRequest(requestId, {
     status: 'denied',
     reviewedBy: interaction.user.id,
     reviewedAt: new Date().toISOString(),
-    denialReason: reason
+    denialReason: reason.value
   }, ['pending']);
   if (!updated) {
-    await interaction.reply({ content: 'This request was already reviewed or no longer exists.', ephemeral: true });
+    await reportStreamAlreadyDecided(interaction, await getStreamRequest(requestId));
     return;
   }
-  if (updated.staffChannelId && updated.staffMessageId) {
-    const channel = await client.channels.fetch(updated.staffChannelId).catch(() => null);
-    const message = await channel?.messages.fetch(updated.staffMessageId).catch(() => null);
-    await message?.edit({ embeds: [streamRequestEmbed(updated)], components: [] }).catch(() => null);
+  await refreshStreamRequestStaffMessage(updated);
+  const notified = await announceStreamDenial(updated);
+  await appendAuditLog({ type: 'stream_request_denied', actorId: interaction.user.id, matchId: updated.matchId, requestId, reason: reason.value });
+  await interaction.editReply(`❌ Request ${updated.id} denied${notified ? '; the caster has been notified.' : '. ⚠️ Could not notify the caster; check my permissions in their channel.'}`);
+}
+
+// Best-effort status update for a request the website already knows about.
+// Never changes the Discord-side status; failures are surfaced on the card and to staff.
+async function syncStreamRequestToWebsite(request, status) {
+  if (!request?.websitePublishedAt) return false;
+  const result = await websitePublisher.publish(request, { status })
+    .catch((error) => ({ ok: false, websiteId: null, error: error?.message || String(error) }));
+  if (result.ok) {
+    await updateStreamRequest(request.id, { websiteSyncError: null, websiteSyncedAt: new Date().toISOString() });
+    return true;
   }
-  await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} was **denied**. Reason: ${reason}`);
-  await appendAuditLog({ type: 'stream_request_denied', actorId: interaction.user.id, matchId: updated.matchId, requestId, reason });
-  await interaction.reply({ content: 'Stream request denied.', ephemeral: true });
+  const message = `Website ${status} update failed: ${result.error}`;
+  await updateStreamRequest(request.id, { websiteSyncError: message });
+  await appendAuditLog({ type: 'stream_website_sync_failed', matchId: request.matchId, requestId: request.id, status, error: result.error });
+  await alertStreamStaff(`⚠️ ${message} (stream request ${request.id}, ${request.matchup}). The website may still list this stream.`);
+  return false;
+}
+
+async function alertStreamStaff(text) {
+  const channel = config.streamRequestChannelId
+    ? await client.channels.fetch(config.streamRequestChannelId).catch(() => null)
+    : null;
+  if (!channel?.isTextBased?.()) {
+    console.error('[Stream] staff alert not delivered (no review channel):', text);
+    return false;
+  }
+  return channel.send({
+    content: [getStaffMentions(channel.guild), text].filter(Boolean).join('\n'),
+    allowedMentions: getAdminAllowedMentions(channel.guild)
+  }).then(() => true).catch(() => false);
+}
+
+// Startup check: can the bot see and post in the stream channels it depends on?
+async function auditStreamChannelPermissions() {
+  const targets = [
+    ['staff review', config.streamRequestChannelId],
+    ...config.streamCommunityChannelIds.map((id) => ['community request', id])
+  ].filter(([, id]) => id);
+  if (!targets.length) {
+    console.warn('Stream requests are disabled: STREAM_REQUEST_CHANNEL_ID is not set');
+    return;
+  }
+  const problems = [];
+  for (const [label, channelId] of targets) {
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel?.isTextBased?.() || !channel.guild) {
+      problems.push(`${label} channel ${channelId}: not found (wrong ID, or the bot is not in that server)`);
+      continue;
+    }
+    const me = channel.guild.members.me || await channel.guild.members.fetchMe().catch(() => null);
+    const permissions = me ? channel.permissionsFor(me) : null;
+    const missing = [
+      ['View Channel', PermissionFlagsBits.ViewChannel],
+      ['Send Messages', PermissionFlagsBits.SendMessages],
+      ['Embed Links', PermissionFlagsBits.EmbedLinks]
+    ].filter(([, flag]) => !permissions?.has(flag)).map(([name]) => name);
+    if (missing.length) problems.push(`${label} channel #${channel.name}: missing ${missing.join(', ')}`);
+  }
+  if (!problems.length) {
+    console.log('Stream channel permission audit passed');
+    return;
+  }
+  for (const problem of problems) console.error(`PERMISSION PROBLEM - ${problem}`);
+  await alertStreamStaff(`🚨 Stream bot permission problems:\n${problems.map((problem) => `• ${problem}`).join('\n')}`);
+}
+
+async function recoverStreamRequestsOnStartup() {
+  for (const request of await recoverInterruptedStreamPublishes()) {
+    console.warn(`Stream request ${request.id} was mid-publish at shutdown; marked publish_failed`);
+    await refreshStreamRequestStaffMessage(request);
+    await alertStreamStaff(`⚠️ Stream request ${request.id} (${request.matchup}) was approved but the bot restarted before the website confirmed it. Use **Retry website publish** on its card.`);
+  }
+  await repostStreamRequestsAwaitingStaff();
+}
+
+// Requests saved while the staff channel was unreachable are posted once it is back.
+async function repostStreamRequestsAwaitingStaff() {
+  if (!config.streamRequestChannelId) return;
+  for (const request of await listStreamRequestsAwaitingStaffPost()) {
+    const pending = request.status === 'pending'
+      ? request
+      : await updateStreamRequest(request.id, { status: 'pending', denialReason: null }, ['submission_failed']);
+    if (!pending) continue;
+    try {
+      await sendStreamRequestToStaff(pending);
+      console.log(`Re-posted stream request ${pending.id} to the staff review channel`);
+    } catch (error) {
+      await updateStreamRequest(pending.id, { staffPostError: error.message }, ['pending']);
+    }
+  }
 }
 
 async function notifyStreamRequester(request, text) {
@@ -2733,10 +3047,9 @@ async function refreshStreamRequestStaffMessage(request) {
   const channel = await client.channels.fetch(request.staffChannelId).catch(() => null);
   const message = await channel?.messages.fetch(request.staffMessageId).catch(() => null);
   if (!message) return;
-  const reviewable = request.status === 'pending';
   await message.edit({
     embeds: [streamRequestEmbed(request)],
-    components: reviewable ? streamReviewComponents(request) : []
+    components: streamReviewComponents(request)
   }).catch(() => null);
 }
 
@@ -2868,8 +3181,8 @@ async function handleCancelStreamRequests(message, content) {
   }
   const requests = await listStreamRequests();
   const matches = requests.filter((request) => {
-    if (parsed) return request.matchId === parsed.matchId && ['pending', 'approved'].includes(request.status);
-    return request.requesterId === mentionedId && request.status === 'approved';
+    if (parsed) return request.matchId === parsed.matchId && STREAM_ACTIVE_STATUSES.includes(request.status);
+    return request.requesterId === mentionedId && ['approved', 'publish_failed'].includes(request.status);
   });
   for (const request of matches) {
     const updated = await updateStreamRequest(request.id, {
@@ -2877,9 +3190,10 @@ async function handleCancelStreamRequests(message, content) {
       canceledBy: message.author.id,
       canceledAt: new Date().toISOString(),
       denialReason: 'Canceled by staff'
-    }, ['pending', 'approved']);
+    }, STREAM_ACTIVE_STATUSES);
     if (!updated) continue;
     await refreshStreamRequestStaffMessage(updated);
+    await syncStreamRequestToWebsite(updated, 'canceled');
     await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} for ${updated.matchup} was canceled by staff.`);
   }
   await appendAuditLog({ type: 'stream_requests_canceled', actorId: message.author.id, matchId: parsed?.matchId || null, requesterId: mentionedId, count: matches.length });
@@ -2931,11 +3245,13 @@ async function handleAdminStreams(interaction) {
   const action = interaction.options.getString('action', true);
   const requestId = interaction.options.getString('request_id');
   const reason = interaction.options.getString('reason') || '';
-  if (action === 'pending' || action === 'approved') {
-    const requests = await listStreamRequests({ status: action });
+  if (action === 'pending' || action === 'approved' || action === 'publish_failed') {
+    const statuses = action === 'pending' ? ['pending', 'approving'] : [action];
+    const requests = (await listStreamRequests()).filter((request) => statuses.includes(request.status));
+    const scheduleOf = (request) => discordTimestamp(request.faceitScheduledAtIso || request.dateTimeIso, 'f') || request.dateTime || 'unscheduled';
     await interaction.editReply(truncateDiscordMessage(requests.length
-      ? requests.slice(0, 40).map((request) => `- ${request.id} ${request.matchup} | <@${request.requesterId}> | ${request.dateTime}`).join('\n')
-      : `No ${action} stream requests.`));
+      ? requests.slice(0, 40).map((request) => `- \`${request.id}\` **${request.matchup}** | <@${request.requesterId}> | ${scheduleOf(request)} | ${request.status.replace('_', ' ')}`).join('\n')
+      : `No ${action.replace('_', ' ')} stream requests.`));
     return;
   }
   const request = requestId ? await getStreamRequest(requestId) : null;
@@ -2947,24 +3263,40 @@ async function handleAdminStreams(interaction) {
     await interaction.editReply({ embeds: [streamRequestEmbed(request)] });
     return;
   }
+  if (action === 'retry') {
+    if (request.status !== 'publish_failed') {
+      await interaction.editReply(`Only a publish-failed request can be retried. Request ${request.id} is **${STREAM_STATUS_LABELS[request.status] || request.status}**.`);
+      return;
+    }
+    const claimed = await claimStreamRepublish(requestId, interaction.user.id);
+    if (!claimed) {
+      await reportStreamAlreadyDecided(interaction, await getStreamRequest(requestId));
+      return;
+    }
+    await refreshStreamRequestStaffMessage(claimed);
+    await appendAuditLog({ type: 'stream_request_publish_retry', actorId: interaction.user.id, matchId: claimed.matchId, requestId });
+    await publishStreamApproval(claimed, interaction);
+    return;
+  }
   if (action === 'cancel') {
     const updated = await updateStreamRequest(requestId, {
       status: 'canceled',
       canceledBy: interaction.user.id,
       canceledAt: new Date().toISOString(),
       denialReason: reason || 'Canceled by staff'
-    }, ['pending', 'approved']);
-    await interaction.editReply(updated ? 'Request canceled and the caster will be notified.' : 'Only a pending or approved request can be canceled.');
+    }, STREAM_ACTIVE_STATUSES);
+    await interaction.editReply(updated ? 'Request canceled and the caster will be notified.' : 'Only an active request can be canceled.');
     if (updated) {
       await refreshStreamRequestStaffMessage(updated);
+      await syncStreamRequestToWebsite(updated, 'canceled');
+      await appendAuditLog({ type: 'stream_request_canceled_by_staff', actorId: interaction.user.id, matchId: updated.matchId, requestId, reason: updated.denialReason });
       await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} was canceled by staff. Reason: ${updated.denialReason}`);
     }
     return;
   }
   if (action === 'revoke') {
-    const updated = await updateStreamRequest(requestId, { status: 'revoked', reviewedBy: interaction.user.id, denialReason: reason || 'Approval revoked by staff' }, ['approved']);
-    await interaction.editReply(updated ? 'Approval revoked and requester will be notified.' : 'Only an approved request can be revoked.');
-    if (updated) await notifyStreamRequester(updated, `Your CROSSFIRE stream approval ${updated.id} was revoked. Reason: ${updated.denialReason}`);
+    const updated = await revokeStreamRequest(requestId, interaction.user.id, reason || 'Approval revoked by staff');
+    await interaction.editReply(updated ? 'Approval revoked and the caster will be notified.' : 'Only an approved or publish-failed request can be revoked.');
     return;
   }
   if (action === 'complete') {
@@ -4618,8 +4950,9 @@ async function runOperationsTick() {
 }
 
 async function runStreamOperationsTick(now = Date.now()) {
+  await repostStreamRequestsAwaitingStaff().catch((error) => console.error('Stream request re-post failed:', error));
   const active = (await listStreamRequests()).filter((request) =>
-    request.faceitLinkValid && request.matchId && !request.terminalNotifiedAt && ['pending', 'approved'].includes(request.status)
+    request.faceitLinkValid && request.matchId && !request.terminalNotifiedAt && STREAM_ACTIVE_STATUSES.includes(request.status)
   );
   const byMatch = new Map();
   for (const request of active) {
@@ -4652,10 +4985,12 @@ async function runStreamOperationsTick(now = Date.now()) {
               : scheduleChange === 'unscheduled'
                 ? { dateTimeIso: null, dateTime: 'Not scheduled on FACEIT yet' }
                 : {})
-          }, ['pending', 'approved']);
+          }, STREAM_ACTIVE_STATUSES);
           if (updated) {
             currentRequests.push(updated);
             await refreshStreamRequestStaffMessage(updated);
+            // Keep the website's listing in step with FACEIT for already-published streams.
+            if (scheduleUpdated && updated.status === 'approved') await syncStreamRequestToWebsite(updated, 'approved');
           }
         }
         if (scheduleUpdated) {
@@ -4704,7 +5039,7 @@ async function runStreamOperationsTick(now = Date.now()) {
           await updateStreamRequest(request.id, {
             faceitLastCheckedAt: new Date(now).toISOString(),
             faceitCheckError: error.message
-          }, ['pending', 'approved']);
+          }, STREAM_ACTIVE_STATUSES);
         }
       }
     }
@@ -4720,8 +5055,9 @@ async function runStreamOperationsTick(now = Date.now()) {
             status: 'expired',
             denialReason: canceled ? 'FACEIT canceled the match before staff review.' : 'The FACEIT match finished before staff review.'
           } : {})
-        }, ['pending', 'approved']);
+        }, STREAM_ACTIVE_STATUSES);
         if (updated) await refreshStreamRequestStaffMessage(updated);
+        if (updated?.status === 'approved') await syncStreamRequestToWebsite(updated, canceled ? 'canceled' : 'completed');
       }
       if (canceled) {
         for (const request of new Map(currentRequests.filter((entry) => entry.status === 'approved').map((entry) => [entry.requesterId, entry])).values()) {
