@@ -86,10 +86,12 @@ import {
   validateStreamRequest
 } from './streamRequest.js';
 import { createWebsitePublisher } from './websitePublisher.js';
+import { buildScheduleSheetRow, createScheduleSheet } from './scheduleSheet.js';
 import { isAuthorizedStaffMember, parseForceDirective } from './operationsPolicy.js';
 
 const config = getConfig();
 const websitePublisher = createWebsitePublisher(config);
+const scheduleSheet = createScheduleSheet(config);
 const lockPath = path.resolve('bot.lock');
 claimSingleInstance(lockPath);
 
@@ -270,6 +272,7 @@ client.once(Events.ClientReady, async () => {
 
   await hydratePersistentTeamRoleMappings();
   console.log(`Website publisher: ${websitePublisher.mode}${config.websiteEndpoint ? ` -> ${config.websiteEndpoint}` : ' (set WEBSITE_ENDPOINT to publish approvals)'}`);
+  console.log(`Schedule sheet: ${scheduleSheet.mode}${config.scheduleSheetWebhookUrl ? '' : ' (set SCHEDULE_SHEET_WEBHOOK_URL to log schedules to Google Sheets)'}`);
   await auditStreamChannelPermissions().catch((error) => console.error('Stream channel audit failed:', error));
   await recoverStreamRequestsOnStartup().catch((error) => console.error('Stream request recovery failed:', error));
   await runOperationsTick().catch((error) => console.error('Operations recovery failed:', error));
@@ -527,6 +530,7 @@ async function handleBotStatus(interaction) {
       `Approved coverage: ${streams.filter((entry) => entry.status === 'approved').length}`,
       `Website publish failures needing retry: ${streams.filter((entry) => entry.status === 'publish_failed').length}`,
       `Website publisher: ${websitePublisher.mode}`,
+      `Schedule sheet: ${scheduleSheet.mode}`,
       `Persistent team mappings: ${mappings.length}`,
       `Active/blocked vetoes: ${vetoes.filter((entry) => ['choosing_first_action', 'active', 'blocked'].includes(entry.status)).length}`
     ].join('\n'),
@@ -2179,6 +2183,10 @@ async function handleTextScheduleProposal(message, content, kind) {
       allowedMentions: { roles: [stored.discord.teamARoleId, stored.discord.teamBRoleId], users: [], repliedUser: false }
     });
     await notifyDirectAdminSchedule(message.guild, stored, proposal, message.author.id, faceitLine);
+    const sheetWarning = await logScheduleToSheet({ stored, proposal, approvedBy: message.author.id, kind });
+    if (sheetWarning) {
+      await message.reply({ content: sheetWarning, allowedMentions: { repliedUser: false } }).catch(() => null);
+    }
     await upsertMatchIntroMessage(message.channel, { ...stored.match, status: 'discord_scheduled', scheduledByDiscord: true, scheduledAt: proposal.scheduledAt });
     return;
   }
@@ -4001,7 +4009,11 @@ async function handleAdminScheduleDecision(interaction, approved) {
     const renameFailureNote = renameResult?.error
       ? ` Discord blocked the channel rename: ${renameResult.error.message}`
       : '';
-    await interaction.editReply(`Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}`);
+    const sheetWarning = stored
+      ? await logScheduleToSheet({ stored, proposal, approvedBy: interaction.user.id, acceptedBy: proposal?.acceptedBy || null })
+      : null;
+    const sheetNote = sheetWarning ? ` ${sheetWarning}` : '';
+    await interaction.editReply(`Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}${sheetNote}`);
   } else {
     await appendAuditLog({ type: 'schedule_denied', matchId: stored?.match?.id || proposal?.matchId, actorId: interaction.user.id });
     await interaction.message.react('❌').catch(() => null);
@@ -4105,6 +4117,40 @@ async function markMatchChannelScheduled(channel, stored, proposal = null) {
   const renameResult = await updateMatchChannelName(channel, scheduledMatch);
   await saveMatch(scheduledMatch, stored.discord);
   return renameResult;
+}
+
+// Sends a confirmed schedule to the Google Sheet. Never throws: a sheet failure must not
+// undo a Discord approval. Returns a short warning string for staff when something went wrong.
+async function logScheduleToSheet({ stored, proposal, approvedBy = null, acceptedBy = null, kind = null }) {
+  if (!stored?.match) return null;
+  const row = buildScheduleSheetRow({ stored, proposal, details: getMatchDisplayDetails(stored.match), approvedBy, acceptedBy, kind });
+  try {
+    const result = await scheduleSheet.append(row);
+    if (result.ok) {
+      if (!result.skipped) {
+        console.log(`Schedule sheet ${result.updated ? 'updated' : 'added'} row ${result.row ?? '?'} for ${row.team1} vs ${row.team2}.`);
+      }
+      await appendAuditLog({
+        type: 'schedule_sheet_logged',
+        matchId: row.matchId || null,
+        actorId: approvedBy || acceptedBy || null,
+        skipped: Boolean(result.skipped),
+        updated: Boolean(result.updated)
+      }).catch(() => null);
+      return null;
+    }
+    console.error(`Schedule sheet write failed for ${row.team1} vs ${row.team2}: ${result.error}`);
+    await appendAuditLog({
+      type: 'schedule_sheet_failed',
+      matchId: row.matchId || null,
+      actorId: approvedBy || acceptedBy || null,
+      error: result.error
+    }).catch(() => null);
+    return `The Google Sheet was not updated: ${result.error}`;
+  } catch (error) {
+    console.error('Schedule sheet write crashed:', error);
+    return `The Google Sheet was not updated: ${error?.message || error}`;
+  }
 }
 
 function buildApprovedScheduleSheetRow({ stored, proposal, approvedBy, acceptedBy, channel }) {

@@ -171,6 +171,18 @@ Reschedule rules:
 - When admins approve a schedule request in the staff channel, the bot reacts to that admin alert with a checkmark.
 - Playoff teams may schedule or reschedule during their assigned three-day round window by mutual agreement.
 
+### Google Sheet schedule log
+
+Every confirmed schedule is written to the `Game Schedules` tab of the "CF Game and Staff Schedule" spreadsheet, using the same columns as the older `Game Schedule` tab: Date, TIME, TEAM 1, VS, TEAM 2, FACEIT LINK, ROUND, GROUP, then Admin, scores, Stream Link/s, Stats Collected? and Key. The bot fills the first eight columns and never touches the rest. One row per match: a reschedule updates the existing row for that FACEIT link. After every write the tab is sorted by date and time using a hidden `Sort Key` column (O); rows added by hand are given a key from their Date and Time cells so they sort too. Rows are written when staff approve a schedule or reschedule in the staff channel, and when Tournament Ops sets a time directly with `!schedule`.
+
+Setup:
+
+1. Open the target spreadsheet, go to Extensions > Apps Script, and paste `docs/schedule-log-apps-script.gs`. Set `SHARED_SECRET` to a long random string. If the script is a standalone project instead, also set `SPREADSHEET_ID` to the ID from the spreadsheet URL.
+2. Deploy > New deployment > Web app, Execute as **Me**, Who has access **Anyone**. Copy the `/exec` URL. Opening it in a browser should show `ok`.
+3. Set `SCHEDULE_SHEET_WEBHOOK_URL` to that URL and `SCHEDULE_SHEET_SECRET` to the same secret.
+
+Without `SCHEDULE_SHEET_WEBHOOK_URL` the bot runs in log-only mode. A failed sheet write never blocks the Discord approval; the approving staff member sees a warning and the failure is audit logged as `schedule_sheet_failed`. Edits to the script need a new deployment version before the live URL picks them up.
+
 ## Persistent operations workflows
 
 The JSON database is migrated in place. Set `BOT_DATA_PATH=/data/bot-data.json` when the Railway service has a volume mounted at `/data`; otherwise Railway filesystem replacement can remove bot state during deployment.

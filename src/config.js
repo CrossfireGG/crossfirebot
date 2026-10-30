@@ -148,6 +148,14 @@ export function getConfig() {
     throw new Error('WEBSITE_API_KEY is required when WEBSITE_ENDPOINT is set');
   }
 
+  const scheduleSheetWebhookUrl = process.env.SCHEDULE_SHEET_WEBHOOK_URL?.trim() || '';
+  if (scheduleSheetWebhookUrl && !/^https?:\/\//i.test(scheduleSheetWebhookUrl)) {
+    throw new Error('SCHEDULE_SHEET_WEBHOOK_URL must be an http(s) URL');
+  }
+  if (scheduleSheetWebhookUrl && !process.env.SCHEDULE_SHEET_SECRET?.trim()) {
+    throw new Error('SCHEDULE_SHEET_SECRET is required when SCHEDULE_SHEET_WEBHOOK_URL is set');
+  }
+
   return {
     discordToken: process.env.DISCORD_TOKEN,
     discordClientId: process.env.DISCORD_CLIENT_ID,
@@ -209,6 +217,10 @@ export function getConfig() {
     websiteApiKey: process.env.WEBSITE_API_KEY?.trim() || null,
     websiteTimeoutSeconds: Math.max(1, Number(process.env.WEBSITE_TIMEOUT_SECONDS || 10) || 10),
     websiteMaxAttempts: Math.max(1, Number(process.env.WEBSITE_MAX_ATTEMPTS || 3) || 3),
+    // Google Sheet schedule log through an Apps Script web app. Empty URL = log-only mode.
+    scheduleSheetWebhookUrl: scheduleSheetWebhookUrl || null,
+    scheduleSheetSecret: process.env.SCHEDULE_SHEET_SECRET?.trim() || null,
+    scheduleSheetTimeoutSeconds: Math.max(1, Number(process.env.SCHEDULE_SHEET_TIMEOUT_SECONDS || 10) || 10),
     streamStaffGuildId: process.env.STREAM_STAFF_GUILD_ID || '1473173377005912074',
     streamStaffRoleIds: parseCsvValue(process.env.STREAM_STAFF_ROLE_IDS || '1474118305169019163'),
     streamScheduleCheckMinutes: Math.max(15, Math.min(30, Number(process.env.STREAM_SCHEDULE_CHECK_MINUTES || 20))),
