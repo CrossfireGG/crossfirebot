@@ -163,7 +163,7 @@ Run `/cf sync target:teams` before syncing match rooms so the new Season 7 role 
 
 Match sync checks every selected FACEIT team role before creating channels. If a mapping is missing, it creates no channels and reports the unresolved team names so a round cannot be left half-created.
 
-Season 7 round windows are not guessed. Configure them with `ROUND_WINDOWS` after the official dates are announced. Until then, match-room intros use FACEIT's scheduled time when available and tell admins that the scheduling window still requires verification.
+Season 7 Group Stage round windows are November 2-4, November 5-7, and November 8-10, with defaults on November 3, 6, and 9 at 8:00 PM EST. Teams in any Group Stage round may mutually schedule anywhere inside the full November 2-10 Group Stage window.
 
 Reschedule rules:
 

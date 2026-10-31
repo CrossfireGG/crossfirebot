@@ -117,10 +117,10 @@ const SEASON6_GROUP_STAGE_ID = '6301070e-7096-42b3-830c-d72dfb586398';
 const SEASON6_PLAYOFF_ID = 'c0c0b1fd-fa0b-4488-98b8-be7fdeaee7c0';
 
 const SEASON_SCHEDULE = [
-  { name: 'Group Stage', start: 'August 31, 2026', end: 'September 8, 2026', defaultDate: 'September 4, 2026' },
-  { name: 'Round 1', start: 'August 31, 2026', end: 'September 2, 2026', defaultDate: 'September 1, 2026' },
-  { name: 'Round 2', start: 'September 3, 2026', end: 'September 5, 2026', defaultDate: 'September 4, 2026' },
-  { name: 'Round 3', start: 'September 6, 2026', end: 'September 8, 2026', defaultDate: 'September 7, 2026' },
+  { name: 'Group Stage', start: 'November 2, 2026', end: 'November 10, 2026', defaultDate: 'November 6, 2026' },
+  { name: 'Round 1', start: 'November 2, 2026', end: 'November 4, 2026', defaultDate: 'November 3, 2026', defaultDateTime: 'November 3, 2026 at 8:00 PM EST' },
+  { name: 'Round 2', start: 'November 5, 2026', end: 'November 7, 2026', defaultDate: 'November 6, 2026', defaultDateTime: 'November 6, 2026 at 8:00 PM EST' },
+  { name: 'Round 3', start: 'November 8, 2026', end: 'November 10, 2026', defaultDate: 'November 9, 2026', defaultDateTime: 'November 9, 2026 at 8:00 PM EST' },
   { name: 'Seeding Break', start: 'September 9, 2026', end: 'September 11, 2026', defaultDate: 'September 10, 2026' },
   { name: 'Playoff Stage', start: 'September 12, 2026', end: 'October 11, 2026', defaultDate: 'September 26, 2026' },
   { name: 'Upper Bracket - Round 1', start: 'September 12, 2026', end: 'September 14, 2026', defaultDate: 'September 14, 2026', defaultDateTime: 'Mon, 14 Sep 2026, 20:00 EDT' },
@@ -3840,6 +3840,14 @@ function getSeasonRoundInfo(match) {
     };
   }
 
+  if (isGroupStageMatch(match)) {
+    const groupStageRound = getGroupStageRoundNumber(match);
+    if (groupStageRound === 1) return seasonWindow('Round 1');
+    if (groupStageRound === 2) return seasonWindow('Round 2');
+    if (groupStageRound === 3) return seasonWindow('Round 3');
+    return seasonWindow('Group Stage');
+  }
+
   if (!isLegacySeason6Match(match)) return null;
 
   const stageName = String(match.source?.name || match.round || '').toLowerCase();
@@ -4526,24 +4534,23 @@ function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) 
 }
 
 function getScheduleWindowForMatch(match) {
-  const configuredWindow = getConfiguredRoundWindow(match) ||
-    config.roundWindows[String(canonicalPlayoffRoundName(match.round || match.categoryName)).toLowerCase()];
-  if (configuredWindow) {
-    return {
-      ...configuredWindow,
-      label: 'Scheduling window'
-    };
-  }
-
   if (isGroupStageMatch(match)) {
-    if (!isLegacySeason6Match(match)) return null;
-    const groupStage = seasonWindow('Group Stage');
+    const groupStage = config.roundWindows['group stage'] || seasonWindow('Group Stage');
     if (!groupStage) return null;
 
     return {
       start: groupStage.start,
       end: groupStage.end,
       label: 'Group Stage scheduling window'
+    };
+  }
+
+  const configuredWindow = getConfiguredRoundWindow(match) ||
+    config.roundWindows[String(canonicalPlayoffRoundName(match.round || match.categoryName)).toLowerCase()];
+  if (configuredWindow) {
+    return {
+      ...configuredWindow,
+      label: 'Scheduling window'
     };
   }
 
