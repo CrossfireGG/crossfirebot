@@ -161,6 +161,8 @@ The active FACEIT source is the Season 7 Group Stage championship. Before FACEIT
 
 Run `/cf sync target:teams` before syncing match rooms so the new Season 7 role mappings exist. The Season 7 mapping scope does not reuse hard-coded Season 6 channel or category IDs.
 
+Match sync checks every selected FACEIT team role before creating channels. If a mapping is missing, it creates no channels and reports the unresolved team names so a round cannot be left half-created.
+
 Season 7 round windows are not guessed. Configure them with `ROUND_WINDOWS` after the official dates are announced. Until then, match-room intros use FACEIT's scheduled time when available and tell admins that the scheduling window still requires verification.
 
 Reschedule rules:

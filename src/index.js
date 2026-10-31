@@ -1103,6 +1103,24 @@ async function handleSyncMatches(interaction) {
   let created = 0;
   let skipped = 0;
 
+  if (!config.createMissingMatchTeamRoles) {
+    const teamNames = [...new Set(matches.flatMap((match) => [match.teamA, match.teamB]).filter(Boolean))];
+    const missingRoleTeams = [];
+    for (const teamName of teamNames) {
+      const role = await resolveTeamRole(guild, config, teamName);
+      if (!role) missingRoleTeams.push(teamName);
+    }
+    if (missingRoleTeams.length) {
+      const roundText = roundFilter?.label || 'all detected rounds';
+      await interaction.editReply(truncateDiscordMessage([
+        `Match sync stopped before creating any channels for ${roundText}.`,
+        `Missing Discord role mappings (${missingRoleTeams.length}): ${missingRoleTeams.join(', ')}`,
+        'Run `/cf sync target:teams` first. If a FACEIT name differs from the sheet/Discord role, use `/cf mappings action:link` to connect that FACEIT team name to the correct existing role, then run match sync again.'
+      ].join('\n')));
+      return;
+    }
+  }
+
   for (const match of matches) {
     if (!match.teamA || !match.teamB) {
       skipped += 1;
