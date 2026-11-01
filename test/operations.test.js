@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { PermissionFlagsBits } from 'discord.js';
+import { getConfig } from '../src/config.js';
 import { makeMatchPermissionOverwrites } from '../src/discordProvision.js';
 import { isAuthorizedStaffMember, parseForceDirective } from '../src/operationsPolicy.js';
 import { extractFaceitTeamId } from '../src/sheetRoles.js';
@@ -59,6 +60,38 @@ test('staff authorization uses permissions and explicit IDs, never role names', 
   assert.equal(isAuthorizedStaffMember(namedOnly, config), false);
   assert.equal(isAuthorizedStaffMember(fakeMember(['staff-id']), config), true);
   assert.equal(isAuthorizedStaffMember(fakeMember([], [PermissionFlagsBits.ManageGuild]), config), true);
+});
+
+test('authorized staff role IDs accept spaces, commas, and semicolons', () => {
+  const previous = Object.fromEntries([
+    'DISCORD_TOKEN',
+    'DISCORD_CLIENT_ID',
+    'DISCORD_GUILD_ID',
+    'FACEIT_API_KEY',
+    'FACEIT_SOURCES',
+    'AUTHORIZED_STAFF_ROLE_IDS'
+  ].map((key) => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, {
+      DISCORD_TOKEN: 'test-token',
+      DISCORD_CLIENT_ID: '111111111111111',
+      DISCORD_GUILD_ID: '222222222222222',
+      FACEIT_API_KEY: 'test-key',
+      FACEIT_SOURCES: 'championship:test-id:Test Championship',
+      AUTHORIZED_STAFF_ROLE_IDS: '333333333333333 444444444444444,555555555555555;666666666666666'
+    });
+    assert.deepEqual(getConfig().authorizedStaffRoleIds, [
+      '333333333333333',
+      '444444444444444',
+      '555555555555555',
+      '666666666666666'
+    ]);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('schedule policy override requires an explicit reason', () => {
@@ -225,6 +258,28 @@ test('persistent decisions are serialized and survive a fresh module load', asyn
   assert.equal((await storeB.listTeamMappings('guild:season'))[0].teamName, 'New Team Name');
   assert.equal((await storeB.listTeamMappings('guild:season'))[0].discordRoleId, 'role-1');
   assert.equal((await storeB.getSchedule('match-1')).scheduledAtIso, '2026-10-11T00:00:00.000Z');
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('accepted Tournament Ops schedules remain pending until a separate admin approval', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crossfire-ops-schedule-'));
+  process.env.BOT_DATA_PATH = path.join(tempDir, 'bot-data.json');
+  const store = await import(`../src/store.js?ops-schedule=${Date.now()}`);
+  await store.saveScheduleProposal({
+    id: 'ops-proposal',
+    matchId: 'match-ops',
+    scheduledAt: 'November 3, 2026 at 8:00 PM EST',
+    proposedBy: 'ops-user',
+    proposerTeam: 'ops',
+    override: true,
+    accepted: false
+  });
+  const accepted = await store.acceptScheduleProposal('ops-proposal', 'ops-user');
+  assert.equal(accepted.accepted, true);
+  assert.equal(Boolean(accepted.adminApproved), false);
+  const approved = await store.approveScheduleProposal('ops-proposal', 'admin-user');
+  assert.equal(approved.adminApproved, true);
+  assert.equal(approved.approvedBy, 'admin-user');
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 

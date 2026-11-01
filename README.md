@@ -17,7 +17,7 @@ What it does:
 - Removes stale team, participant, and captain roles when the Google Sheet changes.
 - Gives users in `Team Captain Discord ID` the `Team Captain` role.
 - Lets team members propose and confirm a scheduled match time in Discord.
-- Lets Tournament Ops schedule directly from a match channel without waiting for team acceptance.
+- Lets Tournament Ops submit a schedule without waiting for team acceptance; an admin must still approve or deny it in the internal Discord.
 - Calls a FACEIT schedule adapter when a write endpoint is available.
 - Accepts SCL `demo_ready` webhooks and maintains one ordered Discord message per match with clean, hyperlinked 2D demo links for every ready map.
 
@@ -153,7 +153,7 @@ Inside each match channel:
 - `!reschedule November 2 9:00 PM ET` requests a reschedule.
 - `!accept` lets a member from the other team accept it.
 - `!decline` lets a member from the other team decline it.
-- Users with a role in `SCHEDULE_OVERRIDE_ROLE_IDS` can run `!schedule` in a match room to set the schedule directly without both teams accepting.
+- Users with a role in `SCHEDULE_OVERRIDE_ROLE_IDS` can run `!schedule` without both teams accepting, but the request still requires admin approval.
 - `!admin reason here` or `!calladmin reason here` alerts admins with the match channel and FACEIT link.
 - Old schedule buttons are disabled. Scheduling is command-only inside match rooms.
 
@@ -203,7 +203,7 @@ For a season rollover, assign a brand-new `TEAM_MAPPING_SEASON_ID`, set `CREATE_
 - `/cf mappings action:link team:<name> faceit_team_id:<uuid> role:<role>` links or corrects a mapping while preserving aliases.
 - `/cf mappings action:repair` reapplies mapped roles and private permissions to linked match rooms.
 
-Authorized staff can schedule directly inside a match room. Normal direct scheduling is `!schedule September 28 8 PM ET`. To bypass the configured window, a reason is mandatory: `!schedule October 1 9 PM ET --force production conflict`. Direct staff schedules are approved immediately, audit logged, announced to both teams/staff, and retained over FACEIT status refreshes.
+Authorized staff can submit a schedule inside a match room without team confirmation. Normal scheduling is `!schedule November 3 8 PM ET`. To bypass the configured window, a reason is mandatory: `!schedule November 11 9 PM ET --force production conflict`. Every staff submission is sent to the internal Discord with **Admin approve** and **Admin deny** buttons; the channel is marked yellow and Google Sheets is updated only after approval.
 
 Veto setup requires the playoff championship ID in `PLAYOFF_SOURCE_IDS`, exactly seven maps in `VETO_MAP_POOL`, and actual tournament seeds in `VETO_SEEDS`. The FACEIT Open API match payload does not provide a verified tournament seed, so the bot never substitutes Elo, standings, or bracket position. `/cf veto action:seeds` stores a persistent per-match override; for the Grand Final, also set `advantage_team` to the actual upper-bracket winner (or configure `VETO_ADVANTAGE_TEAM`). `/cf veto action:start|inspect|reset|cancel` manages a linked playoff room. BO3 uses ban, ban, pick, pick, ban, ban, decider. Grand Final uses two bans and four picks; the remaining map is awarded to the explicitly configured upper-bracket winner for a 1-0 start and is not played. Veto output is Discord-only and must be entered into FACEIT by staff.
 

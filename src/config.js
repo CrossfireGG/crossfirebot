@@ -169,9 +169,9 @@ export function getConfig() {
     matchAccessRoleIds: parseCsvValue(process.env.MATCH_ACCESS_ROLE_IDS || '1128907825167482900,1353921199016644700'),
     matchAccessRoleNames: parseCsvValue(process.env.MATCH_ACCESS_ROLE_NAMES || ''),
     scheduleOverrideRoleIds: parseCsvValue(process.env.SCHEDULE_OVERRIDE_ROLE_IDS || '1128907825167482900'),
-    authorizedStaffRoleIds: parseCsvValue(process.env.AUTHORIZED_STAFF_ROLE_IDS || [
+    authorizedStaffRoleIds: parseSnowflakeList(process.env.AUTHORIZED_STAFF_ROLE_IDS || [
       process.env.DISCORD_STAFF_ROLE_ID,
-      process.env.ADMIN_ALERT_ROLE_IDS
+      ...parseSnowflakeList(process.env.ADMIN_ALERT_ROLE_IDS || '')
     ].filter(Boolean).join(',')),
     roleSyncPairs: parseRoleSyncPairs(
       process.env.ROLE_SYNC_PAIRS ||

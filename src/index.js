@@ -2167,45 +2167,41 @@ async function handleTextScheduleProposal(message, content, kind) {
     source: 'text',
     validation,
     override: canScheduleDirectly,
-    overrideReason: bypassPolicy ? forceDirective.reason : null
+    overrideReason: bypassPolicy ? forceDirective.reason : null,
+    previousMatchStatus: stored.match.status || null,
+    previousScheduledAt: stored.match.scheduledAt || null,
+    previousScheduledByDiscord: Boolean(stored.match.scheduledByDiscord)
   };
 
   await saveScheduleProposal(proposal);
 
   if (canScheduleDirectly) {
-    const oldTime = currentScheduleText(stored);
-    const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id, { markScheduled: true });
-    await approveScheduleProposal(proposal.id, message.author.id);
+    const faceitLine = await applyAcceptedSchedule(message.channel, stored, proposal, message.author.id);
     await appendAuditLog({
-      type: 'admin_schedule_override',
+      type: 'ops_schedule_submitted',
       matchId: stored.match.id,
       actorId: message.author.id,
-      oldTime,
+      oldTime: currentScheduleText(stored),
       newTime: proposal.scheduledAt,
       newTimeIso: proposal.scheduledAtIso,
       override: bypassPolicy,
-      reason: proposal.overrideReason || 'Authorized direct schedule inside configured policy'
+      reason: proposal.overrideReason || 'Tournament Ops submitted without team acceptance'
     });
     await message.channel.send({
       content: `<@&${stored.discord.teamARoleId}> <@&${stored.discord.teamBRoleId}>`,
       embeds: [scheduleStatusEmbed({
-        title: kind === 'reschedule' ? 'Reschedule Set By Tournament Ops' : 'Schedule Set By Tournament Ops',
-        color: EMBED_COLORS.admin,
+        title: kind === 'reschedule' ? 'Reschedule Submitted By Tournament Ops' : 'Schedule Submitted By Tournament Ops',
+        color: EMBED_COLORS.warning,
         stored,
         proposal,
-        actorLabel: 'Set By',
+        actorLabel: 'Submitted By',
         actorId: message.author.id,
-        footer: faceitLine,
+        footer: 'Pending admin approval. The match is not marked scheduled yet.',
         warning: [validation.warning, proposal.overrideReason ? `Policy override: ${proposal.overrideReason}` : null].filter(Boolean).join('\n') || null
       })],
       allowedMentions: { roles: [stored.discord.teamARoleId, stored.discord.teamBRoleId], users: [], repliedUser: false }
     });
-    await notifyDirectAdminSchedule(message.guild, stored, proposal, message.author.id, faceitLine);
-    const sheetWarning = await logScheduleToSheet({ stored, proposal, approvedBy: message.author.id, kind });
-    if (sheetWarning) {
-      await message.reply({ content: sheetWarning, allowedMentions: { repliedUser: false } }).catch(() => null);
-    }
-    await upsertMatchIntroMessage(message.channel, { ...stored.match, status: 'discord_scheduled', scheduledByDiscord: true, scheduledAt: proposal.scheduledAt });
+    await notifyAdmins(message.guild, stored, proposal, message.author.id, faceitLine);
     return;
   }
 
@@ -3552,7 +3548,7 @@ function truncateText(value, maxLength) {
 
 async function handleDeprecatedScheduleInteraction(interaction) {
   const response = {
-    content: 'Scheduling is command-only now. In the match room, use `!schedule November 2 8 PM ET`; teams confirm with `!accept`, and Tournament Ops can schedule directly.',
+    content: 'Scheduling is command-only now. In the match room, use `!schedule November 2 8 PM ET`; teams confirm with `!accept`, while Tournament Ops can skip team confirmation but still require admin approval.',
     components: [],
     ephemeral: true
   };
@@ -3569,7 +3565,7 @@ async function handleDeprecatedScheduleInteraction(interaction) {
   }
 }
 
-async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy, options = {}) {
+async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy) {
   const acceptedProposal = await acceptScheduleProposal(proposal.id, acceptedBy);
   if (!acceptedProposal) {
     await saveSchedule(proposal.matchId, {
@@ -3583,24 +3579,13 @@ async function applyAcceptedSchedule(channel, stored, proposal, acceptedBy, opti
       overrideReason: proposal.overrideReason || null
     });
   }
-  const result = await scheduleFaceitMatch(
-    config,
-    proposal.matchId,
-    proposal.scheduledAtIso || proposal.scheduledAt,
-    proposal.timezone
-  );
-  const faceitLine = result.skipped
-    ? adminActionLine(proposal)
-    : 'FACEIT schedule updated.';
+  const faceitLine = adminActionLine(proposal);
   const scheduledMatch = {
     ...stored.match,
-    status: options.markScheduled ? 'discord_scheduled' : 'schedule_pending_admin',
-    scheduledByDiscord: Boolean(options.markScheduled),
-    scheduledAt: proposal.scheduledAt
+    status: stored.match.scheduledByDiscord ? stored.match.status : 'schedule_pending_admin',
+    scheduledByDiscord: Boolean(stored.match.scheduledByDiscord),
+    scheduledAt: stored.match.scheduledAt || null
   };
-  if (options.markScheduled) {
-    await updateMatchChannelName(channel, scheduledMatch);
-  }
   await saveMatch(scheduledMatch, stored.discord);
   return faceitLine;
 }
@@ -3609,9 +3594,13 @@ async function notifyAdmins(guild, stored, proposal, acceptedBy, faceitLine) {
   const channel = await getScheduleAdminChannel();
   const allowedMentions = getAdminAllowedMentions(guild);
   const adminEmbed = scheduleStatusEmbed({
-    title: proposal.kind === 'reschedule'
-      ? 'Action Needed: Approve Reschedule'
-      : 'Action Needed: Schedule On FACEIT',
+    title: proposal.override
+      ? (proposal.kind === 'reschedule'
+          ? 'Action Needed: Approve Tournament Ops Reschedule'
+          : 'Action Needed: Approve Tournament Ops Schedule')
+      : (proposal.kind === 'reschedule'
+          ? 'Action Needed: Approve Reschedule'
+          : 'Action Needed: Schedule On FACEIT'),
     color: EMBED_COLORS.warning,
     stored,
     proposal,
@@ -3638,30 +3627,6 @@ async function notifyAdmins(guild, stored, proposal, acceptedBy, faceitLine) {
     embeds: [adminEmbed],
     allowedMentions,
     components: [adminDecisionButtons(proposal.id, stored.discord.channelId)]
-  });
-}
-
-async function notifyDirectAdminSchedule(guild, stored, proposal, adminId, faceitLine) {
-  const target = await getScheduleAdminChannel() || await guild.channels.fetch(stored.discord.channelId).catch(() => null);
-  if (!target) return;
-  const adminMentions = getAdminAllowedMentions(guild);
-  await target.send({
-    content: getStaffMentions(guild),
-    embeds: [scheduleStatusEmbed({
-      title: proposal.kind === 'reschedule' ? 'Reschedule Set By Authorized Staff' : 'Schedule Set By Authorized Staff',
-      color: EMBED_COLORS.admin,
-      stored,
-      proposal,
-      actorLabel: 'Administrator',
-      actorId: adminId,
-      footer: faceitLine,
-      warning: proposal.overrideReason ? `Bot policy override: ${proposal.overrideReason}` : null
-    })],
-    allowedMentions: {
-      roles: adminMentions.roles,
-      users: [adminId],
-      repliedUser: false
-    }
   });
 }
 
@@ -3752,7 +3717,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     '2. The bot detects the timezone, records the proposed time, and pings the other team role.',
     '3. A member from the other team posts `!accept` to confirm or `!decline` to reject.',
     `4. After \`!accept\`, ${adminNotificationLine}`,
-    'Tournament Ops can use `!schedule November 2 8 PM ET` to set the time directly without team approval.',
+    'Tournament Ops can use `!schedule November 2 8 PM ET` without team confirmation, but an admin must still approve it.',
     '',
     '**Other commands**',
     '`!propose November 2 8:00 PM ET` - same as `!schedule`',
@@ -4012,6 +3977,20 @@ async function handleAdminScheduleDecision(interaction, approved) {
   }
 
   if (approved) {
+    let faceitNote = '';
+    if (stored && proposal) {
+      try {
+        const result = await scheduleFaceitMatch(
+          config,
+          proposal.matchId,
+          proposal.scheduledAtIso || proposal.scheduledAt,
+          proposal.timezone
+        );
+        faceitNote = result.skipped ? ' FACEIT still needs to be updated manually.' : ' FACEIT was updated.';
+      } catch (error) {
+        faceitNote = ` FACEIT update failed: ${error?.message || error}`;
+      }
+    }
     let renameResult = null;
     if (matchChannel && stored) {
       renameResult = await markMatchChannelScheduled(matchChannel, stored, proposal);
@@ -4041,8 +4020,16 @@ async function handleAdminScheduleDecision(interaction, approved) {
       ? await logScheduleToSheet({ stored, proposal, approvedBy: interaction.user.id, acceptedBy: proposal?.acceptedBy || null })
       : null;
     const sheetNote = sheetWarning ? ` ${sheetWarning}` : '';
-    await interaction.editReply(`Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}${sheetNote}`);
+    await interaction.editReply(`Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}${faceitNote}${sheetNote}`);
   } else {
+    if (matchChannel && stored && proposal) {
+      await saveMatch({
+        ...stored.match,
+        status: proposal.previousMatchStatus || 'unknown',
+        scheduledAt: proposal.previousScheduledAt || null,
+        scheduledByDiscord: Boolean(proposal.previousScheduledByDiscord)
+      }, stored.discord);
+    }
     await appendAuditLog({ type: 'schedule_denied', matchId: stored?.match?.id || proposal?.matchId, actorId: interaction.user.id });
     await interaction.message.react('❌').catch(() => null);
     const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
