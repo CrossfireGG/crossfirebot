@@ -141,11 +141,12 @@ export function getConfig() {
   ].filter((value, index, values) => value && values.indexOf(value) === index);
 
   const websiteEndpoint = process.env.WEBSITE_ENDPOINT?.trim() || '';
+  const websiteApiKey = process.env.CROSSFIREBOT_API_KEY?.trim() || process.env.WEBSITE_API_KEY?.trim() || '';
   if (websiteEndpoint && !/^https?:\/\//i.test(websiteEndpoint)) {
     throw new Error('WEBSITE_ENDPOINT must be an http(s) URL');
   }
-  if (websiteEndpoint && !process.env.WEBSITE_API_KEY?.trim()) {
-    throw new Error('WEBSITE_API_KEY is required when WEBSITE_ENDPOINT is set');
+  if (websiteEndpoint && !websiteApiKey) {
+    throw new Error('CROSSFIREBOT_API_KEY or WEBSITE_API_KEY is required when WEBSITE_ENDPOINT is set');
   }
 
   const scheduleSheetWebhookUrl = process.env.SCHEDULE_SHEET_WEBHOOK_URL?.trim() || '';
@@ -214,7 +215,7 @@ export function getConfig() {
     streamAllowedPlatforms: parseCsvValue(process.env.STREAM_ALLOWED_PLATFORMS || '').map((value) => value.toLowerCase()),
     // Website integration for approved streams. Empty endpoint = log-only mode.
     websiteEndpoint: websiteEndpoint || null,
-    websiteApiKey: process.env.WEBSITE_API_KEY?.trim() || null,
+    websiteApiKey: websiteApiKey || null,
     websiteTimeoutSeconds: Math.max(1, Number(process.env.WEBSITE_TIMEOUT_SECONDS || 10) || 10),
     websiteMaxAttempts: Math.max(1, Number(process.env.WEBSITE_MAX_ATTEMPTS || 3) || 3),
     // Google Sheet schedule log through an Apps Script web app. Empty URL = log-only mode.

@@ -63,7 +63,7 @@ git commit -m "Update bot"
 git push
 ```
 
-For text commands like `!schedule`, `!propose`, `!reschedule`, `!accept`, `!decline`, `!admin`, and `!calladmin`, enable **Message Content Intent** in Discord Developer Portal > Bot.
+For text commands like `!schedule`, `!propose`, `!reschedule`, `!accept`, `!decline`, `!cancel`, `!admin`, and `!calladmin`, enable **Message Content Intent** in Discord Developer Portal > Bot.
 
 For nickname updates, the bot needs **Manage Nicknames**, and its role must be above the players it is renaming.
 
@@ -153,6 +153,7 @@ Inside each match channel:
 - `!reschedule November 2 9:00 PM ET` requests a reschedule.
 - `!accept` lets a member from the other team accept it.
 - `!decline` lets a member from the other team decline it.
+- `!cancel` lets the original proposer withdraw an open proposal before acceptance; authorized staff can also cancel it.
 - Users with a role in `SCHEDULE_OVERRIDE_ROLE_IDS` can run `!schedule` without both teams accepting, but the request still requires admin approval.
 - `!admin reason here` or `!calladmin reason here` alerts admins with the match channel and FACEIT link.
 - Old schedule buttons are disabled. Scheduling is command-only inside match rooms.

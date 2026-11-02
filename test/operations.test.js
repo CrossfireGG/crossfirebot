@@ -317,6 +317,58 @@ test('accepted Tournament Ops schedules remain pending until a separate admin ap
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
+test('a canceled schedule proposal cannot be accepted or recovered as open', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crossfire-cancel-proposal-'));
+  process.env.BOT_DATA_PATH = path.join(tempDir, 'bot-data.json');
+  const store = await import(`../src/store.js?cancel-proposal=${Date.now()}`);
+  await store.saveScheduleProposal({
+    id: 'proposal-cancel',
+    matchId: 'match-cancel',
+    scheduledAt: 'November 6, 2026 at 9:00 PM EST',
+    proposedBy: 'team-user',
+    proposerTeam: 'teamA',
+    accepted: false
+  });
+  const canceled = await store.cancelScheduleProposal('proposal-cancel', 'team-user');
+  assert.equal(canceled.canceled, true);
+  assert.equal(canceled.canceledBy, 'team-user');
+  assert.equal(await store.getLatestOpenScheduleProposalForMatch('match-cancel'), null);
+  assert.equal(await store.acceptScheduleProposal('proposal-cancel', 'other-team-user'), null);
+  assert.equal(await store.declineScheduleProposal('proposal-cancel', 'other-team-user'), null);
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
+test('CROSSFIREBOT_API_KEY is preferred for website publishing', () => {
+  const previous = Object.fromEntries([
+    'DISCORD_TOKEN',
+    'DISCORD_CLIENT_ID',
+    'DISCORD_GUILD_ID',
+    'FACEIT_API_KEY',
+    'FACEIT_SOURCES',
+    'WEBSITE_ENDPOINT',
+    'WEBSITE_API_KEY',
+    'CROSSFIREBOT_API_KEY'
+  ].map((key) => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, {
+      DISCORD_TOKEN: 'test-token',
+      DISCORD_CLIENT_ID: '111111111111111',
+      DISCORD_GUILD_ID: '222222222222222',
+      FACEIT_API_KEY: 'test-key',
+      FACEIT_SOURCES: 'championship:test-id:Test Championship',
+      WEBSITE_ENDPOINT: 'https://example.com/api/caster-streams',
+      WEBSITE_API_KEY: 'legacy-key',
+      CROSSFIREBOT_API_KEY: 'crossfirebot-key'
+    });
+    assert.equal(getConfig().websiteApiKey, 'crossfirebot-key');
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('duplicate active stream requests are rejected atomically per caster and match', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crossfire-stream-dedupe-'));
   process.env.BOT_DATA_PATH = path.join(tempDir, 'bot-data.json');

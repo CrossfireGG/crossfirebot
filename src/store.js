@@ -198,14 +198,14 @@ export async function getScheduleProposal(proposalId) {
 export async function getLatestOpenScheduleProposalForMatch(matchId) {
   const db = await snapshot();
   return Object.values(db.scheduleProposals)
-    .filter((proposal) => proposal.matchId === matchId && !proposal.accepted && !proposal.declined)
+    .filter((proposal) => proposal.matchId === matchId && !proposal.accepted && !proposal.declined && !proposal.canceled)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0] || null;
 }
 
 export async function acceptScheduleProposal(proposalId, acceptedBy) {
   return mutateDb((db) => {
     const proposal = db.scheduleProposals[proposalId];
-    if (!proposal || proposal.declined || proposal.accepted) return null;
+    if (!proposal || proposal.declined || proposal.canceled || proposal.accepted) return null;
     db.scheduleProposals[proposalId] = {
       ...proposal,
       accepted: true,
@@ -230,7 +230,7 @@ export async function acceptScheduleProposal(proposalId, acceptedBy) {
 export async function approveScheduleProposal(proposalId, approvedBy) {
   return mutateDb((db) => {
     const proposal = db.scheduleProposals[proposalId];
-    if (!proposal || proposal.adminDenied || proposal.adminApproved) return null;
+    if (!proposal || proposal.canceled || proposal.adminDenied || proposal.adminApproved) return null;
     db.scheduleProposals[proposalId] = {
       ...proposal,
       adminApproved: true,
@@ -254,7 +254,7 @@ export async function approveScheduleProposal(proposalId, approvedBy) {
 export async function denyScheduleProposal(proposalId, deniedBy, reason = '') {
   return mutateDb((db) => {
     const proposal = db.scheduleProposals[proposalId];
-    if (!proposal || proposal.adminApproved || proposal.adminDenied) return null;
+    if (!proposal || proposal.canceled || proposal.adminApproved || proposal.adminDenied) return null;
     db.scheduleProposals[proposalId] = {
       ...proposal,
       adminDenied: true,
@@ -269,11 +269,25 @@ export async function denyScheduleProposal(proposalId, deniedBy, reason = '') {
 export async function declineScheduleProposal(proposalId, declinedBy) {
   return mutateDb((db) => {
     const proposal = db.scheduleProposals[proposalId];
-    if (!proposal || proposal.accepted || proposal.declined) return null;
+    if (!proposal || proposal.accepted || proposal.declined || proposal.canceled) return null;
     db.scheduleProposals[proposalId] = {
       ...proposal,
       declined: true,
       declinedBy,
+      updatedAt: new Date().toISOString()
+    };
+    return db.scheduleProposals[proposalId];
+  });
+}
+
+export async function cancelScheduleProposal(proposalId, canceledBy) {
+  return mutateDb((db) => {
+    const proposal = db.scheduleProposals[proposalId];
+    if (!proposal || proposal.accepted || proposal.declined || proposal.canceled || proposal.adminApproved) return null;
+    db.scheduleProposals[proposalId] = {
+      ...proposal,
+      canceled: true,
+      canceledBy,
       updatedAt: new Date().toISOString()
     };
     return db.scheduleProposals[proposalId];

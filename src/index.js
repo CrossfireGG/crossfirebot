@@ -28,6 +28,7 @@ import {
   acceptScheduleProposal,
   appendAuditLog,
   approveScheduleProposal,
+  cancelScheduleProposal,
   claimPostCastReminder,
   claimStreamApproval,
   claimStreamDeliveryPrompt,
@@ -668,6 +669,7 @@ async function handleCommandHelp(interaction) {
       '`!reschedule November 2 9 PM ET` - request a new time.',
       '`!accept` - accept the open proposal from the other team.',
       '`!decline` - decline the open proposal.',
+      '`!cancel` - cancel your open proposal before it is accepted.',
       '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.',
       '`!request` - open the community stream request workflow.',
       '`/cf streams action:pending|approved|publish_failed|inspect|retry|cancel|revoke|complete` - manage caster requests and website publishing.',
@@ -708,6 +710,10 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (content.toLowerCase() === '!decline') {
       await handleTextDecline(message);
+    }
+
+    if (content.toLowerCase() === '!cancel') {
+      await handleTextCancelProposal(message);
     }
 
     if (/^!(calladmin|admin)\b/i.test(content)) {
@@ -1480,12 +1486,23 @@ async function getPendingScheduleFromRecentMessages(channel, stored) {
   const messages = await channel.messages.fetch({ limit: 50 }).catch(() => null);
   if (!messages) return null;
 
-  const proposalMessage = [...messages.values()]
-    .filter((message) => message.author?.id === client.user?.id)
-    .find((message) => isScheduleProposalMessage(message, stored.match));
-  if (!proposalMessage) return null;
+  for (const message of messages.values()) {
+    if (message.author?.id !== client.user?.id) continue;
+    // Newest messages are checked first. A decision/cancellation closes any
+    // older proposal so restart recovery cannot resurrect it.
+    if (isScheduleResolutionMessage(message, stored.match)) return null;
+    if (isScheduleProposalMessage(message, stored.match)) return buildProposalFromMessage(message, stored);
+  }
+  return null;
+}
 
-  return buildProposalFromMessage(proposalMessage, stored);
+function isScheduleResolutionMessage(message, match) {
+  const matchTitle = `${match.teamA} vs ${match.teamB}`;
+  const content = String(message.content || '');
+  const titles = (message.embeds || []).map((embed) => String(embed.title || '')).join('\n');
+  const text = `${content}\n${titles}`;
+  return /(schedule|reschedule).*(accepted|declined|canceled|approved|denied|submitted by tournament ops)/i.test(text)
+    && (content.includes(matchTitle) || (message.embeds || []).some((embed) => String(embed.description || '').includes(matchTitle)));
 }
 
 function isScheduleProposalMessage(message, match) {
@@ -2508,6 +2525,58 @@ async function handleTextDecline(message) {
   });
 }
 
+async function handleTextCancelProposal(message) {
+  const stored = await getStoredMatchForChannel(message.channel);
+  if (!stored) {
+    await message.reply(await buildUnlinkedMatchChannelMessage(message.channel, [
+      'Use `!cancel` inside a match channel created by the bot.',
+      'If this is a match room, run `/cf audit target:matches fix:true` so I can relink it.'
+    ]));
+    return;
+  }
+
+  const proposal = await getRecoverableScheduleProposal(message.channel, stored);
+  if (!proposal) {
+    await message.reply('There is no open schedule proposal for this match.');
+    return;
+  }
+
+  const member = await message.guild.members.fetch(message.author.id);
+  const canCancel = proposal.proposedBy === message.author.id || isAuthorizedStaffMember(member, config);
+  if (!canCancel) {
+    await message.reply('Only the person who proposed this time or an authorized staff member can cancel it.');
+    return;
+  }
+
+  if (!await getScheduleProposal(proposal.id)) await saveScheduleProposal(proposal);
+  const canceled = await cancelScheduleProposal(proposal.id, message.author.id);
+  if (!canceled) {
+    await message.reply('That proposal has already been accepted, declined, or canceled.');
+    return;
+  }
+
+  await clearPendingScheduleFromChannelTopic(message.channel, proposal.id);
+  await appendAuditLog({
+    type: 'schedule_proposal_canceled',
+    matchId: stored.match.id,
+    actorId: message.author.id,
+    proposalId: proposal.id,
+    scheduledAt: proposal.scheduledAt
+  });
+  await message.channel.send({
+    embeds: [scheduleStatusEmbed({
+      title: proposal.kind === 'reschedule' ? 'Reschedule Proposal Canceled' : 'Schedule Proposal Canceled',
+      color: 0x7f8c8d,
+      stored,
+      proposal,
+      timeLabel: 'Canceled Time',
+      actorLabel: 'Canceled By',
+      actorId: message.author.id,
+      footer: 'A team member can propose a new time with !schedule November 6 9:00 PM EST.'
+    })]
+  });
+}
+
 async function handleCallAdmin(message, content) {
   const stored = await getStoredMatchForChannel(message.channel);
   if (!stored) {
@@ -2960,10 +3029,9 @@ async function sendStreamRequestToStaff(request, suppliedChannel = null) {
   if (!channel?.isTextBased?.()) throw new Error('STREAM_REQUEST_CHANNEL_ID is not configured or accessible');
   const embed = streamRequestEmbed(request);
   const message = await channel.send({
-    content: getStaffMentions(channel.guild),
     embeds: [embed],
     components: streamReviewComponents(request),
-    allowedMentions: getAdminAllowedMentions(channel.guild)
+    allowedMentions: { roles: [], users: [], repliedUser: false }
   });
   await updateStreamRequest(request.id, { staffChannelId: channel.id, staffMessageId: message.id, staffPostError: null }, ['pending']);
 }
@@ -4133,6 +4201,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     '**Other commands**',
     '`!propose November 2 8:00 PM ET` - same as `!schedule`',
     '`!reschedule November 2 9:00 PM ET` - team member requests a new time',
+    '`!cancel` - cancel your open proposal before the other team accepts it',
     'Schedules and reschedules must stay inside this match window. Reschedules within 24 hours of match time require admin override.',
     isGroupStageMatch(displayMatch)
       ? scheduleWindow
