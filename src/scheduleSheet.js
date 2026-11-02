@@ -3,6 +3,7 @@
 // the sheet owner deploys.
 
 const DEFAULT_TIMEOUT_MS = 45_000;
+const SCHEDULE_SHEET_TIME_ZONE = 'America/New_York';
 
 // Matches the existing sheet style, e.g. "Monday, November 2, 2026".
 function formatDateInZone(date, timeZone) {
@@ -18,7 +19,9 @@ function formatTimeInZone(date, timeZone) {
 export function splitScheduleForSheet({ scheduledAtIso, scheduledAt, timezone }) {
   const date = scheduledAtIso ? new Date(scheduledAtIso) : null;
   if (date && !Number.isNaN(date.getTime())) {
-    const zone = timezone || 'America/New_York';
+    // The operations sheet is intentionally normalized to Eastern Time even when
+    // a team entered CST/PST or another accepted timezone in Discord.
+    const zone = SCHEDULE_SHEET_TIME_ZONE;
     return { date: formatDateInZone(date, zone), time: formatTimeInZone(date, zone) };
   }
   return { date: String(scheduledAt || '').trim(), time: '' };

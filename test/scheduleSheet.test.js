@@ -12,11 +12,15 @@ import {
 
 const quietLog = { info() {}, warn() {}, error() {} };
 
-test('schedule split formats date and time in the proposal timezone', () => {
+test('schedule split always formats date and time in Eastern Time', () => {
   // 2026-11-03T01:00Z is Nov 2, 8:00 PM in New York (EST).
   assert.deepEqual(
     splitScheduleForSheet({ scheduledAtIso: '2026-11-03T01:00:00.000Z', timezone: 'America/New_York' }),
     { date: 'Monday, November 2, 2026', time: '8:00 PM EST' }
+  );
+  assert.deepEqual(
+    splitScheduleForSheet({ scheduledAtIso: '2026-11-08T02:00:00.000Z', timezone: 'America/Chicago' }),
+    { date: 'Saturday, November 7, 2026', time: '9:00 PM EST' }
   );
   assert.deepEqual(
     splitScheduleForSheet({ scheduledAtIso: null, scheduledAt: 'Tuesday 8 PM ET' }),

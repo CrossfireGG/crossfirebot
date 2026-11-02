@@ -145,26 +145,19 @@ function faceitLinkKey(value) {
   return room ? room[1] : text.replace(/\/+$/, '');
 }
 
-// Fills in missing Sort Keys for rows people typed by hand, then sorts rows 2..last.
+// Rebuilds Sort Keys from the displayed Date and Time on every pass, then sorts
+// rows 2..last. Recomputing prevents a manually edited time from keeping a stale key.
 function sortByDate(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 3) return;
   const lastColumn = Math.max(sheet.getLastColumn(), SORT_KEY_COLUMN);
   const data = sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues();
 
-  let changed = false;
   data.forEach((cells) => {
-    if (!cells[SORT_KEY_COLUMN - 1]) {
-      const key = sortKeyFromText(cells[DATE_COLUMN - 1], cells[TIME_COLUMN - 1]);
-      if (key) {
-        cells[SORT_KEY_COLUMN - 1] = key;
-        changed = true;
-      }
-    }
+    const key = sortKeyFromText(cells[DATE_COLUMN - 1], cells[TIME_COLUMN - 1]);
+    cells[SORT_KEY_COLUMN - 1] = key || '';
   });
-  if (changed) {
-    sheet.getRange(2, SORT_KEY_COLUMN, data.length, 1).setValues(data.map((cells) => [cells[SORT_KEY_COLUMN - 1]]));
-  }
+  sheet.getRange(2, SORT_KEY_COLUMN, data.length, 1).setValues(data.map((cells) => [cells[SORT_KEY_COLUMN - 1]]));
 
   sheet.getRange(2, 1, lastRow - 1, lastColumn).sort({ column: SORT_KEY_COLUMN, ascending: true });
 }
