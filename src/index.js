@@ -92,6 +92,7 @@ import {
   validateStreamRequest,
   STREAM_WITHDRAWABLE_STATUSES
 } from './streamRequest.js';
+import { parseScheduleClock } from './scheduleInput.js';
 import { createWebsitePublisher } from './websitePublisher.js';
 import { buildScheduleSheetRow, buildStreamLinkSheetRow, createScheduleSheet } from './scheduleSheet.js';
 import { isAuthorizedStaffMember, parseForceDirective } from './operationsPolicy.js';
@@ -4915,7 +4916,9 @@ async function notifyStaffVetoComplete(veto, stored) {
 }
 
 function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) {
-  const proposedDate = parsedDate || parseScheduleText(proposedText);
+  // Only compare dates produced by the strict schedule parser. Date.parse()
+  // assigns surprising legacy years to inputs such as "November 6 9:00 EST".
+  const proposedDate = parsedDate;
   const window = getScheduleWindowForMatch(stored.match);
   const result = {
     allowed: true,
@@ -5009,19 +5012,14 @@ function parseScheduleInput(value) {
     .replace(/\bgame\s*time\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const timeMatch = cleaned.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
-  if (!timeMatch) return null;
+  const clock = parseScheduleClock(cleaned);
+  if (!clock) return null;
 
   const zone = detectScheduleTimezone(cleaned);
   const dateParts = parseScheduleDateParts(cleaned, zone.timeZone);
   if (!dateParts) return null;
 
-  let hour = Number(timeMatch[1]);
-  const minute = Number(timeMatch[2] || 0);
-  const ampm = timeMatch[3].toLowerCase();
-  if (ampm === 'pm' && hour !== 12) hour += 12;
-  if (ampm === 'am' && hour === 12) hour = 0;
-  if (hour > 23 || minute > 59) return null;
+  const { hour, minute } = clock;
 
   const date = zonedTimeToUtc(
     dateParts.year,
