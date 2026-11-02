@@ -2149,10 +2149,6 @@ async function handleTextScheduleProposal(message, content, kind) {
   }
 
   const parsedSchedule = parseScheduleInput(proposedText);
-  if (parsedSchedule && isAmbiguousNumericScheduleDate(proposedText)) {
-    await message.reply(`That numeric date is ambiguous. I would read it as **${parsedSchedule.display}**. Please resubmit with the month written out, for example \`!${kind === 'reschedule' ? 'reschedule' : 'schedule'} September 8 8 PM ET\`.`);
-    return;
-  }
   const validation = validateScheduleRequest(stored, proposedText, kind, parsedSchedule?.date || null);
   const bypassPolicy = canScheduleDirectly && !validation.allowed && Boolean(forceDirective.reason);
   if (!validation.allowed && !bypassPolicy) {
@@ -4850,6 +4846,14 @@ function parseScheduleInput(value) {
     zone.timeZone
   );
   if (!date || Number.isNaN(date.getTime())) return null;
+  const resolved = dateTimePartsInTimeZone(date, zone.timeZone);
+  if (
+    resolved.year !== dateParts.year
+    || resolved.month !== dateParts.month
+    || resolved.day !== dateParts.day
+    || resolved.hour !== hour
+    || resolved.minute !== minute
+  ) return null;
 
   return {
     date,
@@ -4859,12 +4863,6 @@ function parseScheduleInput(value) {
     display: formatScheduleDisplay(date, zone.timeZone),
     discordTimestamp: discordTimestamp(date.toISOString(), 'F')
   };
-}
-
-function isAmbiguousNumericScheduleDate(value) {
-  const match = String(value || '').match(/\b(\d{1,2})[\/-](\d{1,2})(?:[\/-]\d{2,4})?\b/);
-  if (!match) return false;
-  return Number(match[1]) >= 1 && Number(match[1]) <= 12 && Number(match[2]) >= 1 && Number(match[2]) <= 12;
 }
 
 function detectScheduleTimezone(value) {
