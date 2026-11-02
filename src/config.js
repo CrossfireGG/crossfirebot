@@ -220,7 +220,7 @@ export function getConfig() {
     // Google Sheet schedule log through an Apps Script web app. Empty URL = log-only mode.
     scheduleSheetWebhookUrl: scheduleSheetWebhookUrl || null,
     scheduleSheetSecret: process.env.SCHEDULE_SHEET_SECRET?.trim() || null,
-    scheduleSheetTimeoutSeconds: Math.max(1, Number(process.env.SCHEDULE_SHEET_TIMEOUT_SECONDS || 10) || 10),
+    scheduleSheetTimeoutSeconds: Math.max(1, Number(process.env.SCHEDULE_SHEET_TIMEOUT_SECONDS || 45) || 45),
     streamStaffGuildId: process.env.STREAM_STAFF_GUILD_ID || '1473173377005912074',
     streamStaffRoleIds: parseCsvValue(process.env.STREAM_STAFF_ROLE_IDS || '1474118305169019163'),
     streamScheduleCheckMinutes: Math.max(15, Math.min(30, Number(process.env.STREAM_SCHEDULE_CHECK_MINUTES || 20))),

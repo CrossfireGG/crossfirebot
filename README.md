@@ -185,7 +185,7 @@ Setup:
 2. Deploy > New deployment > Web app, Execute as **Me**, Who has access **Anyone**. Copy the `/exec` URL. Opening it in a browser should show `ok`.
 3. Set `SCHEDULE_SHEET_WEBHOOK_URL` to that URL and `SCHEDULE_SHEET_SECRET` to the same secret.
 
-Without `SCHEDULE_SHEET_WEBHOOK_URL` the bot runs in log-only mode. A failed sheet write never blocks the Discord approval; the approving staff member sees a warning and the failure is audit logged as `schedule_sheet_failed` (schedules) or `stream_link_sheet_failed` (stream links). Edits to the script need a new deployment version before the live URL picks them up.
+Without `SCHEDULE_SHEET_WEBHOOK_URL` the bot runs in log-only mode. Sheet requests allow 45 seconds by default because Apps Script may wait for its document lock and sort the schedule tab. A failed sheet write never blocks the Discord approval; the approving staff member sees a warning and the failure is audit logged as `schedule_sheet_failed` (schedules) or `stream_link_sheet_failed` (stream links). Edits to the script need a new deployment version before the live URL picks them up.
 
 ## Persistent operations workflows
 

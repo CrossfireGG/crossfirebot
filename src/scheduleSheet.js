@@ -2,7 +2,7 @@
 // through an Apps Script web app. See docs/schedule-log-apps-script.gs for the script
 // the sheet owner deploys.
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 45_000;
 
 // Matches the existing sheet style, e.g. "Monday, November 2, 2026".
 function formatDateInZone(date, timeZone) {
@@ -144,7 +144,9 @@ export class AppsScriptScheduleSheet {
       }
       return { ok: true, skipped: false, error: null, body };
     } catch (error) {
-      const message = error?.name === 'AbortError' ? `timed out after ${this.timeoutMs}ms` : (error?.message || String(error));
+      const message = error?.name === 'AbortError'
+        ? `timed out after ${this.timeoutMs}ms; Apps Script may still finish the write, so check the sheet before retrying`
+        : (error?.message || String(error));
       return { ok: false, skipped: false, error: message };
     } finally {
       clearTimeout(timer);
