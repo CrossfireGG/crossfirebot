@@ -1725,27 +1725,10 @@ async function reorganizeExistingMatchChannels() {
     const groupCompare = getGroupLetterForMatch(a.match).localeCompare(getGroupLetterForMatch(b.match));
     return roundCompare || groupCompare || Number(a.match.bracketOrder || 0) - Number(b.match.bracketOrder || 0);
   });
-  const roundOffsets = new Map();
-  await client.rest.patch(Routes.guildChannels(guild.id), {
-    body: orderedPlan.map((item) => {
-      const round = item.match.categoryName || item.match.round;
-      const offset = roundOffsets.get(round) || 0;
-      roundOffsets.set(round, offset + 1);
-      return {
-        id: item.candidates[0].id,
-        parent_id: item.category.id,
-        position: item.category.rawPosition + offset + 1,
-        lock_permissions: false
-      };
-    })
-  });
-  await guild.channels.fetch();
-  console.log('[Match reorganization] bulk-moved 72 existing channels into their target round categories.');
-
-  const completed = [];
-  async function migrateItem(item) {
+  const prepared = [];
+  for (const item of orderedPlan) {
     const { match, category } = item;
-    const channel = guild.channels.cache.get(item.candidates[0].id) || item.candidates[0];
+    const channel = item.candidates[0];
     const stored = await getStoredMatchByChannel(channel.id);
     const wasFinished = hasFinishedChannelPrefix(channel.name);
     const wasScheduled = hasScheduledChannelPrefix(channel.name);
@@ -1757,33 +1740,77 @@ async function reorganizeExistingMatchChannels() {
         ? stored?.match?.scheduledAt || match.scheduledAt || null
         : match.scheduledAt || null
     };
-    const relinked = await relinkMatchChannel(migratedMatch, {
+    await relinkMatchChannel(migratedMatch, {
       ...(stored?.discord || {}),
       channelId: channel.id,
       categoryId: category.id
     });
+    prepared.push({ match: migratedMatch, channelId: channel.id, category });
+  }
+  console.log('[Match reorganization] relinked persistent state for 72 existing channels.');
 
-    await updateMatchChannelName(channel, migratedMatch);
-    await channel.setTopic(makeMigratedMatchChannelTopic(migratedMatch));
-
-    const pending = (await listScheduleProposals())
+  const proposals = await listScheduleProposals();
+  for (const item of prepared) {
+    item.pending = proposals
       .filter((proposal) =>
-        proposal.matchId === migratedMatch.id
+        proposal.matchId === item.match.id
         && !proposal.declined
         && !proposal.adminDenied
         && !proposal.adminApproved
       )
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0] || null;
-    if (pending) await savePendingScheduleToChannelTopic(channel, pending);
-    await upsertMatchIntroMessage(channel, migratedMatch);
-    completed.push({ match: migratedMatch, channel, category, relinked });
-    console.log(`[Match reorganization] linked ${channel.id}: ${migratedMatch.teamA} vs ${migratedMatch.teamB} -> ${migratedMatch.categoryName} / ${getGroupLetterForMatch(migratedMatch)}`);
   }
 
-  const batchSize = 6;
-  for (let index = 0; index < orderedPlan.length; index += batchSize) {
-    await Promise.all(orderedPlan.slice(index, index + batchSize).map(migrateItem));
+  async function runMigrationBatches(items, batchSize, callback) {
+    for (let index = 0; index < items.length; index += batchSize) {
+      await Promise.all(items.slice(index, index + batchSize).map(callback));
+    }
   }
+
+  await runMigrationBatches(prepared, 12, async (item) => {
+    const channel = guild.channels.cache.get(item.channelId);
+    if (channel?.parentId === item.category.id) return;
+    await client.rest.patch(Routes.channel(item.channelId), {
+      body: { parent_id: item.category.id, lock_permissions: false }
+    });
+  });
+  console.log('[Match reorganization] moved 72 existing channels into their target round categories.');
+
+  await runMigrationBatches(prepared, 12, async (item) => {
+    let topic = makeMigratedMatchChannelTopic(item.match);
+    if (item.pending) {
+      topic = [topic, `${PENDING_SCHEDULE_TOPIC_PREFIX}${encodePendingSchedule(item.pending)}`]
+        .filter(Boolean)
+        .join(' | ')
+        .slice(0, 1024);
+    }
+    await client.rest.patch(Routes.channel(item.channelId), {
+      body: {
+        name: makeMatchChannelName(item.match),
+        topic
+      }
+    });
+  });
+  console.log('[Match reorganization] updated 72 existing channel names and FACEIT topics.');
+
+  await guild.channels.fetch();
+  const roundOffsets = new Map();
+  await guild.channels.setPositions(prepared.map((item) => {
+    const round = item.match.categoryName || item.match.round;
+    const offset = roundOffsets.get(round) || 0;
+    roundOffsets.set(round, offset + 1);
+    return {
+      channel: item.channelId,
+      position: item.category.rawPosition + offset + 1
+    };
+  }));
+  console.log('[Match reorganization] ordered channels by round and Group A-L.');
+
+  await runMigrationBatches(prepared, 6, async (item) => {
+    const channel = guild.channels.cache.get(item.channelId);
+    if (channel?.isTextBased?.()) await upsertMatchIntroMessage(channel, item.match);
+  });
+  console.log('[Match reorganization] updated existing pinned intro messages.');
 
   console.log('[Match reorganization] completed successfully: moved/relinked 72 existing channels; created 0 channels.');
 }
