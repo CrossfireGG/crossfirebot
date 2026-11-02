@@ -1720,10 +1720,32 @@ async function reorganizeExistingMatchChannels() {
   }
 
   console.log('[Match reorganization] safety checks passed: 72 matches, 72 existing channels, 3 existing categories.');
+  const orderedPlan = [...plan].sort((a, b) => {
+    const roundCompare = getGroupStageRoundNumber(a.match) - getGroupStageRoundNumber(b.match);
+    const groupCompare = getGroupLetterForMatch(a.match).localeCompare(getGroupLetterForMatch(b.match));
+    return roundCompare || groupCompare || Number(a.match.bracketOrder || 0) - Number(b.match.bracketOrder || 0);
+  });
+  const roundOffsets = new Map();
+  await client.rest.patch(Routes.guildChannels(guild.id), {
+    body: orderedPlan.map((item) => {
+      const round = item.match.categoryName || item.match.round;
+      const offset = roundOffsets.get(round) || 0;
+      roundOffsets.set(round, offset + 1);
+      return {
+        id: item.candidates[0].id,
+        parent_id: item.category.id,
+        position: item.category.rawPosition + offset + 1,
+        lock_permissions: false
+      };
+    })
+  });
+  await guild.channels.fetch();
+  console.log('[Match reorganization] bulk-moved 72 existing channels into their target round categories.');
+
   const completed = [];
-  for (const item of plan) {
+  async function migrateItem(item) {
     const { match, category } = item;
-    const channel = item.candidates[0];
+    const channel = guild.channels.cache.get(item.candidates[0].id) || item.candidates[0];
     const stored = await getStoredMatchByChannel(channel.id);
     const wasFinished = hasFinishedChannelPrefix(channel.name);
     const wasScheduled = hasScheduledChannelPrefix(channel.name);
@@ -1741,9 +1763,6 @@ async function reorganizeExistingMatchChannels() {
       categoryId: category.id
     });
 
-    if (channel.parentId !== category.id) {
-      await channel.setParent(category.id, { lockPermissions: false });
-    }
     await updateMatchChannelName(channel, migratedMatch);
     await channel.setTopic(makeMigratedMatchChannelTopic(migratedMatch));
 
@@ -1761,18 +1780,9 @@ async function reorganizeExistingMatchChannels() {
     console.log(`[Match reorganization] linked ${channel.id}: ${migratedMatch.teamA} vs ${migratedMatch.teamB} -> ${migratedMatch.categoryName} / ${getGroupLetterForMatch(migratedMatch)}`);
   }
 
-  for (const round of expectedRounds) {
-    const roundItems = completed
-      .filter((item) => normalizeRoundCategory(item.match.categoryName || item.match.round) === normalizeRoundCategory(round))
-      .sort((a, b) => {
-        const groupCompare = getGroupLetterForMatch(a.match).localeCompare(getGroupLetterForMatch(b.match));
-        return groupCompare || Number(a.match.bracketOrder || 0) - Number(b.match.bracketOrder || 0);
-      });
-    const basePosition = Math.min(...roundItems.map((item) => item.channel.rawPosition));
-    await guild.channels.setPositions(roundItems.map((item, index) => ({
-      channel: item.channel.id,
-      position: basePosition + index
-    })));
+  const batchSize = 6;
+  for (let index = 0; index < orderedPlan.length; index += batchSize) {
+    await Promise.all(orderedPlan.slice(index, index + batchSize).map(migrateItem));
   }
 
   console.log('[Match reorganization] completed successfully: moved/relinked 72 existing channels; created 0 channels.');
