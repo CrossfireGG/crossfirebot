@@ -1745,7 +1745,7 @@ async function reorganizeExistingMatchChannels() {
       await channel.setParent(category.id, { lockPermissions: false });
     }
     await updateMatchChannelName(channel, migratedMatch);
-    await channel.setTopic(makeChannelTopic(migratedMatch));
+    await channel.setTopic(makeMigratedMatchChannelTopic(migratedMatch));
 
     const pending = (await listScheduleProposals())
       .filter((proposal) =>
@@ -1792,6 +1792,14 @@ function migrationPairFromChannelName(value) {
     .replace(/^[a-l]-/, '');
   const teams = normalized.split('-vs-');
   return teams.length === 2 ? migrationPairKey(teams[0], teams[1]) : '';
+}
+
+function makeMigratedMatchChannelTopic(match) {
+  return [
+    `Round: ${match.round}`,
+    match.scheduledAt ? `FACEIT schedule: ${match.scheduledAt}` : 'FACEIT schedule: not set',
+    match.faceitUrl ? `Room: ${match.faceitUrl}` : null
+  ].filter(Boolean).join(' | ').slice(0, 1024);
 }
 
 function getRequestedRoundFilter(interaction) {
