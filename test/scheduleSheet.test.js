@@ -114,6 +114,36 @@ test('Apps Script sheet posts stream links with the streamLink action', async ()
   assert.deepEqual(await logOnly.addStreamLink({ streamUrl: 'y', team1: 'A', team2: 'B', faceitLink: 'f' }), { ok: true, skipped: true, error: null });
 });
 
+test('Apps Script sheet looks up post-cast form responses by request ID', async () => {
+  const { fetchImpl, calls } = fakeFetch({ status: 200, body: '{"status":200,"ok":true,"found":{"SR-2":{"submittedAt":"2026-11-05T02:00:00.000Z","row":14}}}' });
+  const sheet = new AppsScriptScheduleSheet({ webhookUrl: 'https://x/exec', secret: 's3cret', fetchImpl, log: quietLog });
+  const result = await sheet.lookupPostCastForms(['SR-1', 'SR-2']);
+  assert.deepEqual(result, { ok: true, skipped: false, error: null, found: { 'SR-2': { submittedAt: '2026-11-05T02:00:00.000Z', row: 14 } } });
+  const sent = JSON.parse(calls[0].init.body);
+  assert.equal(sent.action, 'postCastForms');
+  assert.deepEqual(sent.requestIds, ['SR-1', 'SR-2']);
+
+  const broken = new AppsScriptScheduleSheet({ webhookUrl: 'https://x/exec', secret: 'k', fetchImpl: fakeFetch(new Error('socket hang up')).fetchImpl, log: quietLog });
+  assert.deepEqual(await broken.lookupPostCastForms(['SR-1']), { ok: false, skipped: false, error: 'socket hang up', found: {} });
+
+  const logOnly = new LogOnlyScheduleSheet({ log: quietLog });
+  assert.deepEqual(await logOnly.lookupPostCastForms(['SR-1']), { ok: true, skipped: true, error: null, found: {} });
+});
+
+test('Apps Script sheet removes stream links with the removeStreamLink action', async () => {
+  const { fetchImpl, calls } = fakeFetch({ status: 200, body: '{"status":200,"ok":true,"row":9,"removed":true,"links":1}' });
+  const sheet = new AppsScriptScheduleSheet({ webhookUrl: 'https://x/exec', secret: 's3cret', fetchImpl, log: quietLog });
+  const result = await sheet.removeStreamLink({ faceitLink: 'https://faceit/1', streamUrl: 'https://twitch.tv/caster' });
+  assert.deepEqual(result, { ok: true, skipped: false, error: null, row: 9, removed: true });
+  assert.equal(JSON.parse(calls[0].init.body).action, 'removeStreamLink');
+
+  const gone = new AppsScriptScheduleSheet({ webhookUrl: 'https://x/exec', secret: 'k', fetchImpl: fakeFetch({ status: 200, body: '{"status":200,"ok":true,"row":0,"removed":false,"links":0}' }).fetchImpl, log: quietLog });
+  assert.deepEqual(await gone.removeStreamLink({ faceitLink: 'f', streamUrl: 'y' }), { ok: true, skipped: false, error: null, row: 0, removed: false });
+
+  const logOnly = new LogOnlyScheduleSheet({ log: quietLog });
+  assert.deepEqual(await logOnly.removeStreamLink({ streamUrl: 'y', team1: 'A', team2: 'B', faceitLink: 'f' }), { ok: true, skipped: true, error: null });
+});
+
 test('Apps Script sheet reports bad secrets, HTML pages, and network errors without throwing', async () => {
   const denied = new AppsScriptScheduleSheet({ webhookUrl: 'https://x/exec', secret: 'k', fetchImpl: fakeFetch({ status: 200, body: '{"status":401,"ok":false,"error":"bad secret"}' }).fetchImpl, log: quietLog });
   assert.match((await denied.append({})).error, /bad secret/);

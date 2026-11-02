@@ -227,6 +227,13 @@ export function getConfig() {
     streamGuidelinesUrl: process.env.STREAM_GUIDELINES_URL || null,
     streamGuidelinesText: process.env.STREAM_GUIDELINES_TEXT || 'Follow all CROSSFIRE co-streaming rules and do not restream the official broadcast without explicit permission.',
     postCastFormUrl: process.env.POST_CAST_FORM_URL || 'https://forms.gle/6zwVr2ArfFngGQ2NA',
+    // Same form with the "Request ID" question pre-filled; {requestId} is replaced per cast.
+    postCastFormPrefillUrl: process.env.POST_CAST_FORM_PREFILL_URL
+      || 'https://docs.google.com/forms/d/e/1FAIpQLSe32Ix7mieBvNJ4bZ4bajf4wmMCulwQVY02droPomaS2ssgQQ/viewform?usp=pp_url&entry.104948941={requestId}',
+    // Block new stream requests until the caster's last finished cast has a form response.
+    postCastFormGate: process.env.POST_CAST_FORM_GATE !== 'false',
+    // Casts that finished before this moment never block anyone (the form had no Request ID then).
+    postCastFormGateSince: process.env.POST_CAST_FORM_GATE_SINCE || '2026-11-02T00:00:00Z',
     rulesUrl: process.env.CROSSFIRE_RULES_URL || null,
     arenaClubId: process.env.ARENA_CLUB_ID || '5c8215bf-be47-4714-8738-2d7038b5d9c3',
     roundWindows: parseRoundWindows(process.env.ROUND_WINDOWS || ''),

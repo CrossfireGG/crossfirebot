@@ -77,13 +77,18 @@ import {
   formatScheduleForDiscord,
   isCanceledFaceitStatus,
   isTerminalFaceitStatus,
+  classifyCasterExit,
+  findOutstandingPostCast,
   makeStreamRequestId,
   makeStreamRequestModalId,
+  normalizeWithdrawalReason,
+  postCastFormLink,
   parseFaceitMatchRoomLink,
   parseStreamRequestModalId,
   validateDenialReason,
   validateStreamDelivery,
-  validateStreamRequest
+  validateStreamRequest,
+  STREAM_WITHDRAWABLE_STATUSES
 } from './streamRequest.js';
 import { createWebsitePublisher } from './websitePublisher.js';
 import { buildScheduleSheetRow, buildStreamLinkSheetRow, createScheduleSheet } from './scheduleSheet.js';
@@ -286,6 +291,10 @@ client.once(Events.ClientReady, async () => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    if (interaction.isAutocomplete()) {
+      if (interaction.commandName === 'request') await handleStreamRequestAutocomplete(interaction);
+      return;
+    }
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'request') {
         await handleStreamRequestCommand(interaction);
@@ -310,6 +319,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isButton() && interaction.customId.startsWith('stream_request_cancel:')) {
       await handleStreamRequestCancelButton(interaction);
+      return;
+    }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('stream_withdraw_submit:')) {
+      await handleStreamWithdrawModal(interaction);
       return;
     }
     if (interaction.isModalSubmit() && interaction.customId.startsWith('stream_request_submit:')) {
@@ -2422,20 +2435,21 @@ async function handleTextStreamRequest(message) {
 async function handleStreamRequestCommand(interaction) {
   const subcommand = interaction.options.getSubcommand();
   if (subcommand === 'cancel') {
-    const requestId = interaction.options.getString('request_id', true);
+    const requestId = interaction.options.getString('request_id', true).trim();
     const request = await getStreamRequest(requestId);
     if (!request || request.requesterId !== interaction.user.id || !STREAM_ACTIVE_STATUSES.includes(request.status)) {
       await interaction.reply({ content: 'I could not find an active request with that ID belonging to you.', ephemeral: true });
       return;
     }
-    const updated = await updateStreamRequest(requestId, { status: 'canceled', canceledBy: interaction.user.id, canceledAt: new Date().toISOString() }, STREAM_ACTIVE_STATUSES);
+    if (STREAM_WITHDRAWABLE_STATUSES.includes(request.status)) {
+      await interaction.showModal(streamWithdrawModal(request));
+      return;
+    }
+    const updated = await cancelPendingStreamRequest(request, interaction.user.id);
     if (!updated) {
       await interaction.reply({ content: 'This request is no longer active.', ephemeral: true });
       return;
     }
-    await refreshStreamRequestStaffMessage(updated);
-    await syncStreamRequestToWebsite(updated, 'canceled');
-    await appendAuditLog({ type: 'stream_request_canceled_by_requester', actorId: interaction.user.id, matchId: updated.matchId, requestId });
     await interaction.reply({ content: `Canceled stream request ${requestId}.`, ephemeral: true });
     return;
   }
@@ -2451,6 +2465,10 @@ function streamPlatformLabel() {
   return platforms.map((platform) => ({ twitch: 'Twitch', youtube: 'YouTube', kick: 'Kick' }[platform] || platform)).join('/');
 }
 
+// Notes from the post-cast form check at form-open time, picked up when the request is
+// created so staff see them on the card. Keyed by requester; lost on restart, which is fine.
+const postCastGateNotes = new Map();
+
 async function showStreamRequestModal(interaction) {
   const parts = interaction.customId?.split(':') || [];
   const boundRequester = parts[1] || interaction.user.id;
@@ -2458,6 +2476,14 @@ async function showStreamRequestModal(interaction) {
     await interaction.reply({ content: 'Use your own Request to Stream button.', ephemeral: true });
     return;
   }
+  const gate = await checkPostCastFormGate(interaction.user.id);
+  if (gate.blocked) {
+    await interaction.reply({ content: gate.message, ephemeral: true });
+    await appendAuditLog({ type: 'stream_request_blocked_post_cast_form', actorId: interaction.user.id, requestId: gate.outstanding.id, matchId: gate.outstanding.matchId }).catch(() => null);
+    return;
+  }
+  if (gate.note) postCastGateNotes.set(interaction.user.id, gate.note);
+  else postCastGateNotes.delete(interaction.user.id);
   const stored = interaction.channel?.id ? await getStoredMatchForChannel(interaction.channel) : null;
   const modal = new ModalBuilder()
     .setCustomId(makeStreamRequestModalId(interaction.user.id, interaction.channelId))
@@ -2558,11 +2584,13 @@ async function handleStreamRequestModal(interaction) {
     manualVerificationRequired: !verifiedFaceitMatch,
     repeatSubmission: priorRequests.length > 0,
     priorSubmissionCount: priorRequests.length,
+    postCastFormNote: postCastGateNotes.get(interaction.user.id) || null,
     ...validation.value,
     guidelinesSnapshot: config.streamGuidelinesText,
     guidelinesUrl: config.streamGuidelinesUrl
   });
   const request = creation.request;
+  postCastGateNotes.delete(interaction.user.id);
   if (!creation.created) {
     await interaction.reply({
       content: `You already have active request **${request.id}** for this FACEIT match. Its status is **${request.status}**. Cancel it before submitting another request.`,
@@ -2608,25 +2636,146 @@ function streamRequesterCancelRow(request) {
   );
 }
 
+// Shown on the approval DM and the public approval post. Same handler as the cancel
+// button; it opens the withdrawal form because the request is already approved.
+function streamCasterWithdrawRow(request) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`stream_request_cancel:${request.id}:${request.requesterId}`)
+      .setLabel('Withdraw from this cast')
+      .setStyle(ButtonStyle.Danger)
+  );
+}
+
+function streamWithdrawModal(request) {
+  return new ModalBuilder()
+    .setCustomId(`stream_withdraw_submit:${request.id}`)
+    .setTitle('Withdraw from this cast')
+    .addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('reason')
+        .setLabel('Why are you pulling out? (optional)')
+        .setPlaceholder('Staff see this so they can find a replacement caster.')
+        .setStyle(TextInputStyle.Paragraph)
+        .setMaxLength(500)
+        .setRequired(false)
+    ));
+}
+
 async function handleStreamRequestCancelButton(interaction) {
   const [, requestId, requesterId] = interaction.customId.split(':');
   if (interaction.user.id !== requesterId) {
-    await interaction.reply({ content: 'Only the requester can cancel this request.', ephemeral: true });
+    await interaction.reply({ content: 'Only the caster who made this request can cancel or withdraw it.', ephemeral: true });
     return;
   }
-  const updated = await updateStreamRequest(requestId, {
-    status: 'canceled',
-    canceledBy: interaction.user.id,
-    canceledAt: new Date().toISOString()
-  }, STREAM_ACTIVE_STATUSES);
+  const request = await getStreamRequest(requestId);
+  if (!request || !STREAM_ACTIVE_STATUSES.includes(request.status)) {
+    await interaction.reply({ content: 'This request is no longer active.', ephemeral: true });
+    return;
+  }
+  if (STREAM_WITHDRAWABLE_STATUSES.includes(request.status)) {
+    await interaction.showModal(streamWithdrawModal(request));
+    return;
+  }
+  const updated = await cancelPendingStreamRequest(request, interaction.user.id);
   if (!updated) {
     await interaction.update({ content: 'This request is no longer active.', embeds: [], components: [] });
     return;
   }
+  await interaction.update({ content: `Canceled stream request **${requestId}**.`, embeds: [], components: [] });
+}
+
+// A request that staff have not approved yet just goes away quietly.
+async function cancelPendingStreamRequest(request, actorId) {
+  const updated = await updateStreamRequest(request.id, {
+    status: 'canceled',
+    canceledBy: actorId,
+    canceledAt: new Date().toISOString()
+  }, STREAM_ACTIVE_STATUSES.filter((status) => !STREAM_WITHDRAWABLE_STATUSES.includes(status)));
+  if (!updated) return null;
   await refreshStreamRequestStaffMessage(updated);
   await syncStreamRequestToWebsite(updated, 'canceled');
-  await appendAuditLog({ type: 'stream_request_canceled_by_requester', actorId: interaction.user.id, matchId: updated.matchId, requestId });
-  await interaction.update({ content: `Canceled stream request **${requestId}**.`, embeds: [], components: [] });
+  await appendAuditLog({ type: 'stream_request_canceled_by_requester', actorId, matchId: updated.matchId, requestId: updated.id });
+  return updated;
+}
+
+// A caster pulling out of an approved cast: delist on the website, take the link off the
+// sheet, tell the community channel, and ping staff so they can find a replacement.
+async function handleStreamWithdrawModal(interaction) {
+  const requestId = interaction.customId.split(':')[1];
+  const reason = normalizeWithdrawalReason(interaction.fields.getTextInputValue('reason'));
+  await interaction.deferReply({ ephemeral: true });
+  const current = await getStreamRequest(requestId);
+  if (!current || current.requesterId !== interaction.user.id) {
+    await interaction.editReply('Only the caster who made this request can withdraw it.');
+    return;
+  }
+  const exit = classifyCasterExit(current);
+  const updated = await updateStreamRequest(requestId, {
+    status: 'withdrawn',
+    withdrawnBy: interaction.user.id,
+    withdrawnAt: new Date().toISOString(),
+    denialReason: reason
+  }, STREAM_WITHDRAWABLE_STATUSES);
+  if (!updated) {
+    await interaction.editReply(`Request ${requestId} is no longer an approved cast, so there is nothing to withdraw from.`);
+    return;
+  }
+  await interaction.message?.edit({ components: [] }).catch(() => null);
+  await refreshStreamRequestStaffMessage(updated);
+  await syncStreamRequestToWebsite(updated, 'canceled');
+  const sheetWarning = await removeStreamLinkFromSheet(updated, interaction.user.id);
+  const remainingCasters = updated.matchId
+    ? (await listStreamRequests({ matchId: updated.matchId, status: 'approved' })).length
+    : 0;
+  await appendAuditLog({ type: 'stream_request_withdrawn', actorId: interaction.user.id, matchId: updated.matchId, requestId, reason, late: Boolean(exit?.late), remainingCasters });
+
+  const scheduleIso = updated.faceitScheduledAtIso || updated.dateTimeIso;
+  await postToStreamOrigin(updated, {
+    embeds: [new EmbedBuilder()
+      .setColor(0x7f8c8d)
+      .setTitle(`↩️ Cast withdrawn: ${updated.matchup}`)
+      .setDescription(`<@${updated.requesterId}> will no longer be casting this match.`)
+      .addFields(
+        { name: 'When', value: formatScheduleForDiscord(scheduleIso, updated.dateTime || 'Not scheduled on FACEIT yet'), inline: false },
+        remainingCasters > 0
+          ? { name: 'Other casters', value: `${remainingCasters} other approved cast(s) remain for this match.`, inline: false }
+          : { name: 'Open for requests', value: 'Nobody is casting this match now. Casters may submit a new request.', inline: false }
+      )
+      .setFooter({ text: `Request ${updated.id}` })
+      .setTimestamp()]
+  });
+  const hoursText = Number.isFinite(exit?.hoursUntilMatch)
+    ? (exit.hoursUntilMatch < 0 ? 'the match has already started' : `the match is in ${Math.max(1, Math.round(exit.hoursUntilMatch))} hour(s)`)
+    : null;
+  await alertStreamStaff([
+    `↩️ <@${updated.requesterId}> withdrew from casting **${updated.matchup}** (request ${updated.id}).`,
+    `When: ${formatScheduleForDiscord(scheduleIso, updated.dateTime || 'Not scheduled on FACEIT yet')}`,
+    `Reason: ${reason}`,
+    exit?.late ? `⚠️ **LATE WITHDRAWAL** - ${hoursText}.` : null,
+    remainingCasters > 0 ? `${remainingCasters} other approved cast(s) remain for this match.` : '**This match has no caster now.**',
+    sheetWarning ? `⚠️ ${sheetWarning}` : null
+  ].filter(Boolean).join('\n'));
+  await interaction.editReply([
+    `You have withdrawn from casting **${updated.matchup}**. Staff and the community channel have been told.`,
+    sheetWarning ? `⚠️ ${sheetWarning}` : null
+  ].filter(Boolean).join('\n'));
+}
+
+// Offers the caster's own active requests for /request cancel.
+async function handleStreamRequestAutocomplete(interaction) {
+  const focused = String(interaction.options.getFocused() || '').toLowerCase();
+  const requests = (await listStreamRequests({ requesterId: interaction.user.id }))
+    .filter((request) => STREAM_ACTIVE_STATUSES.includes(request.status))
+    .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  const choices = requests
+    .map((request) => ({
+      name: `${request.id} · ${request.matchup} · ${STREAM_WITHDRAWABLE_STATUSES.includes(request.status) ? 'approved cast' : 'pending'}`.slice(0, 100),
+      value: request.id
+    }))
+    .filter((choice) => !focused || choice.name.toLowerCase().includes(focused) || choice.value.toLowerCase().includes(focused))
+    .slice(0, 25);
+  await interaction.respond(choices).catch(() => null);
 }
 
 async function sendStreamRequestToStaff(request, suppliedChannel = null) {
@@ -2644,6 +2793,45 @@ async function sendStreamRequestToStaff(request, suppliedChannel = null) {
   await updateStreamRequest(request.id, { staffChannelId: channel.id, staffMessageId: message.id, staffPostError: null }, ['pending']);
 }
 
+function postCastFormLinkFor(requestId) {
+  return postCastFormLink(config.postCastFormPrefillUrl, config.postCastFormUrl, requestId);
+}
+
+// Decides whether a caster may open the request form. Blocks when their most recent
+// finished cast has no post-cast form response. Sheet failures let the caster through
+// and leave a note for staff on the next request card instead of locking people out.
+async function checkPostCastFormGate(requesterId) {
+  if (!config.postCastFormGate) return { blocked: false, note: null };
+  const outstanding = findOutstandingPostCast(await listStreamRequests({ requesterId }), { requesterId, since: config.postCastFormGateSince });
+  if (!outstanding) return { blocked: false, note: null };
+
+  const lookup = await scheduleSheet.lookupPostCastForms([outstanding.id])
+    .catch((error) => ({ ok: false, skipped: false, error: error?.message || String(error), found: {} }));
+  const hit = lookup.ok ? lookup.found?.[outstanding.id] : null;
+  if (hit) {
+    await updateStreamRequest(outstanding.id, {
+      postCastFormSubmittedAt: hit.submittedAt || new Date().toISOString(),
+      postCastFormSource: 'form'
+    });
+    return { blocked: false, note: `Form received for last cast ${outstanding.id} (${outstanding.matchup}).` };
+  }
+  if (!lookup.ok || lookup.skipped) {
+    const why = lookup.skipped ? 'sheet lookups are in log-only mode' : lookup.error;
+    console.error(`Post-cast form check for ${outstanding.id} could not run: ${why}`);
+    return { blocked: false, note: `⚠️ Could not verify the form for last cast ${outstanding.id} (${outstanding.matchup}): ${why}` };
+  }
+  return {
+    blocked: true,
+    outstanding,
+    note: null,
+    message: [
+      `⛔ Before you can request another stream, please submit the post-cast stats form for your last cast, **${outstanding.matchup}** (request ${outstanding.id}).`,
+      `Form, with your request ID already filled in: ${postCastFormLinkFor(outstanding.id)}`,
+      'Once it is submitted, try again. If you already sent the form without the request ID, ask staff to mark it received.'
+    ].join('\n')
+  };
+}
+
 function streamRequestEmbed(request) {
   const status = request.status || 'pending';
   const colors = {
@@ -2654,6 +2842,7 @@ function streamRequestEmbed(request) {
     denied: 0x7f8c8d,
     revoked: EMBED_COLORS.declined,
     canceled: 0x7f8c8d,
+    withdrawn: 0x7f8c8d,
     expired: 0x7f8c8d,
     submission_failed: EMBED_COLORS.declined
   };
@@ -2667,7 +2856,7 @@ function streamRequestEmbed(request) {
     { name: 'X / Twitter', value: request.socialUrl, inline: false },
     request.reviewedBy ? { name: 'Decided By', value: `<@${request.reviewedBy}>`, inline: true } : null,
     request.websiteId && status === 'approved' ? { name: 'Website ID', value: String(request.websiteId), inline: true } : null,
-    request.denialReason && ['denied', 'revoked', 'canceled', 'expired'].includes(status)
+    request.denialReason && ['denied', 'revoked', 'canceled', 'withdrawn', 'expired'].includes(status)
       ? { name: 'Reason', value: request.denialReason, inline: false }
       : null,
     status === 'publish_failed'
@@ -2675,6 +2864,20 @@ function streamRequestEmbed(request) {
       : null,
     request.websiteSyncError && status === 'approved'
       ? { name: 'Website sync warning', value: String(request.websiteSyncError).slice(0, 500), inline: false }
+      : null,
+    request.postCastFormNote
+      ? { name: 'Post-cast form (previous cast)', value: String(request.postCastFormNote).slice(0, 500), inline: false }
+      : null,
+    status === 'approved' && request.postCastReminderSentAt
+      ? {
+        name: 'Post-cast form',
+        value: request.postCastFormWaivedAt
+          ? `Marked received by <@${request.postCastFormWaivedBy || 'staff'}>`
+          : request.postCastFormSubmittedAt
+            ? `Received ${discordTimestamp(request.postCastFormSubmittedAt, 'f')}`
+            : `⏳ Outstanding (reminder sent ${discordTimestamp(request.postCastReminderSentAt, 'R')})`,
+        inline: false
+      }
       : null
   ].filter(Boolean);
   return new EmbedBuilder()
@@ -2854,10 +3057,11 @@ async function announceStreamApproval(request) {
       ? `Scheduled for ${discordTimestamp(scheduleIso, 'F')} (${formatEasternDateTimeInput(scheduleIso)}).`
       : 'FACEIT has not scheduled this match yet. I will DM you when a date and time are posted.',
     request.faceitUrl ? `FACEIT matchroom: ${request.faceitUrl}` : null,
-    config.streamGuidelinesUrl ? `Guidelines: ${config.streamGuidelinesUrl}` : config.streamGuidelinesText
+    config.streamGuidelinesUrl ? `Guidelines: ${config.streamGuidelinesUrl}` : config.streamGuidelinesText,
+    'If something comes up and you can no longer cast, press **Withdraw from this cast** below (or use `/request cancel`) as early as you can so staff can find a replacement.'
   ].filter(Boolean).join('\n');
-  const dmSent = await dmStreamRequester(request, dmText);
-  const posted = await postToStreamOrigin(request, { embeds: [embed] });
+  const dmSent = await dmStreamRequester(request, { content: dmText, components: [streamCasterWithdrawRow(request)] });
+  const posted = await postToStreamOrigin(request, { embeds: [embed], components: [streamCasterWithdrawRow(request)] });
   if (!dmSent && !posted) await alertStreamStaff(`Could not notify <@${request.requesterId}> that stream request ${request.id} was approved.`);
   return dmSent || posted;
 }
@@ -2914,6 +3118,8 @@ async function revokeStreamRequest(requestId, actorId, reason) {
   if (!updated) return null;
   await refreshStreamRequestStaffMessage(updated);
   await syncStreamRequestToWebsite(updated, 'revoked');
+  const sheetWarning = await removeStreamLinkFromSheet(updated, actorId);
+  if (sheetWarning) await alertStreamStaff(`⚠️ ${sheetWarning} (stream request ${updated.id}, ${updated.matchup})`);
   await notifyStreamRequester(updated, `Your CROSSFIRE stream approval ${updated.id} for **${updated.matchup}** was revoked. Reason: ${reason}`);
   await appendAuditLog({ type: 'stream_request_revoked', actorId, matchId: updated.matchId, requestId, reason });
   return updated;
@@ -3054,9 +3260,9 @@ async function notifyStreamRequester(request, text) {
   return false;
 }
 
-async function dmStreamRequester(request, text) {
+async function dmStreamRequester(request, payload) {
   const user = await client.users.fetch(request.requesterId).catch(() => null);
-  return Boolean(user && await user.send(text).then(() => true).catch(() => false));
+  return Boolean(user && await user.send(payload).then(() => true).catch(() => false));
 }
 
 function getFaceitScheduledAtIso(match) {
@@ -3326,6 +3532,24 @@ async function handleAdminStreams(interaction) {
   if (action === 'complete') {
     await sendPostCastReminder(request.matchId, interaction.user.id);
     await interaction.editReply('Marked completion and processed eligible post-cast reminders.');
+    return;
+  }
+  if (action === 'form_received') {
+    const now = new Date().toISOString();
+    const updated = await updateStreamRequest(requestId, {
+      postCastFormSubmittedAt: request.postCastFormSubmittedAt || now,
+      postCastFormWaivedAt: now,
+      postCastFormWaivedBy: interaction.user.id,
+      postCastFormSource: 'staff',
+      postCastFormNote: reason || request.postCastFormNote || null
+    }, ['approved']);
+    if (!updated) {
+      await interaction.editReply('Only an approved (cast) request can have its post-cast form marked received.');
+      return;
+    }
+    await refreshStreamRequestStaffMessage(updated);
+    await appendAuditLog({ type: 'stream_post_cast_form_waived', actorId: interaction.user.id, matchId: updated.matchId, requestId, reason: reason || null });
+    await interaction.editReply(`Post-cast form for ${requestId} (${updated.matchup}) marked received. <@${updated.requesterId}> can request again.`);
   }
 }
 
@@ -3335,7 +3559,11 @@ async function sendPostCastReminder(matchId, actorId = null) {
   for (const request of requests) {
     const claimed = await claimPostCastReminder(request.id);
     if (!claimed) continue;
-    const sent = await notifyStreamRequester(claimed, `Thanks for covering Crossfire! Please fill out the post-cast form: ${config.postCastFormUrl}`);
+    const sent = await notifyStreamRequester(claimed, [
+      `Thanks for covering **${claimed.matchup}** for Crossfire! Please fill out the post-cast stats form (your request ID ${claimed.id} is already filled in):`,
+      postCastFormLinkFor(claimed.id),
+      config.postCastFormGate ? 'Your next stream request is blocked until this form is in.' : null
+    ].filter(Boolean).join('\n'));
     await updateStreamRequest(claimed.id, {
       postCastReminderSentAt: new Date().toISOString(),
       postCastReminderDelivery: sent ? 'delivered' : 'failed',
@@ -4204,6 +4432,28 @@ async function logStreamLinkToSheet(request, approvedBy = null) {
   } catch (error) {
     console.error('Schedule sheet stream link write crashed:', error);
     return `The Google Sheet was not updated with the stream link: ${error?.message || error}`;
+  }
+}
+
+// Takes a withdrawn or revoked caster's link back off the match's row. Never throws.
+async function removeStreamLinkFromSheet(request, actorId = null) {
+  if (!request?.streamUrl || !parseFaceitMatchRoomLink(request.faceitUrl)) return null;
+  const row = buildStreamLinkSheetRow(request, { approvedBy: actorId });
+  try {
+    const result = await scheduleSheet.removeStreamLink(row);
+    if (result.ok) {
+      if (!result.skipped) {
+        console.log(`Schedule sheet: stream link ${result.removed ? 'removed from' : 'was not on'} row ${result.row || '?'} for ${request.matchup}.`);
+      }
+      await appendAuditLog({ type: 'stream_link_sheet_removed', matchId: request.matchId || null, requestId: request.id, actorId, skipped: Boolean(result.skipped), removed: Boolean(result.removed) }).catch(() => null);
+      return null;
+    }
+    console.error(`Schedule sheet stream link removal failed for ${request.matchup}: ${result.error}`);
+    await appendAuditLog({ type: 'stream_link_sheet_failed', matchId: request.matchId || null, requestId: request.id, actorId, error: result.error, action: 'remove' }).catch(() => null);
+    return `The stream link is still on the Google Sheet: ${result.error}`;
+  } catch (error) {
+    console.error('Schedule sheet stream link removal crashed:', error);
+    return `The stream link is still on the Google Sheet: ${error?.message || error}`;
   }
 }
 

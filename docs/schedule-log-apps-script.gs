@@ -15,6 +15,11 @@
  *                         cell of the row whose FACEIT LINK matches. The column is found by
  *                         its header text, so it may be moved. Casters can only request
  *                         confirmed matches, so a missing row is reported as an error.
+ *   "removeStreamLink"    takes one stream URL back out of that cell (caster withdrew or
+ *                         staff revoked). Other links in the cell are kept.
+ *   "postCastForms"       looks up which stream request IDs have a response in the
+ *                         post-cast stats form's response sheet (read-only). The bot uses
+ *                         this to block casters who skipped the form for their last cast.
  *
  * Everything else in columns I–N is left for staff and is never touched.
  * After every write the tab is sorted by date and time. Rows added by hand get a
@@ -30,6 +35,13 @@ const SHARED_SECRET = 'change-me-to-a-long-random-string';
 // From the spreadsheet URL: https://docs.google.com/spreadsheets/d/<THIS PART>/edit
 const SPREADSHEET_ID = '1I4lcVFTOG9C1ju_50YJHVi3TCe_694_vkKCxzIXeIso';
 const SHEET_NAME = 'Game Schedules';
+
+// Post-cast stats form responses ("CF Streams & Streamers" spreadsheet). The form has a
+// required "Request ID" question that the bot pre-fills; its column appears in the
+// response tab after the first submission that includes it.
+const POST_CAST_SPREADSHEET_ID = '1rQGdrdrrbh94ZR_EL12uCqcQwHR6A4VR9SBDbjXGJZY';
+const POST_CAST_SHEET_NAME = 'Season 7';
+const POST_CAST_REQUEST_ID_HEADER = 'Request ID';
 
 const HEADERS = [
   '', 'TIME', 'TEAM 1', '', 'TEAM 2', 'FACEIT LINK', 'ROUND', 'GROUP:',
@@ -57,10 +69,12 @@ function doPost(e) {
     if (!body.secret || body.secret !== SHARED_SECRET) {
       return reply(401, { ok: false, error: 'bad secret' });
     }
-    const sheet = getOrCreateSheet();
     const action = body.action || 'schedule';
+    if (action === 'postCastForms') return lookupPostCastForms(body.requestIds || []);
+    const sheet = getOrCreateSheet();
     if (action === 'schedule') return writeSchedule(sheet, body.row || {});
     if (action === 'streamLink') return writeStreamLink(sheet, body.row || {});
+    if (action === 'removeStreamLink') return removeStreamLink(sheet, body.row || {});
     return reply(400, { ok: false, error: 'unknown action: ' + action });
   } catch (error) {
     return reply(500, { ok: false, error: String(error) });
@@ -112,6 +126,60 @@ function writeStreamLink(sheet, row) {
     cell.setValue(links.join('\n'));
   }
   return reply(200, { ok: true, row: targetRow, duplicate: alreadyThere, links: links.length });
+}
+
+// Removes one stream URL from the match's "Stream Link/s" cell, keeping any others.
+// A missing row is not an error here: there is nothing left to remove.
+function removeStreamLink(sheet, row) {
+  const streamUrl = String(row.streamUrl || '').trim();
+  if (!streamUrl) return reply(400, { ok: false, error: 'streamUrl is required' });
+  if (!row.faceitLink) return reply(400, { ok: false, error: 'faceitLink is required to find the match row' });
+
+  const targetRow = findRowByFaceitLink(sheet, row.faceitLink);
+  if (!targetRow) return reply(200, { ok: true, row: 0, removed: false, links: 0 });
+
+  const cell = sheet.getRange(targetRow, findStreamLinkColumn(sheet));
+  const existing = String(cell.getValue() || '').trim();
+  const links = existing ? existing.split(/\r?\n/).map((link) => link.trim()).filter(Boolean) : [];
+  const kept = links.filter((link) => link.toLowerCase() !== streamUrl.toLowerCase());
+  const removed = kept.length !== links.length;
+  if (removed) cell.setValue(kept.join('\n'));
+  return reply(200, { ok: true, row: targetRow, removed: removed, links: kept.length });
+}
+
+// Which of the given request IDs have a post-cast form response. Read-only.
+// Answers { found: { "<requestId>": { submittedAt, row } } } for the ones that do.
+function lookupPostCastForms(requestIds) {
+  const wanted = {};
+  (requestIds || []).forEach((id) => {
+    const key = String(id || '').trim().toLowerCase();
+    if (key) wanted[key] = String(id).trim();
+  });
+  const found = {};
+  if (!Object.keys(wanted).length) return reply(200, { ok: true, found: found });
+
+  const sheet = SpreadsheetApp.openById(POST_CAST_SPREADSHEET_ID).getSheetByName(POST_CAST_SHEET_NAME);
+  if (!sheet) return reply(500, { ok: false, error: 'post-cast response tab "' + POST_CAST_SHEET_NAME + '" not found' });
+  const lastRow = sheet.getLastRow();
+  const lastColumn = sheet.getLastColumn();
+  if (lastRow < 2 || lastColumn < 1) return reply(200, { ok: true, found: found });
+
+  const values = sheet.getRange(1, 1, lastRow, lastColumn).getValues();
+  const headers = values[0].map((header) => String(header).trim().toLowerCase());
+  const idColumn = headers.indexOf(POST_CAST_REQUEST_ID_HEADER.toLowerCase());
+  if (idColumn < 0) return reply(200, { ok: true, found: found, note: 'no "' + POST_CAST_REQUEST_ID_HEADER + '" column yet' });
+  const timestampColumn = headers.indexOf('timestamp');
+
+  for (let i = 1; i < values.length; i++) {
+    const key = String(values[i][idColumn] || '').trim().toLowerCase();
+    if (!key || !wanted[key] || found[wanted[key]]) continue;
+    const stamp = timestampColumn >= 0 ? values[i][timestampColumn] : null;
+    found[wanted[key]] = {
+      submittedAt: stamp instanceof Date ? stamp.toISOString() : String(stamp || ''),
+      row: i + 1
+    };
+  }
+  return reply(200, { ok: true, found: found });
 }
 
 // Looks the column up by header so staff can move it; falls back to column I.

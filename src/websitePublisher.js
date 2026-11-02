@@ -49,6 +49,7 @@ export function websiteStatusFor(request) {
   const status = String(request?.status || '');
   if (['approved', 'approving', 'publish_failed'].includes(status)) return 'approved';
   if (['revoked', 'canceled'].includes(status)) return status;
+  if (status === 'withdrawn') return 'canceled';
   return status || 'unknown';
 }
 

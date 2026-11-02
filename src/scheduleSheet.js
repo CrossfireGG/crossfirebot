@@ -89,6 +89,17 @@ export class LogOnlyScheduleSheet {
     this.log.info?.(`Schedule sheet (log-only): stream link ${row.streamUrl} for ${row.team1} vs ${row.team2} (${row.faceitLink})`);
     return { ok: true, skipped: true, error: null };
   }
+
+  async removeStreamLink(row) {
+    this.log.info?.(`Schedule sheet (log-only): remove stream link ${row.streamUrl} for ${row.team1} vs ${row.team2} (${row.faceitLink})`);
+    return { ok: true, skipped: true, error: null };
+  }
+
+  // Without a sheet there is nothing to look in, so no form is ever confirmed here.
+  async lookupPostCastForms(requestIds) {
+    this.log.info?.(`Schedule sheet (log-only): cannot look up post-cast forms for ${(requestIds || []).join(', ')}`);
+    return { ok: true, skipped: true, error: null, found: {} };
+  }
 }
 
 export class AppsScriptScheduleSheet {
@@ -116,7 +127,21 @@ export class AppsScriptScheduleSheet {
     return { ...result, row: body.row ?? null, duplicate: Boolean(body.duplicate) };
   }
 
-  async post(action, row) {
+  // Takes one stream URL back out of the match's "Stream Link/s" cell.
+  async removeStreamLink(row) {
+    const { body, ...result } = await this.post('removeStreamLink', row);
+    if (!result.ok) return result;
+    return { ...result, row: body.row ?? null, removed: Boolean(body.removed) };
+  }
+
+  // Which of these request IDs have a post-cast form response: { found: { id: { submittedAt } } }.
+  async lookupPostCastForms(requestIds) {
+    const { body, ...result } = await this.post('postCastForms', null, { requestIds });
+    if (!result.ok) return { ...result, found: {} };
+    return { ...result, found: body.found && typeof body.found === 'object' ? body.found : {} };
+  }
+
+  async post(action, row, extra = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -124,7 +149,7 @@ export class AppsScriptScheduleSheet {
         method: 'POST',
         // text/plain keeps Apps Script from rejecting the body and still exposes postData.contents.
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ secret: this.secret, action, row }),
+        body: JSON.stringify({ secret: this.secret, action, row, ...extra }),
         redirect: 'follow',
         signal: controller.signal
       });

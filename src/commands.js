@@ -189,7 +189,8 @@ export const commands = [
           { name: 'retry website publish', value: 'retry' },
           { name: 'cancel request', value: 'cancel' },
           { name: 'revoke approval', value: 'revoke' },
-          { name: 'mark match completed', value: 'complete' }
+          { name: 'mark match completed', value: 'complete' },
+          { name: 'mark post-cast form received', value: 'form_received' }
         ))
         .addStringOption((option) => option.setName('request_id').setDescription('Streamer request ID').setRequired(false))
         .addStringOption((option) => option.setName('reason').setDescription('Reason for cancel/revoke/completion').setRequired(false))
@@ -205,8 +206,8 @@ export const commands = [
     .setName('request')
     .setDescription('Request permission to stream a CROSSFIRE match')
     .addSubcommand((subcommand) => subcommand.setName('stream').setDescription('Open the stream request form'))
-    .addSubcommand((subcommand) => subcommand.setName('cancel').setDescription('Cancel one of your active stream requests')
-      .addStringOption((option) => option.setName('request_id').setDescription('Your request ID').setRequired(true))),
+    .addSubcommand((subcommand) => subcommand.setName('cancel').setDescription('Cancel a pending request or withdraw from a cast you were approved for')
+      .addStringOption((option) => option.setName('request_id').setDescription('Pick one of your active requests').setRequired(true).setAutocomplete(true))),
   new SlashCommandBuilder()
     .setName('crossfire')
     .setDescription('CROSSFIRE match and operations information')

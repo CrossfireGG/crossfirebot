@@ -6,7 +6,12 @@ import path from 'node:path';
 
 import {
   STREAM_ACTIVE_STATUSES,
+  STREAM_WITHDRAWABLE_STATUSES,
+  classifyCasterExit,
+  findOutstandingPostCast,
   formatScheduleForDiscord,
+  normalizeWithdrawalReason,
+  postCastFormLink,
   validateDenialReason,
   validateSocialUrl,
   validateStreamRequest,
@@ -20,6 +25,64 @@ import {
 } from '../src/websitePublisher.js';
 
 const quietLog = { info() {}, warn() {}, error() {} };
+
+test('a caster leaving a pending request is a cancel; leaving an approved cast is a withdrawal', () => {
+  const now = new Date('2026-11-02T12:00:00Z');
+  assert.deepEqual(classifyCasterExit({ status: 'pending' }, now), { kind: 'cancel', late: false, hoursUntilMatch: null });
+  assert.equal(classifyCasterExit({ status: 'denied' }, now), null);
+  assert.equal(classifyCasterExit(null, now), null);
+  for (const status of STREAM_WITHDRAWABLE_STATUSES) {
+    assert.equal(classifyCasterExit({ status }, now).kind, 'withdraw');
+  }
+
+  const soon = classifyCasterExit({ status: 'approved', faceitScheduledAtIso: '2026-11-02T20:00:00Z' }, now);
+  assert.equal(soon.late, true);
+  assert.equal(Math.round(soon.hoursUntilMatch), 8);
+
+  const later = classifyCasterExit({ status: 'approved', faceitScheduledAtIso: '2026-11-05T20:00:00Z' }, now);
+  assert.equal(later.late, false);
+
+  const unscheduled = classifyCasterExit({ status: 'approved' }, now);
+  assert.deepEqual(unscheduled, { kind: 'withdraw', late: false, hoursUntilMatch: null });
+});
+
+test('post-cast form links pre-fill the request ID when the template allows it', () => {
+  const template = 'https://docs.google.com/forms/d/e/abc/viewform?usp=pp_url&entry.104948941={requestId}';
+  assert.equal(postCastFormLink(template, 'https://forms.gle/x', 'SR-12 a'), 'https://docs.google.com/forms/d/e/abc/viewform?usp=pp_url&entry.104948941=SR-12%20a');
+  assert.equal(postCastFormLink('https://forms.gle/plain', 'https://forms.gle/x', 'SR-1'), 'https://forms.gle/x');
+  assert.equal(postCastFormLink(null, 'https://forms.gle/x', 'SR-1'), 'https://forms.gle/x');
+  assert.equal(postCastFormLink(template, null, null), template);
+});
+
+test('only the most recent finished cast without a form response blocks a caster', () => {
+  const me = 'caster-1';
+  const requests = [
+    { id: 'OLD', requesterId: me, status: 'approved', postCastReminderSentAt: '2026-10-01T00:00:00Z' },
+    { id: 'A', requesterId: me, status: 'approved', postCastReminderSentAt: '2026-11-03T00:00:00Z' },
+    { id: 'B', requesterId: me, status: 'approved', postCastReminderSentAt: '2026-11-05T00:00:00Z' },
+    { id: 'PENDING', requesterId: me, status: 'pending' },
+    { id: 'UPCOMING', requesterId: me, status: 'approved' },
+    { id: 'OTHER', requesterId: 'someone-else', status: 'approved', postCastReminderSentAt: '2026-11-06T00:00:00Z' }
+  ];
+  const since = '2026-11-02T00:00:00Z';
+  assert.equal(findOutstandingPostCast(requests, { requesterId: me, since })?.id, 'B');
+
+  const bDone = requests.map((request) => (request.id === 'B' ? { ...request, postCastFormSubmittedAt: '2026-11-05T02:00:00Z' } : request));
+  assert.equal(findOutstandingPostCast(bDone, { requesterId: me, since }), null, 'an older unfilled form does not block once the latest one is in');
+
+  const bWaived = requests.map((request) => (request.id === 'B' ? { ...request, postCastFormWaivedAt: '2026-11-05T02:00:00Z' } : request));
+  assert.equal(findOutstandingPostCast(bWaived, { requesterId: me, since }), null);
+
+  assert.equal(findOutstandingPostCast([requests[0]], { requesterId: me, since }), null, 'casts before the cutoff are exempt');
+  assert.equal(findOutstandingPostCast([requests[0]], { requesterId: me }).id, 'OLD', 'no cutoff means every finished cast counts');
+  assert.equal(findOutstandingPostCast([], { requesterId: me, since }), null);
+});
+
+test('withdrawal reasons are trimmed, defaulted and capped', () => {
+  assert.equal(normalizeWithdrawalReason('   '), 'No reason given');
+  assert.equal(normalizeWithdrawalReason('  got  sick\n\ntoday '), 'got sick today');
+  assert.equal(normalizeWithdrawalReason('x'.repeat(600)).length, 500);
+});
 
 test('stream links accept Twitch, YouTube and Kick channels and record the platform', () => {
   assert.deepEqual(validateStreamUrl('https://twitch.tv/example'), { valid: true, value: 'https://twitch.tv/example', platform: 'twitch' });

@@ -11,6 +11,7 @@ export const STREAM_STATUS_LABELS = {
   denied: '❌ Denied',
   revoked: '❌ Approval revoked',
   canceled: '🚫 Canceled',
+  withdrawn: '↩️ Withdrawn by caster',
   expired: '⌛ Expired',
   submission_failed: '⚠️ Could not reach staff channel'
 };
@@ -127,6 +128,53 @@ export function parseFaceitMatchRoomLink(value) {
   } catch {
     return null;
   }
+}
+
+// Approved (or approved-but-unpublished) requests are "casts": pulling out of one is a
+// withdrawal that staff must hear about. Anything earlier is a plain cancel.
+export const STREAM_WITHDRAWABLE_STATUSES = ['approved', 'publish_failed'];
+export const LATE_WITHDRAWAL_HOURS = 24;
+export const MAX_WITHDRAWAL_REASON_LENGTH = 500;
+
+export function classifyCasterExit(request, now = new Date()) {
+  if (!request || !STREAM_ACTIVE_STATUSES.includes(request.status)) return null;
+  if (!STREAM_WITHDRAWABLE_STATUSES.includes(request.status)) return { kind: 'cancel', late: false, hoursUntilMatch: null };
+  const scheduleIso = request.faceitScheduledAtIso || request.dateTimeIso || null;
+  const scheduleMs = scheduleIso ? Date.parse(scheduleIso) : NaN;
+  if (!Number.isFinite(scheduleMs)) return { kind: 'withdraw', late: false, hoursUntilMatch: null };
+  const hoursUntilMatch = (scheduleMs - now.getTime()) / 3_600_000;
+  return { kind: 'withdraw', late: hoursUntilMatch < LATE_WITHDRAWAL_HOURS, hoursUntilMatch };
+}
+
+export function normalizeWithdrawalReason(raw) {
+  const text = String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!text) return 'No reason given';
+  return text.length > MAX_WITHDRAWAL_REASON_LENGTH ? `${text.slice(0, MAX_WITHDRAWAL_REASON_LENGTH - 1)}…` : text;
+}
+
+// The post-cast form link for one cast, with the Request ID question pre-filled when the
+// configured prefill URL has a {requestId} placeholder.
+export function postCastFormLink(prefillUrl, fallbackUrl, requestId) {
+  if (prefillUrl && requestId && prefillUrl.includes('{requestId}')) {
+    return prefillUrl.replace('{requestId}', encodeURIComponent(String(requestId)));
+  }
+  return fallbackUrl || prefillUrl || '';
+}
+
+// The caster's most recent finished cast (reminder sent) that still has no form response.
+// Casts finished before `since` are ignored. Returns null when nothing is outstanding.
+export function findOutstandingPostCast(requests, { requesterId, since = null } = {}) {
+  const sinceMs = since ? Date.parse(since) : NaN;
+  const finished = (requests || [])
+    .filter((request) =>
+      request.requesterId === requesterId
+      && request.status === 'approved'
+      && request.postCastReminderSentAt
+      && (!Number.isFinite(sinceMs) || Date.parse(request.postCastReminderSentAt) >= sinceMs))
+    .sort((a, b) => Date.parse(b.postCastReminderSentAt) - Date.parse(a.postCastReminderSentAt));
+  const latest = finished[0];
+  if (!latest || latest.postCastFormSubmittedAt || latest.postCastFormWaivedAt) return null;
+  return latest;
 }
 
 export function classifyFaceitScheduleChange(previousIso, nextIso) {
