@@ -261,6 +261,40 @@ test('persistent decisions are serialized and survive a fresh module load', asyn
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
+test('relinking an existing channel migrates persistent match state to the new FACEIT ID', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crossfire-relink-'));
+  process.env.BOT_DATA_PATH = path.join(tempDir, 'bot-data.json');
+  const store = await import(`../src/store.js?relink=${Date.now()}`);
+  await store.saveMatch({ id: 'old-match', teamA: 'Alpha', teamB: 'Bravo', faceitUrl: 'https://faceit/old' }, {
+    channelId: 'channel-1',
+    categoryId: 'round-old',
+    introMessageId: 'intro-1'
+  });
+  await store.saveSchedule('old-match', { scheduledAt: 'November 3 8 PM ET', adminApproved: true });
+  await store.saveScheduleProposal({ id: 'proposal-1', matchId: 'old-match', scheduledAt: 'November 3 8 PM ET' });
+  await store.saveVeto({ matchId: 'old-match', status: 'active' });
+  await store.createStreamRequest({
+    id: 'stream-1',
+    requesterId: 'caster-1',
+    matchId: 'old-match',
+    faceitUrl: 'https://faceit/old',
+    matchup: 'Alpha vs Bravo'
+  });
+
+  await store.relinkMatchChannel({ id: 'new-match', teamA: 'Alpha', teamB: 'Bravo', faceitUrl: 'https://faceit/new' }, {
+    channelId: 'channel-1',
+    categoryId: 'round-new'
+  });
+
+  assert.equal(await store.getStoredMatch('old-match'), null);
+  assert.equal((await store.getStoredMatch('new-match')).discord.introMessageId, 'intro-1');
+  assert.equal((await store.getSchedule('new-match')).adminApproved, true);
+  assert.equal((await store.getScheduleProposal('proposal-1')).matchId, 'new-match');
+  assert.equal((await store.getVeto('new-match')).matchId, 'new-match');
+  assert.equal((await store.getStreamRequest('stream-1')).faceitUrl, 'https://faceit/new');
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
 test('accepted Tournament Ops schedules remain pending until a separate admin approval', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crossfire-ops-schedule-'));
   process.env.BOT_DATA_PATH = path.join(tempDir, 'bot-data.json');

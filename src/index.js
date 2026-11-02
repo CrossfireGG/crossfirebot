@@ -2,6 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelType,
   Client,
   EmbedBuilder,
   Events,
@@ -34,6 +35,7 @@ import {
   createStreamRequestUnlessActive,
   listStreamRequestsAwaitingStaffPost,
   recordStreamPublishResult,
+  relinkMatchChannel,
   recoverInterruptedStreamPublishes,
   denyScheduleProposal,
   declineScheduleProposal,
@@ -276,6 +278,11 @@ client.once(Events.ClientReady, async () => {
   }
 
   await hydratePersistentTeamRoleMappings();
+  if (config.reorganizeExistingMatchChannels) {
+    await reorganizeExistingMatchChannels().catch((error) => {
+      console.error('[Match reorganization] failed:', error);
+    });
+  }
   console.log(`Website publisher: ${websitePublisher.mode}${config.websiteEndpoint ? ` -> ${config.websiteEndpoint}` : ' (set WEBSITE_ENDPOINT to publish approvals)'}`);
   console.log(`Schedule sheet: ${scheduleSheet.mode}${config.scheduleSheetWebhookUrl ? '' : ' (set SCHEDULE_SHEET_WEBHOOK_URL to log schedules to Google Sheets)'}`);
   await auditStreamChannelPermissions().catch((error) => console.error('Stream channel audit failed:', error));
@@ -1659,6 +1666,132 @@ function findAuditMatchChannel(guild, match, expectedName) {
     const actualCategory = normalizeRoundCategory(channel.parent?.name || '');
     return channelName === normalizedExpected && actualCategory === expectedCategory;
   }) || null;
+}
+
+async function reorganizeExistingMatchChannels() {
+  const guild = await client.guilds.fetch(config.discordGuildId);
+  await guild.channels.fetch();
+
+  const matches = filterAndSortMatchesForSync(
+    (await faceit.getMatches()).map(normalizeConfiguredMatch),
+    null
+  );
+  const expectedRounds = ['Group Stage - Round 1', 'Group Stage - Round 2', 'Group Stage - Round 3'];
+  if (matches.length !== 72) {
+    throw new Error(`safety check failed: expected 72 FACEIT matches, received ${matches.length}`);
+  }
+
+  const categories = new Map();
+  for (const round of expectedRounds) {
+    const category = guild.channels.cache.find((channel) =>
+      channel.type === ChannelType.GuildCategory
+      && normalizeRoundCategory(channel.name) === normalizeRoundCategory(round)
+    );
+    if (!category) throw new Error(`safety check failed: existing category "${round}" was not found`);
+    categories.set(round, category);
+  }
+
+  const textChannels = guild.channels.cache.filter((channel) => channel.type === ChannelType.GuildText);
+  const byPair = new Map();
+  for (const channel of textChannels.values()) {
+    const pair = migrationPairFromChannelName(channel.name);
+    if (!pair) continue;
+    const channels = byPair.get(pair) || [];
+    channels.push(channel);
+    byPair.set(pair, channels);
+  }
+
+  const plan = matches.map((match) => {
+    const pair = migrationPairKey(match.teamA, match.teamB);
+    const candidates = byPair.get(pair) || [];
+    const category = categories.get(match.categoryName || match.round);
+    return { match, candidates, category };
+  });
+  const missing = plan.filter((item) => item.candidates.length === 0);
+  const ambiguous = plan.filter((item) => item.candidates.length > 1);
+  const uniqueChannelIds = new Set(plan.flatMap((item) => item.candidates.map((channel) => channel.id)));
+  if (missing.length || ambiguous.length || uniqueChannelIds.size !== matches.length) {
+    throw new Error([
+      'safety check failed: existing channel mapping is not exactly one-to-one',
+      missing.length ? `missing=${missing.map(({ match }) => `${match.teamA} vs ${match.teamB}`).join(', ')}` : null,
+      ambiguous.length ? `ambiguous=${ambiguous.map(({ match }) => `${match.teamA} vs ${match.teamB}`).join(', ')}` : null,
+      `uniqueChannels=${uniqueChannelIds.size}`
+    ].filter(Boolean).join('; '));
+  }
+
+  console.log('[Match reorganization] safety checks passed: 72 matches, 72 existing channels, 3 existing categories.');
+  const completed = [];
+  for (const item of plan) {
+    const { match, category } = item;
+    const channel = item.candidates[0];
+    const stored = await getStoredMatchByChannel(channel.id);
+    const wasFinished = hasFinishedChannelPrefix(channel.name);
+    const wasScheduled = hasScheduledChannelPrefix(channel.name);
+    const migratedMatch = {
+      ...match,
+      status: wasFinished ? 'finished' : wasScheduled ? 'discord_scheduled' : match.status,
+      scheduledByDiscord: wasScheduled || Boolean(stored?.match?.scheduledByDiscord),
+      scheduledAt: wasScheduled || stored?.match?.scheduledByDiscord
+        ? stored?.match?.scheduledAt || match.scheduledAt || null
+        : match.scheduledAt || null
+    };
+    const relinked = await relinkMatchChannel(migratedMatch, {
+      ...(stored?.discord || {}),
+      channelId: channel.id,
+      categoryId: category.id
+    });
+
+    if (channel.parentId !== category.id) {
+      await channel.setParent(category.id, { lockPermissions: false });
+    }
+    await updateMatchChannelName(channel, migratedMatch);
+    await channel.setTopic(makeChannelTopic(migratedMatch));
+
+    const pending = (await listScheduleProposals())
+      .filter((proposal) =>
+        proposal.matchId === migratedMatch.id
+        && !proposal.declined
+        && !proposal.adminDenied
+        && !proposal.adminApproved
+      )
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0] || null;
+    if (pending) await savePendingScheduleToChannelTopic(channel, pending);
+    await upsertMatchIntroMessage(channel, migratedMatch);
+    completed.push({ match: migratedMatch, channel, category, relinked });
+    console.log(`[Match reorganization] linked ${channel.id}: ${migratedMatch.teamA} vs ${migratedMatch.teamB} -> ${migratedMatch.categoryName} / ${getGroupLetterForMatch(migratedMatch)}`);
+  }
+
+  for (const round of expectedRounds) {
+    const roundItems = completed
+      .filter((item) => normalizeRoundCategory(item.match.categoryName || item.match.round) === normalizeRoundCategory(round))
+      .sort((a, b) => {
+        const groupCompare = getGroupLetterForMatch(a.match).localeCompare(getGroupLetterForMatch(b.match));
+        return groupCompare || Number(a.match.bracketOrder || 0) - Number(b.match.bracketOrder || 0);
+      });
+    const basePosition = Math.min(...roundItems.map((item) => item.channel.rawPosition));
+    await guild.channels.setPositions(roundItems.map((item, index) => ({
+      channel: item.channel.id,
+      position: basePosition + index
+    })));
+  }
+
+  console.log('[Match reorganization] completed successfully: moved/relinked 72 existing channels; created 0 channels.');
+}
+
+function migrationTeamKey(value) {
+  const normalized = normalizeTeamKey(value);
+  return normalized === 'vlandian knights' ? 'vlandian knigts' : normalized;
+}
+
+function migrationPairKey(teamA, teamB) {
+  return [migrationTeamKey(teamA), migrationTeamKey(teamB)].sort().join('|');
+}
+
+function migrationPairFromChannelName(value) {
+  const normalized = normalizeDiscordChannelName(stripMatchStatusPrefix(value))
+    .replace(/^[a-l]-/, '');
+  const teams = normalized.split('-vs-');
+  return teams.length === 2 ? migrationPairKey(teams[0], teams[1]) : '';
 }
 
 function getRequestedRoundFilter(interaction) {
@@ -3886,11 +4019,19 @@ async function findExistingIntroMessage(channel, match) {
   const matchTitle = `${match.teamA} vs ${match.teamB}`.toLowerCase();
 
   const pinned = await channel.messages.fetchPinned().catch(() => null);
-  const pinnedMatch = pinned?.find((message) => isIntroMessage(message, faceitUrl, matchTitle));
+  const pinnedMatch = pinned?.find((message) => isIntroMessage(message, faceitUrl, matchTitle))
+    || pinned?.find((message) => isAnyMatchIntroMessage(message));
   if (pinnedMatch) return pinnedMatch;
 
   const recent = await channel.messages.fetch({ limit: 20 }).catch(() => null);
-  return recent?.find((message) => isIntroMessage(message, faceitUrl, matchTitle)) || null;
+  return recent?.find((message) => isIntroMessage(message, faceitUrl, matchTitle))
+    || recent?.find((message) => isAnyMatchIntroMessage(message))
+    || null;
+}
+
+function isAnyMatchIntroMessage(message) {
+  return message.author?.id === client.user?.id
+    && String(message.content || '').toLowerCase().includes('how to schedule this match');
 }
 
 function isIntroMessage(message, faceitUrl, matchTitle) {

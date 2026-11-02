@@ -237,7 +237,8 @@ export function getConfig() {
     rulesUrl: process.env.CROSSFIRE_RULES_URL || null,
     arenaClubId: process.env.ARENA_CLUB_ID || '5c8215bf-be47-4714-8738-2d7038b5d9c3',
     roundWindows: parseRoundWindows(process.env.ROUND_WINDOWS || ''),
-    defaultTimezone: process.env.DEFAULT_TIMEZONE || 'America/New_York'
+    defaultTimezone: process.env.DEFAULT_TIMEZONE || 'America/New_York',
+    reorganizeExistingMatchChannels: process.env.REORGANIZE_EXISTING_MATCH_CHANNELS === 'true'
   };
 }
 

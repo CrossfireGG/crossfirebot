@@ -69,6 +69,59 @@ export async function saveMatch(match, discordIds) {
   });
 }
 
+// Replaces every stale match record for one Discord channel with the new FACEIT
+// match while preserving schedules, proposals, veto state, tickets, and streams.
+export async function relinkMatchChannel(match, discordIds) {
+  return mutateDb((db) => {
+    const staleEntries = Object.entries(db.matches)
+      .filter(([matchId, entry]) => matchId !== match.id && entry.discord?.channelId === discordIds.channelId)
+      .sort(([, a], [, b]) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    const staleIds = staleEntries.map(([matchId]) => matchId);
+    const staleIdSet = new Set(staleIds);
+    const previous = staleEntries[0]?.[1] || null;
+
+    const previousSchedule = staleIds
+      .map((matchId) => db.schedules[matchId])
+      .filter(Boolean)
+      .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))[0] || null;
+    if (previousSchedule && !db.schedules[match.id]) db.schedules[match.id] = previousSchedule;
+
+    for (const proposal of Object.values(db.scheduleProposals)) {
+      if (staleIdSet.has(proposal.matchId)) proposal.matchId = match.id;
+    }
+    for (const request of Object.values(db.streamRequests)) {
+      if (!staleIdSet.has(request.matchId)) continue;
+      request.matchId = match.id;
+      request.faceitUrl = match.faceitUrl || request.faceitUrl;
+      request.matchup = `${match.teamA} vs ${match.teamB}`;
+    }
+    for (const ticket of Object.values(db.adminTickets)) {
+      if (staleIdSet.has(ticket.matchId)) ticket.matchId = match.id;
+    }
+
+    const previousVetoId = staleIds.find((matchId) => db.vetoes[matchId]);
+    if (previousVetoId && !db.vetoes[match.id]) {
+      db.vetoes[match.id] = { ...db.vetoes[previousVetoId], matchId: match.id };
+    }
+
+    for (const matchId of staleIds) {
+      delete db.matches[matchId];
+      delete db.schedules[matchId];
+      delete db.vetoes[matchId];
+    }
+
+    db.matches[match.id] = {
+      match,
+      discord: {
+        ...(previous?.discord || {}),
+        ...discordIds
+      },
+      updatedAt: new Date().toISOString()
+    };
+    return { staleIds, discord: db.matches[match.id].discord };
+  });
+}
+
 export async function saveMatchIntroMessageId(matchId, introMessageId) {
   return mutateDb((db) => {
     if (!db.matches[matchId]) return;
