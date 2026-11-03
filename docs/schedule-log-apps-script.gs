@@ -230,17 +230,56 @@ function sortByDate(sheet) {
   sheet.getRange(2, 1, lastRow - 1, lastColumn).sort({ column: SORT_KEY_COLUMN, ascending: true });
 }
 
-// Builds an ISO-style key from cells like "Tuesday, November 3, 2026" and "9:00 PM EST".
-// Falls back to the script's time zone; the key only needs to order rows, not be exact.
-function sortKeyFromText(dateText, timeText) {
-  if (dateText instanceof Date) return dateText.toISOString();
-  const date = String(dateText || '').trim();
-  if (!date) return '';
-  const cleanDate = date.replace(/^[A-Za-z]+,\s*/, '');
-  const cleanTime = String(timeText || '').trim().replace(/\s*(EST|EDT|ET|CST|CDT|CT|MST|MDT|MT|PST|PDT|PT|UTC|GMT)\s*$/i, '') || '12:00 AM';
-  const parsed = new Date(cleanDate + ' ' + cleanTime);
-  if (isNaN(parsed.getTime())) return '';
-  return Utilities.formatDate(parsed, Session.getScriptTimeZone(), "yyyy-MM-dd'T'HH:mm:ssXXX");
+// Builds a timezone-free sortable key from the displayed Eastern date and time.
+// This intentionally avoids mixing UTC timestamps with local timestamps, which
+// can put an 8:00 PM row below a 9:00 PM row on the same date.
+function sortKeyFromText(dateValue, timeValue) {
+  const dateKey = dateKeyFromValue(dateValue);
+  if (!dateKey) return '';
+  return dateKey + 'T' + timeKeyFromValue(timeValue);
+}
+
+function dateKeyFromValue(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    const zone = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+    return Utilities.formatDate(value, zone, 'yyyy-MM-dd');
+  }
+
+  const text = String(value || '').trim().replace(/^[A-Za-z]+,\s*/, '');
+  if (!text) return '';
+  const months = {
+    january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+    july: 7, august: 8, september: 9, october: 10, november: 11, december: 12
+  };
+  const named = text.match(/^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})$/);
+  if (named && months[named[1].toLowerCase()]) {
+    return named[3] + '-' + pad2(months[named[1].toLowerCase()]) + '-' + pad2(named[2]);
+  }
+  const numeric = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+  return numeric ? numeric[3] + '-' + pad2(numeric[1]) + '-' + pad2(numeric[2]) : '';
+}
+
+function timeKeyFromValue(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    const zone = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+    return Utilities.formatDate(value, zone, 'HH:mm:ss');
+  }
+
+  const text = String(value || '').trim();
+  const twelveHour = text.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\b/i);
+  if (twelveHour) {
+    let hour = Number(twelveHour[1]) % 12;
+    if (twelveHour[3].toUpperCase() === 'PM') hour += 12;
+    return pad2(hour) + ':' + pad2(twelveHour[2] || 0) + ':00';
+  }
+  const twentyFourHour = text.match(/^(\d{1,2}):(\d{2})/);
+  return twentyFourHour
+    ? pad2(twentyFourHour[1]) + ':' + pad2(twentyFourHour[2]) + ':00'
+    : '00:00:00';
+}
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
 }
 
 function getOrCreateSheet() {
