@@ -206,11 +206,15 @@ export function validateStreamDelivery(type, value) {
       : { valid: false, error: 'Enter a valid twitch.tv stream link.' };
   }
   if (type === 'cstv') {
-    const hasConnect = /^connect\s+/i.test(text);
-    const hasAddress = /(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}/.test(text) || /[a-z0-9.-]+:\d{2,5}/i.test(text);
-    return hasConnect && hasAddress
+    const commands = text.split(';').map((command) => command.trim()).filter(Boolean);
+    const connectCommand = commands.at(-1) || '';
+    const hasConnectAddress = /^connect\s+(?:(?:\d{1,3}\.){3}\d{1,3}|[a-z0-9.-]+):\d{2,5}$/i.test(connectCommand);
+    const hasValidPrefixes = commands.slice(0, -1).every((command) =>
+      /^(?:connect\s+)?password\s+"[^"\r\n]+"$/i.test(command)
+    );
+    return hasConnectAddress && hasValidPrefixes
       ? { valid: true, value: text }
-      : { valid: false, error: 'Enter the complete CSTV command, for example `connect 123.45.67.89:27020`.' };
+      : { valid: false, error: 'Enter the full CSTV command, for example `password "..."; connect password "..."; connect 123.45.67.89:27020`.' };
   }
   return { valid: false, error: 'Unknown delivery type.' };
 }
