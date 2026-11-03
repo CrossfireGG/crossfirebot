@@ -199,14 +199,14 @@ test('FACEIT matchroom links are canonicalized and non-FACEIT links are rejected
   assert.equal(parseFaceitMatchRoomLink('https://hltv.org/matches/123'), null);
 });
 
-test('caster delivery accepts CSTV connect commands and Twitch links', () => {
+test('caster delivery accepts any staff connection message and validates Twitch links', () => {
   assert.equal(validateStreamDelivery('cstv', 'connect 123.45.67.89:27020').valid, true);
   assert.equal(
     validateStreamDelivery('cstv', 'password "313safafo2h13"; connect password "313safafo2h13"; connect 136.83.35.38:20001').valid,
     true
   );
-  assert.equal(validateStreamDelivery('cstv', '123.45.67.89:27020').valid, false);
-  assert.equal(validateStreamDelivery('cstv', 'password "313safafo2h13"; connect missing-address').valid, false);
+  assert.equal(validateStreamDelivery('cstv', 'Use these lobby details and contact Tournament Ops if they fail.').valid, true);
+  assert.equal(validateStreamDelivery('cstv', '   ').valid, false);
   assert.equal(validateStreamDelivery('twitch', 'https://twitch.tv/crossfire').valid, true);
   assert.equal(validateStreamDelivery('twitch', 'https://example.com/live').valid, false);
   assert.equal(validateStreamDelivery('custom', 'Use the CSTV details from tonight\'s lobby.').valid, true);

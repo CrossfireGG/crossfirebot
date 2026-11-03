@@ -3580,7 +3580,7 @@ async function handleStreamDeliveryOpen(interaction) {
       new TextInputBuilder()
         .setCustomId('delivery')
         .setLabel(label)
-        .setPlaceholder(type === 'cstv' ? 'Paste the complete FACEIT CSTV command' : 'Example: https://twitch.tv/crossfire')
+        .setPlaceholder(type === 'cstv' ? 'Enter any connection details or instructions' : 'Example: https://twitch.tv/crossfire')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ));

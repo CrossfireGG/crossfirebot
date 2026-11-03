@@ -194,7 +194,7 @@ export function isCanceledFaceitStatus(status) {
 
 export function validateStreamDelivery(type, value) {
   const text = String(value || '').trim();
-  if (type === 'custom') {
+  if (type === 'custom' || type === 'cstv') {
     return text && text.length <= 1500
       ? { valid: true, value: text }
       : { valid: false, error: 'Enter the connection details or instructions to DM, up to 1500 characters.' };
@@ -204,17 +204,6 @@ export function validateStreamDelivery(type, value) {
     return url && isAllowedHost(url, ['twitch.tv', 'www.twitch.tv'])
       ? { valid: true, value: url.toString() }
       : { valid: false, error: 'Enter a valid twitch.tv stream link.' };
-  }
-  if (type === 'cstv') {
-    const commands = text.split(';').map((command) => command.trim()).filter(Boolean);
-    const connectCommand = commands.at(-1) || '';
-    const hasConnectAddress = /^connect\s+(?:(?:\d{1,3}\.){3}\d{1,3}|[a-z0-9.-]+):\d{2,5}$/i.test(connectCommand);
-    const hasValidPrefixes = commands.slice(0, -1).every((command) =>
-      /^(?:connect\s+)?password\s+"[^"\r\n]+"$/i.test(command)
-    );
-    return hasConnectAddress && hasValidPrefixes
-      ? { valid: true, value: text }
-      : { valid: false, error: 'Enter the full CSTV command, for example `password "..."; connect password "..."; connect 123.45.67.89:27020`.' };
   }
   return { valid: false, error: 'Unknown delivery type.' };
 }
