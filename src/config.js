@@ -209,6 +209,8 @@ export function getConfig() {
     vetoAdvantageTeam: process.env.VETO_ADVANTAGE_TEAM || null,
     vetoStaffChannelId: process.env.VETO_STAFF_CHANNEL_ID || process.env.ADMIN_SCHEDULE_CHANNEL_ID || null,
     streamRequestChannelId: process.env.STREAM_REQUEST_CHANNEL_ID || null,
+    // Optional: "live now" board channel. Empty = the Going live / End broadcast buttons are not offered.
+    liveNowChannelId: process.env.LIVE_NOW_CHANNEL_ID || null,
     // Optional: when set, `/request stream` and `!request` only work in these channels.
     streamCommunityChannelIds: parseSnowflakeList(process.env.STREAM_COMMUNITY_CHANNEL_IDS || ''),
     // Optional: restrict accepted stream platforms (twitch, youtube, kick). Empty = all.

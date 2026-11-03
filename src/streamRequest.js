@@ -331,3 +331,90 @@ function normalizeHttpUrl(value) {
 function isAllowedHost(url, hosts) {
   return hosts.includes(url.hostname.toLowerCase());
 }
+
+// "You're being covered" notice for the two teams' match channel. Plain data so the
+// Discord embed is a thin wrapper and the wording can be tested. The caster is named
+// by tag, never mentioned: the teams only need to know who, not be pinged.
+export const COVERAGE_COLORS = { active: 0x9b59b6, cancelled: 0x7f8c8d };
+
+export function buildCoverageNotice(request, { cancelled = false, reason = null, remainingCasters = 0 } = {}) {
+  const scheduleIso = request?.faceitScheduledAtIso || request?.dateTimeIso || null;
+  const matchup = String(request?.matchup || 'this match').trim();
+  const caster = String(request?.requesterTag || 'a community caster').trim();
+  const platform = request?.streamPlatform ? ` (${request.streamPlatform})` : '';
+  const when = formatScheduleForDiscord(scheduleIso, request?.dateTime || 'Not scheduled on FACEIT yet');
+
+  if (!cancelled) {
+    return {
+      color: COVERAGE_COLORS.active,
+      title: `🎙️ This match will be covered by a community caster`,
+      description: `**${matchup}** will be cast live by **${caster}**.`,
+      fields: [
+        { name: 'When', value: when, inline: false },
+        { name: `Watch${platform}`, value: request?.streamUrl || 'Stream link to follow', inline: false },
+        request?.faceitUrl ? { name: 'FACEIT Matchroom', value: request.faceitUrl, inline: false } : null
+      ].filter(Boolean),
+      footer: `Stream request ${request?.id || ''}`.trim(),
+      followUp: null
+    };
+  }
+
+  const others = remainingCasters > 0
+    ? `${remainingCasters} other approved caster(s) still have this match.`
+    : 'No community caster is covering this match now.';
+  return {
+    color: COVERAGE_COLORS.cancelled,
+    title: `🚫 Community coverage cancelled`,
+    description: `**${caster}** is no longer casting **${matchup}**.${reason ? ` ${reason}` : ''}`,
+    fields: [
+      { name: 'When', value: when, inline: false },
+      { name: 'Coverage', value: others, inline: false }
+    ],
+    footer: `Stream request ${request?.id || ''}`.trim(),
+    followUp: `Community coverage of **${matchup}** by **${caster}** was cancelled. ${others}`
+  };
+}
+
+// Team names from a "Team A vs Team B" matchup string, for channel lookup by name.
+export function splitMatchupTeams(matchup) {
+  return String(matchup || '').split(/\s+vs\.?\s+/i).map((team) => team.trim()).filter(Boolean).slice(0, 2);
+}
+
+// --- "Live now" board ----------------------------------------------------------
+// A broadcast is live from the moment the caster presses "Going live" until they
+// press "End broadcast", staff/FACEIT end the cast, or the auto-end guard fires.
+export const LIVE_AUTO_END_HOURS = 3;
+export const LIVE_BOARD_COLOR = 0xe91e63;
+
+export function isBroadcastLive(request) {
+  return Boolean(request?.liveStartedAt && !request?.liveEndedAt);
+}
+
+// Stale guard: a live broadcast whose FACEIT match ended (or was canceled) more
+// than LIVE_AUTO_END_HOURS ago is assumed over even if the caster forgot the button.
+export function shouldAutoEndBroadcast(request, now = new Date()) {
+  if (!isBroadcastLive(request)) return false;
+  if (!['approved'].includes(request.status)) return true;
+  const terminalAt = Date.parse(request.terminalNotifiedAt || '');
+  if (!Number.isFinite(terminalAt)) return false;
+  return now.getTime() - terminalAt >= LIVE_AUTO_END_HOURS * 60 * 60 * 1000;
+}
+
+// One board message per broadcast. Plain data; no mentions anywhere.
+export function buildLiveBoardNotice(request) {
+  const scheduleIso = request?.faceitScheduledAtIso || request?.dateTimeIso || null;
+  const caster = String(request?.requesterTag || 'Community caster').trim();
+  const platform = request?.streamPlatform ? ` (${request.streamPlatform})` : '';
+  return {
+    color: LIVE_BOARD_COLOR,
+    title: `🔴 LIVE: ${String(request?.matchup || 'CROSSFIRE').trim()}`,
+    description: `**${caster}** is broadcasting now.`,
+    fields: [
+      { name: `Watch${platform}`, value: request?.streamUrl || 'Stream link to follow', inline: false },
+      { name: 'Match', value: formatScheduleForDiscord(scheduleIso, request?.dateTime || 'Not scheduled on FACEIT yet'), inline: true },
+      { name: 'Started', value: request?.liveStartedAt ? discordTimestamp(request.liveStartedAt, 'R') : 'just now', inline: true },
+      request?.faceitUrl ? { name: 'FACEIT Matchroom', value: request.faceitUrl, inline: false } : null
+    ].filter(Boolean),
+    footer: `Stream request ${request?.id || ''}`.trim()
+  };
+}

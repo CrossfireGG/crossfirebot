@@ -75,6 +75,11 @@ import {
   STREAM_ACTIVE_STATUSES,
   STREAM_STAFF_ACTION_STATUSES,
   STREAM_STATUS_LABELS,
+  buildCoverageNotice,
+  buildLiveBoardNotice,
+  isBroadcastLive,
+  shouldAutoEndBroadcast,
+  splitMatchupTeams,
   classifyFaceitScheduleChange,
   formatEasternDateTimeInput,
   formatScheduleForDiscord,
@@ -289,6 +294,8 @@ client.once(Events.ClientReady, async () => {
   console.log(`Schedule sheet: ${scheduleSheet.mode}${config.scheduleSheetWebhookUrl ? '' : ' (set SCHEDULE_SHEET_WEBHOOK_URL to log schedules to Google Sheets)'}`);
   await auditStreamChannelPermissions().catch((error) => console.error('Stream channel audit failed:', error));
   await recoverStreamRequestsOnStartup().catch((error) => console.error('Stream request recovery failed:', error));
+  console.log(`Live board: ${config.liveNowChannelId ? `<#${config.liveNowChannelId}>` : 'off (set LIVE_NOW_CHANNEL_ID to enable)'}`);
+  await resyncLiveBoard().catch((error) => console.error('Live board resync failed:', error));
   await runOperationsTick().catch((error) => console.error('Operations recovery failed:', error));
   if (!operationsTimer) {
     operationsTimer = setInterval(() => {
@@ -328,6 +335,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isButton() && interaction.customId.startsWith('stream_request_cancel:')) {
       await handleStreamRequestCancelButton(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('stream_live:')) {
+      await handleStreamLiveButton(interaction);
       return;
     }
     if (interaction.isModalSubmit() && interaction.customId.startsWith('stream_withdraw_submit:')) {
@@ -2882,8 +2893,10 @@ function streamRequesterCancelRow(request) {
 
 // Shown on the approval DM and the public approval post. Same handler as the cancel
 // button; it opens the withdrawal form because the request is already approved.
-function streamCasterWithdrawRow(request) {
-  return new ActionRowBuilder().addComponents(
+function streamCasterWithdrawRow(request, { live = false } = {}) {
+  const row = new ActionRowBuilder();
+  if (live && config.liveNowChannelId && request.status === 'approved') row.addComponents(streamCasterLiveButton(request));
+  return row.addComponents(
     new ButtonBuilder()
       .setCustomId(`stream_request_cancel:${request.id}:${request.requesterId}`)
       .setLabel('Withdraw from this cast')
@@ -2969,6 +2982,8 @@ async function handleStreamWithdrawModal(interaction) {
   await refreshStreamRequestStaffMessage(updated);
   await syncStreamRequestToWebsite(updated, 'canceled');
   const sheetWarning = await removeStreamLinkFromSheet(updated, interaction.user.id);
+  await cancelCoverageNotice(updated, { reason: 'The caster withdrew.', actorId: interaction.user.id });
+  await endBroadcast(updated, { actorId: interaction.user.id, reason: 'withdrawn' });
   const remainingCasters = updated.matchId
     ? (await listStreamRequests({ matchId: updated.matchId, status: 'approved' })).length
     : 0;
@@ -3259,11 +3274,13 @@ async function publishStreamApproval(request, interaction) {
   await refreshStreamRequestStaffMessage(updated);
   if (updated.status === 'approved') {
     const notified = await announceStreamApproval(updated);
+    const coverageNote = await postCoverageNotice(updated);
     const sheetWarning = await logStreamLinkToSheet(updated, interaction.user.id);
     await appendAuditLog({ type: 'stream_request_published', actorId: interaction.user.id, matchId: updated.matchId, requestId: updated.id, websiteId: updated.websiteId, publisher: websitePublisher.mode });
     await interaction.editReply([
       `✅ Request ${updated.id} approved${websitePublisher.mode === 'http' ? ' and published to the website.' : '. Website publishing is in log-only mode (WEBSITE_ENDPOINT is not set).'}`,
       notified ? null : '⚠️ Could not notify the caster. Check my permissions in their channel and whether their DMs are open.',
+      coverageNote ? `⚠️ ${coverageNote}` : null,
       sheetWarning ? `⚠️ ${sheetWarning}` : null
     ].filter(Boolean).join('\n'));
     return;
@@ -3303,7 +3320,7 @@ async function announceStreamApproval(request) {
     config.streamGuidelinesUrl ? `Guidelines: ${config.streamGuidelinesUrl}` : config.streamGuidelinesText,
     'If something comes up and you can no longer cast, press **Withdraw from this cast** below (or use `/request cancel`) as early as you can so staff can find a replacement.'
   ].filter(Boolean).join('\n');
-  const dmSent = await dmStreamRequester(request, { content: dmText, components: [streamCasterWithdrawRow(request)] });
+  const dmSent = await dmStreamRequester(request, { content: dmText, components: [streamCasterWithdrawRow(request, { live: true })] });
   const posted = await postToStreamOrigin(request, { embeds: [embed], components: [streamCasterWithdrawRow(request)] });
   if (!dmSent && !posted) await alertStreamStaff(`Could not notify <@${request.requesterId}> that stream request ${request.id} was approved.`);
   return dmSent || posted;
@@ -3327,6 +3344,220 @@ async function announceStreamDenial(request) {
 }
 
 // Posts a decision back to the channel the request came from, tagging the caster.
+// --- Team-channel coverage notices -------------------------------------------
+// Tells the two teams, in the match channel the bot gave them, that a community
+// caster is covering their match, and later that the coverage was cancelled.
+// Never throws: the approval/withdrawal must finish even if Discord misbehaves.
+
+function coverageEmbed(notice) {
+  return new EmbedBuilder()
+    .setColor(notice.color)
+    .setTitle(notice.title)
+    .setDescription(notice.description)
+    .addFields(notice.fields)
+    .setFooter({ text: notice.footer })
+    .setTimestamp();
+}
+
+// The match channel for a stream request: exact FACEIT match id first, then the
+// SCL resolver's team-name fallback (stored matches, then a guild channel scan).
+// Manual approvals have no match id, so they get no channel.
+async function resolveCoverageChannel(request) {
+  if (!request?.matchId) return null;
+  const teams = splitMatchupTeams(request.matchup);
+  const stored = await resolveStoredSclMatch(request.matchId, { teams: teams.map((name) => ({ name })) }).catch(() => null);
+  const channelId = stored?.discord?.channelId;
+  if (!channelId) return null;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  return channel?.isTextBased?.() ? channel : null;
+}
+
+// Posts the "you're being covered" notice once per request. Returns a staff-facing
+// note when the teams could not be told, or null when they were (or already had been).
+async function postCoverageNotice(request) {
+  if (!request || request.coverageMessageId) return null;
+  if (!request.matchId) return 'Teams not notified: no match channel linked (manual approval).';
+  try {
+    const channel = await resolveCoverageChannel(request);
+    if (!channel) return `Teams not notified: no match channel found for ${request.matchup}.`;
+    const message = await channel.send({ embeds: [coverageEmbed(buildCoverageNotice(request))], allowedMentions: { parse: [] } });
+    await updateStreamRequest(request.id, { coverageChannelId: channel.id, coverageMessageId: message.id, coverageCancelledAt: null }, ['approved']);
+    await appendAuditLog({ type: 'stream_coverage_posted', matchId: request.matchId, requestId: request.id, channelId: channel.id, messageId: message.id }).catch(() => null);
+    return null;
+  } catch (error) {
+    console.error(`Coverage notice failed for stream request ${request.id}:`, error);
+    return `Teams not notified: ${error?.message || error}`;
+  }
+}
+
+// Marks a posted coverage notice as cancelled (edit in place) and drops a one-line
+// follow-up so the teams see it without scrolling. Nothing happens when no notice
+// was ever posted. Safe to call twice.
+async function cancelCoverageNotice(request, { reason = null, actorId = null } = {}) {
+  if (!request?.coverageMessageId || !request?.coverageChannelId || request.coverageCancelledAt) return;
+  const remainingCasters = request.matchId
+    ? (await listStreamRequests({ matchId: request.matchId, status: 'approved' })).filter((entry) => entry.id !== request.id).length
+    : 0;
+  const notice = buildCoverageNotice(request, { cancelled: true, reason, remainingCasters });
+  try {
+    const channel = await client.channels.fetch(request.coverageChannelId).catch(() => null);
+    if (!channel?.isTextBased?.()) return;
+    const original = await channel.messages.fetch(request.coverageMessageId).catch(() => null);
+    if (original) await original.edit({ embeds: [coverageEmbed(notice)], components: [] }).catch(() => null);
+    await channel.send({ content: notice.followUp, allowedMentions: { parse: [] } }).catch(() => null);
+    await updateStreamRequest(request.id, { coverageCancelledAt: new Date().toISOString() });
+    await appendAuditLog({ type: 'stream_coverage_cancelled', matchId: request.matchId, requestId: request.id, actorId, remainingCasters }).catch(() => null);
+  } catch (error) {
+    console.error(`Coverage cancellation notice failed for stream request ${request.id}:`, error);
+  }
+}
+
+// --- "Live now" board ---------------------------------------------------------
+// One message per live broadcast in LIVE_NOW_CHANNEL_ID, deleted when it ends, so
+// the channel reads as a board of who is broadcasting right now. v1 is driven by the
+// caster's "Going live" / "End broadcast" buttons; platform detection can replace
+// startBroadcast/endBroadcast later without touching the rest.
+
+function liveBoardEmbed(request) {
+  const notice = buildLiveBoardNotice(request);
+  return new EmbedBuilder()
+    .setColor(notice.color)
+    .setTitle(notice.title)
+    .setDescription(notice.description)
+    .addFields(notice.fields)
+    .setFooter({ text: notice.footer })
+    .setTimestamp();
+}
+
+async function fetchLiveBoardChannel() {
+  if (!config.liveNowChannelId) return null;
+  const channel = await client.channels.fetch(config.liveNowChannelId).catch(() => null);
+  return channel?.isTextBased?.() ? channel : null;
+}
+
+// Posts (or, if a board message already exists, edits) the request's board message.
+async function startBroadcast(request, { actorId = null } = {}) {
+  if (request.status !== 'approved') return { ok: false, error: 'Only an approved cast can go live.' };
+  const channel = await fetchLiveBoardChannel();
+  if (!channel) return { ok: false, error: 'The live board channel is not configured or not reachable.' };
+  const startedAt = request.liveStartedAt && !request.liveEndedAt ? request.liveStartedAt : new Date().toISOString();
+  const draft = { ...request, liveStartedAt: startedAt, liveEndedAt: null };
+  const payload = { embeds: [liveBoardEmbed(draft)], allowedMentions: { parse: [] } };
+  let message = request.liveMessageId && !request.liveEndedAt
+    ? await channel.messages.fetch(request.liveMessageId).catch(() => null)
+    : null;
+  try {
+    message = message ? await message.edit(payload) : await channel.send(payload);
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) };
+  }
+  const updated = await updateStreamRequest(request.id, {
+    liveStartedAt: startedAt, liveEndedAt: null, liveChannelId: channel.id, liveMessageId: message.id
+  }, ['approved']);
+  if (!updated) {
+    await message.delete().catch(() => null);
+    return { ok: false, error: 'The request changed while going live. Check its status.' };
+  }
+  await appendAuditLog({ type: 'stream_live_started', actorId, matchId: request.matchId, requestId: request.id, messageId: message.id }).catch(() => null);
+  return { ok: true, request: updated };
+}
+
+// Removes the board message and closes the live window. Safe when nothing is live.
+async function endBroadcast(request, { actorId = null, reason = 'ended' } = {}) {
+  if (!isBroadcastLive(request)) return { ok: true, request };
+  if (request.liveChannelId && request.liveMessageId) {
+    const channel = await client.channels.fetch(request.liveChannelId).catch(() => null);
+    const message = channel?.isTextBased?.() ? await channel.messages.fetch(request.liveMessageId).catch(() => null) : null;
+    await message?.delete().catch(() => null);
+  }
+  const updated = await updateStreamRequest(request.id, { liveEndedAt: new Date().toISOString() });
+  await appendAuditLog({ type: 'stream_live_ended', actorId, matchId: request.matchId, requestId: request.id, reason }).catch(() => null);
+  return { ok: true, request: updated || request };
+}
+
+// Edit, don't repost, when match details change under a live broadcast.
+async function refreshLiveBoardMessage(request) {
+  if (!isBroadcastLive(request) || !request.liveChannelId || !request.liveMessageId) return;
+  const channel = await client.channels.fetch(request.liveChannelId).catch(() => null);
+  const message = channel?.isTextBased?.() ? await channel.messages.fetch(request.liveMessageId).catch(() => null) : null;
+  await message?.edit({ embeds: [liveBoardEmbed(request)], allowedMentions: { parse: [] } }).catch(() => null);
+}
+
+// After a restart: every live request has exactly one board message, and the board
+// holds nothing else of ours. Stranded messages are deleted; missing ones re-posted.
+async function resyncLiveBoard() {
+  const channel = await fetchLiveBoardChannel();
+  if (!channel) return;
+  const live = (await listStreamRequests()).filter(isBroadcastLive);
+  const keep = new Set();
+  for (const request of live) {
+    const existing = request.liveMessageId ? await channel.messages.fetch(request.liveMessageId).catch(() => null) : null;
+    if (existing) {
+      await existing.edit({ embeds: [liveBoardEmbed(request)], allowedMentions: { parse: [] } }).catch(() => null);
+      keep.add(existing.id);
+      continue;
+    }
+    const message = await channel.send({ embeds: [liveBoardEmbed(request)], allowedMentions: { parse: [] } }).catch(() => null);
+    if (!message) continue;
+    await updateStreamRequest(request.id, { liveChannelId: channel.id, liveMessageId: message.id });
+    keep.add(message.id);
+    console.warn(`Live board: re-posted missing message for request ${request.id}`);
+  }
+  const recent = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+  for (const message of recent?.values() || []) {
+    if (message.author?.id !== client.user.id || keep.has(message.id)) continue;
+    await message.delete().catch(() => null);
+    console.warn(`Live board: removed stranded message ${message.id}`);
+  }
+  console.log(`Live board: ${live.length} live broadcast(s) synced to <#${channel.id}>`);
+}
+
+// Stale guard, run every operations tick.
+async function autoEndStaleBroadcasts(now = Date.now()) {
+  const at = new Date(now);
+  for (const request of await listStreamRequests()) {
+    if (!shouldAutoEndBroadcast(request, at)) continue;
+    await endBroadcast(request, { reason: 'auto' });
+    console.warn(`Live board: auto-ended broadcast for request ${request.id} (${request.matchup})`);
+  }
+}
+
+function streamCasterLiveButton(request) {
+  const live = isBroadcastLive(request);
+  return new ButtonBuilder()
+    .setCustomId(`stream_live:${live ? 'end' : 'start'}:${request.id}:${request.requesterId}`)
+    .setLabel(live ? 'End broadcast' : 'Going live')
+    .setEmoji(live ? '⏹️' : '🔴')
+    .setStyle(live ? ButtonStyle.Secondary : ButtonStyle.Success);
+}
+
+async function handleStreamLiveButton(interaction) {
+  const [, action, requestId, requesterId] = interaction.customId.split(':');
+  if (interaction.user.id !== requesterId) {
+    await interaction.reply({ content: 'Only the caster of this request can mark it live.', ephemeral: true });
+    return;
+  }
+  const request = await getStreamRequest(requestId);
+  if (!request || request.status !== 'approved') {
+    await interaction.reply({ content: 'This cast is no longer approved, so it cannot be marked live.', ephemeral: true });
+    return;
+  }
+  const result = action === 'start'
+    ? await startBroadcast(request, { actorId: interaction.user.id })
+    : await endBroadcast(request, { actorId: interaction.user.id, reason: 'caster' });
+  if (!result.ok) {
+    await interaction.reply({ content: `⚠️ ${result.error}`, ephemeral: true });
+    return;
+  }
+  await interaction.update({ components: [streamCasterWithdrawRow(result.request, { live: true })] }).catch(() => null);
+  await interaction.followUp({
+    content: action === 'start'
+      ? `🔴 You are on the live board${config.liveNowChannelId ? ` in <#${config.liveNowChannelId}>` : ''}. Press **End broadcast** when you go offline.`
+      : '⏹️ Broadcast ended and removed from the live board. Press **Going live** again if you come back.',
+    ephemeral: true
+  }).catch(() => null);
+}
+
 async function postToStreamOrigin(request, payload) {
   const channel = request.sourceChannelId ? await client.channels.fetch(request.sourceChannelId).catch(() => null) : null;
   if (!channel?.isTextBased?.()) return false;
@@ -3363,6 +3594,8 @@ async function revokeStreamRequest(requestId, actorId, reason) {
   await syncStreamRequestToWebsite(updated, 'revoked');
   const sheetWarning = await removeStreamLinkFromSheet(updated, actorId);
   if (sheetWarning) await alertStreamStaff(`⚠️ ${sheetWarning} (stream request ${updated.id}, ${updated.matchup})`);
+  await cancelCoverageNotice(updated, { reason: 'Staff revoked the approval.', actorId });
+  await endBroadcast(updated, { actorId, reason: 'revoked' });
   await notifyStreamRequester(updated, `Your CROSSFIRE stream approval ${updated.id} for **${updated.matchup}** was revoked. Reason: ${reason}`);
   await appendAuditLog({ type: 'stream_request_revoked', actorId, matchId: updated.matchId, requestId, reason });
   return updated;
@@ -3667,6 +3900,10 @@ async function handleCancelStreamRequests(message, content) {
     if (!updated) continue;
     await refreshStreamRequestStaffMessage(updated);
     await syncStreamRequestToWebsite(updated, 'canceled');
+    await cancelCoverageNotice(updated, { reason: 'Staff canceled the cast.', actorId: message.author.id });
+    await endBroadcast(updated, { actorId: message.author.id, reason: 'staff_canceled' });
+    const sheetWarning = await removeStreamLinkFromSheet(updated, message.author.id);
+    if (sheetWarning) await alertStreamStaff(`⚠️ ${sheetWarning} (stream request ${updated.id}, ${updated.matchup})`);
     await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} for ${updated.matchup} was canceled by staff.`);
   }
   await appendAuditLog({ type: 'stream_requests_canceled', actorId: message.author.id, matchId: parsed?.matchId || null, requesterId: mentionedId, count: matches.length });
@@ -3762,6 +3999,10 @@ async function handleAdminStreams(interaction) {
     if (updated) {
       await refreshStreamRequestStaffMessage(updated);
       await syncStreamRequestToWebsite(updated, 'canceled');
+      await cancelCoverageNotice(updated, { reason: 'Staff canceled the cast.', actorId: interaction.user.id });
+      await endBroadcast(updated, { actorId: interaction.user.id, reason: 'staff_canceled' });
+      const sheetWarning = await removeStreamLinkFromSheet(updated, interaction.user.id);
+      if (sheetWarning) await alertStreamStaff(`⚠️ ${sheetWarning} (stream request ${updated.id}, ${updated.matchup})`);
       await appendAuditLog({ type: 'stream_request_canceled_by_staff', actorId: interaction.user.id, matchId: updated.matchId, requestId, reason: updated.denialReason });
       await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} was canceled by staff. Reason: ${updated.denialReason}`);
     }
@@ -5551,6 +5792,7 @@ async function runOperationsTick() {
 
 async function runStreamOperationsTick(now = Date.now()) {
   await repostStreamRequestsAwaitingStaff().catch((error) => console.error('Stream request re-post failed:', error));
+  await autoEndStaleBroadcasts(now).catch((error) => console.error('Live board auto-end failed:', error));
   const active = (await listStreamRequests()).filter((request) =>
     request.faceitLinkValid && request.matchId && !request.terminalNotifiedAt && STREAM_ACTIVE_STATUSES.includes(request.status)
   );
@@ -5591,6 +5833,7 @@ async function runStreamOperationsTick(now = Date.now()) {
             await refreshStreamRequestStaffMessage(updated);
             // Keep the website's listing in step with FACEIT for already-published streams.
             if (scheduleUpdated && updated.status === 'approved') await syncStreamRequestToWebsite(updated, 'approved');
+            if (scheduleUpdated) await refreshLiveBoardMessage(updated);
           }
         }
         if (scheduleUpdated) {
@@ -5658,6 +5901,10 @@ async function runStreamOperationsTick(now = Date.now()) {
         }, STREAM_ACTIVE_STATUSES);
         if (updated) await refreshStreamRequestStaffMessage(updated);
         if (updated?.status === 'approved') await syncStreamRequestToWebsite(updated, canceled ? 'canceled' : 'completed');
+        if (updated?.status === 'approved' && canceled) {
+          await cancelCoverageNotice(updated, { reason: 'FACEIT canceled the match.' });
+          await endBroadcast(updated, { reason: 'faceit_canceled' });
+        }
       }
       if (canceled) {
         for (const request of new Map(currentRequests.filter((entry) => entry.status === 'approved').map((entry) => [entry.requesterId, entry])).values()) {
