@@ -11,8 +11,10 @@ import { isAuthorizedStaffMember, parseForceDirective } from '../src/operationsP
 import { extractFaceitTeamId } from '../src/sheetRoles.js';
 import { applyVetoAction, chooseFirstAction, createVeto } from '../src/vetoEngine.js';
 import {
+  buildScheduleChangeNotice,
   classifyFaceitScheduleChange,
   formatEasternDateTimeInput,
+  selectScheduleChangeRecipients,
   isCanceledFaceitStatus,
   isTerminalFaceitStatus,
   makeStreamRequestModalId,
@@ -220,6 +222,35 @@ test('stream schedule monitoring distinguishes scheduled, moved, and removed tim
   assert.equal(classifyFaceitScheduleChange(first, second), 'rescheduled');
   assert.equal(classifyFaceitScheduleChange(first, null), 'unscheduled');
   assert.equal(classifyFaceitScheduleChange(first, first), 'unchanged');
+});
+
+test('schedule changes go to each requesting caster once, never to anyone else', () => {
+  const recipients = selectScheduleChangeRecipients([
+    { id: 'a', requesterId: 'caster-1', status: 'pending' },
+    { id: 'b', requesterId: 'caster-1', status: 'approved' },
+    { id: 'c', requesterId: 'caster-2', status: 'pending' },
+    { id: 'd', requesterId: 'caster-3', status: 'denied' },
+    { id: 'e', status: 'approved' }
+  ]);
+  assert.deepEqual(recipients.map((request) => request.id), ['b', 'c']);
+});
+
+test('schedule change notices tell the caster what moved and what happened to their request', () => {
+  const moved = buildScheduleChangeNotice({
+    scheduleChange: 'rescheduled',
+    matchup: 'Alpha vs Bravo',
+    status: 'approved',
+    previousLabel: 'November 2, 2026 8:00 PM ET',
+    nextLabel: 'November 3, 2026 9:00 PM ET'
+  });
+  assert.match(moved, /Alpha vs Bravo\*\* moved from \*\*November 2, 2026 8:00 PM ET\*\* to \*\*November 3, 2026 9:00 PM ET/);
+  assert.match(moved, /approved stream request has been updated/);
+  assert.match(
+    buildScheduleChangeNotice({ scheduleChange: 'rescheduled', matchup: 'Alpha vs Bravo', status: 'pending', previousLabel: 'x', nextLabel: 'y' }),
+    /Your stream request has been updated to match/
+  );
+  assert.match(buildScheduleChangeNotice({ scheduleChange: 'unscheduled', matchup: 'Alpha vs Bravo', status: 'approved' }), /removed the scheduled time/);
+  assert.match(buildScheduleChangeNotice({ scheduleChange: 'scheduled', matchup: 'Alpha vs Bravo', status: 'approved', nextLabel: 'y' }), /scheduled \*\*Alpha vs Bravo\*\* for \*\*y/);
 });
 
 test('stream monitoring recognizes completed and canceled FACEIT states', () => {

@@ -184,6 +184,26 @@ export function classifyFaceitScheduleChange(previousIso, nextIso) {
   return 'unchanged';
 }
 
+// One request per caster: the casters who asked to cover this match are the only people told it moved.
+export function selectScheduleChangeRecipients(requests) {
+  const byCaster = new Map();
+  for (const request of requests || []) {
+    if (!request?.requesterId || !STREAM_ACTIVE_STATUSES.includes(request.status)) continue;
+    const existing = byCaster.get(request.requesterId);
+    if (!existing || (existing.status !== 'approved' && request.status === 'approved')) byCaster.set(request.requesterId, request);
+  }
+  return [...byCaster.values()];
+}
+
+export function buildScheduleChangeNotice({ scheduleChange, matchup, status, previousLabel, nextLabel }) {
+  const updated = status === 'approved'
+    ? 'Your approved stream request has been updated automatically.'
+    : 'Your stream request has been updated to match.';
+  if (scheduleChange === 'scheduled') return `FACEIT scheduled **${matchup}** for **${nextLabel}**. ${updated}`;
+  if (scheduleChange === 'unscheduled') return `FACEIT removed the scheduled time for **${matchup}**. I will notify you when a new time is posted.`;
+  return `**${matchup}** moved from **${previousLabel}** to **${nextLabel}**. ${updated}`;
+}
+
 export function isTerminalFaceitStatus(status) {
   return /finished|completed|done|canceled|cancelled/.test(String(status || '').toLowerCase());
 }

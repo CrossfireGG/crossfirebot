@@ -80,9 +80,11 @@ import {
   isBroadcastLive,
   shouldAutoEndBroadcast,
   splitMatchupTeams,
+  buildScheduleChangeNotice,
   classifyFaceitScheduleChange,
   formatEasternDateTimeInput,
   formatScheduleForDiscord,
+  selectScheduleChangeRecipients,
   isCanceledFaceitStatus,
   isTerminalFaceitStatus,
   classifyCasterExit,
@@ -3720,7 +3722,7 @@ async function repostStreamRequestsAwaitingStaff() {
   }
 }
 
-async function notifyStreamRequester(request, text) {
+async function notifyStreamRequester(request, text, { staffFallback = true } = {}) {
   const user = await client.users.fetch(request.requesterId).catch(() => null);
   if (user && await user.send(text).then(() => true).catch(() => false)) return true;
   const channel = request.sourceChannelId ? await client.channels.fetch(request.sourceChannelId).catch(() => null) : null;
@@ -3731,6 +3733,7 @@ async function notifyStreamRequester(request, text) {
     }).then(() => true).catch(() => false);
     if (delivered) return true;
   }
+  if (!staffFallback) return false;
   const staff = config.streamRequestChannelId ? await client.channels.fetch(config.streamRequestChannelId).catch(() => null) : null;
   await staff?.send(`Could not DM <@${request.requesterId}> about stream request ${request.id}.`).catch(() => null);
   return false;
@@ -5837,44 +5840,30 @@ async function runStreamOperationsTick(now = Date.now()) {
           }
         }
         if (scheduleUpdated) {
-          const staffChannel = config.streamRequestChannelId
-            ? await client.channels.fetch(config.streamRequestChannelId).catch(() => null)
-            : null;
-          await staffChannel?.send({
-            content: getStaffMentions(staffChannel.guild),
-            embeds: [new EmbedBuilder()
-              .setColor(EMBED_COLORS.warning)
-              .setTitle(scheduleChange === 'scheduled' ? 'FACEIT Stream Match Scheduled' : scheduleChange === 'unscheduled' ? 'FACEIT Stream Schedule Removed' : 'FACEIT Stream Schedule Changed')
-              .setDescription(scheduleChange === 'scheduled'
-                ? `**${currentRequests[0]?.matchup || matchId}** is now scheduled for **${nextLabel}**.`
-                : scheduleChange === 'unscheduled'
-                  ? `FACEIT removed the scheduled time for **${currentRequests[0]?.matchup || matchId}**. Caster delivery is paused until a new time is posted.`
-                  : `**${currentRequests[0]?.matchup || matchId}** moved from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**.`)
-              .addFields({ name: 'FACEIT Matchroom', value: currentRequests[0]?.faceitUrl || match.faceitUrl })
-              .setTimestamp()],
-            allowedMentions: getAdminAllowedMentions(staffChannel.guild)
-          }).catch(() => null);
-          const approvedRequests = currentRequests.filter((request) => request.status === 'approved');
-          const byCaster = new Map(approvedRequests.map((request) => [request.requesterId, request]));
-          const failedCasterIds = [];
-          for (const request of byCaster.values()) {
-            const message = scheduleChange === 'scheduled'
-              ? `FACEIT scheduled **${request.matchup}** for **${nextLabel}**. Your approved stream request has been updated automatically.`
-              : scheduleChange === 'unscheduled'
-                ? `FACEIT removed the scheduled time for **${request.matchup}**. I will notify you when a new time is posted.`
-                : `FACEIT changed **${request.matchup}** from **${formatEasternDateTimeInput(previousIso)}** to **${nextLabel}**. Your approved stream request has been updated automatically.`;
-            const sent = await dmStreamRequester(request, message);
-            if (!sent) failedCasterIds.push(request.requesterId);
+          // Only the casters who requested this match are told. Tournament Ops are not pinged; the staff
+          // card above is edited in place so it still shows the new time.
+          const undeliveredCasterIds = [];
+          for (const request of selectScheduleChangeRecipients(currentRequests)) {
+            const text = buildScheduleChangeNotice({
+              scheduleChange,
+              matchup: request.matchup || matchId,
+              status: request.status,
+              previousLabel: previousIso ? formatEasternDateTimeInput(previousIso) : null,
+              nextLabel
+            });
+            const sent = await notifyStreamRequester(request, text, { staffFallback: false });
+            if (!sent) undeliveredCasterIds.push(request.requesterId);
           }
-          if (failedCasterIds.length) {
-            await staffChannel?.send(`Could not DM schedule changes to: ${failedCasterIds.map((id) => `<@${id}>`).join(', ')}`).catch(() => null);
+          if (undeliveredCasterIds.length) {
+            console.warn(`[Stream] could not deliver schedule change for ${matchId} to: ${undeliveredCasterIds.join(', ')}`);
           }
           await appendAuditLog({
             type: scheduleChange === 'scheduled' ? 'stream_match_scheduled' : scheduleChange === 'unscheduled' ? 'stream_schedule_removed' : 'stream_schedule_changed',
             matchId,
             previousIso,
             nextIso,
-            requestCount: currentRequests.length
+            requestCount: currentRequests.length,
+            undeliveredCasterIds
           });
         }
       } catch (error) {
