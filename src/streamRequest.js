@@ -352,6 +352,36 @@ function isAllowedHost(url, hosts) {
   return hosts.includes(url.hostname.toLowerCase());
 }
 
+// Channel name from a stream link, e.g. "twitch.tv/spawned_in" -> "spawned_in",
+// "youtube.com/@caster" -> "@caster". Returns null for links that are not a
+// channel page (search, directory, single videos), so callers can fall back.
+const STREAM_NON_CHANNEL_PATHS = new Set([
+  'search', 'directory', 'videos', 'settings', 'p', 'downloads', 'jobs', 'turbo',
+  'subscriptions', 'inventory', 'wallet', 'friends', 'messages', 'moderator', 'u',
+  'watch', 'results', 'feed', 'shorts', 'live', 'categories', 'following', 'browse'
+]);
+
+export function streamChannelName(streamUrl) {
+  let url;
+  try {
+    url = new URL(String(streamUrl || ''));
+  } catch {
+    return null;
+  }
+  const platform = STREAM_HOSTS[url.hostname.toLowerCase()];
+  if (!platform) return null;
+  const segments = url.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part));
+  if (!segments.length) return null;
+  if (platform === 'youtube') {
+    if (segments[0].startsWith('@') && segments[0].length > 1) return segments[0];
+    if (['c', 'user'].includes(segments[0].toLowerCase()) && segments[1]) return segments[1];
+    return null;
+  }
+  const name = segments[0];
+  if (STREAM_NON_CHANNEL_PATHS.has(name.toLowerCase())) return null;
+  return /^[A-Za-z0-9_-]{2,25}$/.test(name) ? name : null;
+}
+
 // "You're being covered" notice for the two teams' match channel. Plain data so the
 // Discord embed is a thin wrapper and the wording can be tested. The caster is named
 // by tag, never mentioned: the teams only need to know who, not be pinged.
@@ -360,18 +390,19 @@ export const COVERAGE_COLORS = { active: 0x9b59b6, cancelled: 0x7f8c8d };
 export function buildCoverageNotice(request, { cancelled = false, reason = null, remainingCasters = 0 } = {}) {
   const scheduleIso = request?.faceitScheduledAtIso || request?.dateTimeIso || null;
   const matchup = String(request?.matchup || 'this match').trim();
-  const caster = String(request?.requesterTag || 'a community caster').trim();
-  const platform = request?.streamPlatform ? ` (${request.streamPlatform})` : '';
+  // Teams see the caster's stream channel name; the Discord tag is only a fallback
+  // for links that do not name a channel.
+  const caster = String(streamChannelName(request?.streamUrl) || request?.requesterTag || 'a community caster').trim();
   const when = formatScheduleForDiscord(scheduleIso, request?.dateTime || 'Not scheduled on FACEIT yet');
 
   if (!cancelled) {
     return {
       color: COVERAGE_COLORS.active,
-      title: `🎙️ This match will be covered by a community caster`,
-      description: `**${matchup}** will be cast live by **${caster}**.`,
+      title: '🎙️ This match will be streamed!',
+      description: `**${matchup}** will be cast live by **${caster}**`,
       fields: [
         { name: 'When', value: when, inline: false },
-        { name: `Watch${platform}`, value: request?.streamUrl || 'Stream link to follow', inline: false },
+        { name: 'Watch', value: request?.streamUrl || 'Stream link to follow', inline: false },
         request?.faceitUrl ? { name: 'FACEIT Matchroom', value: request.faceitUrl, inline: false } : null
       ].filter(Boolean),
       footer: `Stream request ${request?.id || ''}`.trim(),
