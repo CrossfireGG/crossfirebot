@@ -96,6 +96,35 @@ test('authorized staff role IDs accept spaces, commas, and semicolons', () => {
   }
 });
 
+test('Season 7 Group Stage window can be extended through November 11', () => {
+  const previous = Object.fromEntries([
+    'DISCORD_TOKEN',
+    'DISCORD_CLIENT_ID',
+    'DISCORD_GUILD_ID',
+    'FACEIT_API_KEY',
+    'FACEIT_SOURCES',
+    'ROUND_WINDOWS'
+  ].map((key) => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, {
+      DISCORD_TOKEN: 'test-token',
+      DISCORD_CLIENT_ID: '111111111111111',
+      DISCORD_GUILD_ID: '222222222222222',
+      FACEIT_API_KEY: 'test-key',
+      FACEIT_SOURCES: 'championship:test-id:Test Championship',
+      ROUND_WINDOWS: 'Group Stage=2026-11-02..2026-11-11;Group Stage - Round 3=2026-11-08..2026-11-11'
+    });
+    const windows = getConfig().roundWindows;
+    assert.deepEqual(windows['group stage'], { start: '2026-11-02', end: '2026-11-11' });
+    assert.deepEqual(windows['group stage - round 3'], { start: '2026-11-08', end: '2026-11-11' });
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('schedule policy override requires an explicit reason', () => {
   assert.deepEqual(parseForceDirective('October 1 9 PM ET'), { scheduleText: 'October 1 9 PM ET', reason: '' });
   assert.deepEqual(parseForceDirective('October 1 9 PM ET --force production conflict'), {

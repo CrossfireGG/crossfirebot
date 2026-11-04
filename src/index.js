@@ -133,10 +133,10 @@ const SEASON6_GROUP_STAGE_ID = '6301070e-7096-42b3-830c-d72dfb586398';
 const SEASON6_PLAYOFF_ID = 'c0c0b1fd-fa0b-4488-98b8-be7fdeaee7c0';
 
 const SEASON_SCHEDULE = [
-  { name: 'Group Stage', start: 'November 2, 2026', end: 'November 10, 2026', defaultDate: 'November 6, 2026' },
+  { name: 'Group Stage', start: 'November 2, 2026', end: 'November 11, 2026', defaultDate: 'November 6, 2026' },
   { name: 'Round 1', start: 'November 2, 2026', end: 'November 4, 2026', defaultDate: 'November 3, 2026', defaultDateTime: 'November 3, 2026 at 8:00 PM EST' },
   { name: 'Round 2', start: 'November 5, 2026', end: 'November 7, 2026', defaultDate: 'November 6, 2026', defaultDateTime: 'November 6, 2026 at 8:00 PM EST' },
-  { name: 'Round 3', start: 'November 8, 2026', end: 'November 10, 2026', defaultDate: 'November 9, 2026', defaultDateTime: 'November 9, 2026 at 8:00 PM EST' },
+  { name: 'Round 3', start: 'November 8, 2026', end: 'November 11, 2026', defaultDate: 'November 9, 2026', defaultDateTime: 'November 9, 2026 at 8:00 PM EST' },
   { name: 'Seeding Break', start: 'September 9, 2026', end: 'September 11, 2026', defaultDate: 'September 10, 2026' },
   { name: 'Playoff Stage', start: 'September 12, 2026', end: 'October 11, 2026', defaultDate: 'September 26, 2026' },
   { name: 'Upper Bracket - Round 1', start: 'September 12, 2026', end: 'September 14, 2026', defaultDate: 'September 14, 2026', defaultDateTime: 'Mon, 14 Sep 2026, 20:00 EDT' },
