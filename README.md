@@ -331,6 +331,8 @@ When `REQUEST_IP_CHANNEL_ID` is set, that channel is the one place for match IPs
 
 When the official CROSSFIRE broadcast covers a match, staff run `!request mainstream FACEIT_MATCHROOM_LINK` (or just `!request mainstream` inside the match channel; `main stream`, `main-stream` and `main` also work). The bot cannot read server IPs from FACEIT, so it forwards what staff enter: if the CSTV connect or IP has already been entered for that match (connection prompt or `!sendip`), it is posted to `REQUEST_IP_CHANNEL_ID` straight away; otherwise it is posted there the moment it is entered. A match with no approved community casters gets a **Main Stream Connection Needed** prompt in #request-ip immediately, using the same Submit CSTV Connect modal. Entering new details later posts them again. The official Twitch link delivery type is never posted there. Keep `#request-ip` private to the production crew; the post contains the connect command. Audit events: `main_stream_requested` and `request_ip_posted` (the connection value is never logged).
 
+It also tells the two teams in their match channel, once per match: a red "📺 This match will be on the main stream!" embed saying the match **will be casted live by** the official stream (its channel name when `MAIN_STREAM_URL` is set), with the approved match time, a Watch link (when `MAIN_STREAM_URL` is set) and the FACEIT Matchroom. Running the command again does not repost it. If no match channel is found, the staff reply says so. Audit event: `main_stream_coverage_posted`.
+
 Staff management (admins and the stream staff role):
 
 | Command | What it does |

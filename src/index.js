@@ -107,6 +107,7 @@ import {
   STREAM_STAFF_ACTION_STATUSES,
   STREAM_STATUS_LABELS,
   buildCoverageNotice,
+  buildMainStreamCoverageNotice,
   buildConnectionDm,
   requestRoomId,
   selectConnectionRecipients,
@@ -4346,6 +4347,31 @@ async function postCoverageNotice(request) {
   }
 }
 
+// Tells the two teams, in their match channel, that the official CROSSFIRE stream is covering
+// them. Posted once per match (the message id is kept on the main stream coverage record).
+// Returns a line for the staff reply. Never throws.
+async function postMainStreamCoverageNotice(coverage, { stored = null } = {}) {
+  if (coverage?.noticeMessageId) return `The teams were already told in <#${coverage.noticeChannelId}>.`;
+  try {
+    const teams = splitMatchupTeams(coverage.matchup);
+    const match = stored?.discord?.channelId
+      ? stored
+      : await resolveStoredSclMatch(coverage.matchId, { teams: teams.map((name) => ({ name })) }).catch(() => null);
+    const channel = match?.discord?.channelId ? await client.channels.fetch(match.discord.channelId).catch(() => null) : null;
+    if (!channel?.isTextBased?.()) return `⚠️ Teams not told: no match channel found for **${coverage.matchup}**.`;
+    const schedule = await getSchedule(coverage.matchId).catch(() => null);
+    const scheduleIso = schedule?.adminApproved ? (schedule.scheduledAtIso || schedule.scheduledAt || null) : null;
+    const notice = buildMainStreamCoverageNotice({ matchup: coverage.matchup, faceitUrl: coverage.faceitUrl, scheduleIso, streamUrl: config.mainStreamUrl });
+    const message = await channel.send({ embeds: [coverageEmbed(notice)], allowedMentions: { parse: [] } });
+    await saveMainStreamCoverage(coverage.matchId, { noticeChannelId: channel.id, noticeMessageId: message.id, noticePostedAt: new Date().toISOString() });
+    await appendAuditLog({ type: 'main_stream_coverage_posted', matchId: coverage.matchId, channelId: channel.id, messageId: message.id }).catch(() => null);
+    return `Told the teams in <#${channel.id}>.`;
+  } catch (error) {
+    console.error(`Main stream coverage notice failed for ${coverage?.matchId}:`, error);
+    return `⚠️ Teams not told: ${error?.message || error}`;
+  }
+}
+
 // Marks a posted coverage notice as cancelled (edit in place) and drops a one-line
 // follow-up so the teams see it without scrolling. Nothing happens when no notice
 // was ever posted. Safe to call twice.
@@ -4875,13 +4901,17 @@ async function handleMainStreamRequest(message, rest) {
     requestedAt: new Date().toISOString()
   });
   await appendAuditLog({ type: 'main_stream_requested', actorId: message.author.id, matchId });
+  const teamsLine = await postMainStreamCoverageNotice(coverage, { stored });
 
   const connection = await getMatchConnection(matchId);
   if (connection?.value) {
     const posted = await postConnectionToRequestIp(matchId);
-    await message.reply(posted
-      ? `📺 Posted the connection details for **${matchup}** in <#${config.requestIpChannelId}>.`
-      : `⚠️ Could not post in <#${config.requestIpChannelId}>. Check that I can view and send messages there.`);
+    await message.reply([
+      posted
+        ? `📺 Posted the connection details for **${matchup}** in <#${config.requestIpChannelId}>.`
+        : `⚠️ Could not post in <#${config.requestIpChannelId}>. Check that I can view and send messages there.`,
+      teamsLine
+    ].join('\n'));
     return;
   }
 
@@ -4894,7 +4924,8 @@ async function handleMainStreamRequest(message, rest) {
       : prompted
         ? `Staff were asked for it in <#${ipChannelId()}>.`
         : 'Staff can enter it with `!sendip FACEIT_MATCHROOM_LINK connect IP:PORT`.',
-    `It will be posted in <#${config.requestIpChannelId}> as soon as it is entered.`
+    `It will be posted in <#${config.requestIpChannelId}> as soon as it is entered.`,
+    teamsLine
   ].join('\n'));
 }
 

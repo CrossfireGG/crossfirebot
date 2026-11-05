@@ -213,6 +213,8 @@ export function getConfig() {
     liveNowChannelId: process.env.LIVE_NOW_CHANNEL_ID || null,
     // Optional: where `!request mainstream` posts connection details for the official broadcast.
     requestIpChannelId: process.env.REQUEST_IP_CHANNEL_ID || null,
+    // Optional: the official CROSSFIRE stream link, shown to teams when the main stream covers them.
+    mainStreamUrl: process.env.MAIN_STREAM_URL || null,
     // Optional: when set, `/request stream` only works in these channels.
     streamCommunityChannelIds: parseSnowflakeList(process.env.STREAM_COMMUNITY_CHANNEL_IDS || ''),
     // Upcoming Matches post (daily and /cf upcoming). Defaults to the community casters channel.

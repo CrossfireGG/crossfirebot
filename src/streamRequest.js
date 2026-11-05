@@ -384,6 +384,26 @@ export function streamChannelName(streamUrl) {
   return /^[A-Za-z0-9_-]{2,25}$/.test(name) ? name : null;
 }
 
+// "You're on the main stream" notice for the two teams' match channel (`!request mainstream`).
+// Same shape as buildCoverageNotice. Names the official stream by its channel name when
+// MAIN_STREAM_URL is set.
+export const MAIN_STREAM_COVERAGE_COLOR = 0xe74c3c;
+
+export function buildMainStreamCoverageNotice({ matchup, faceitUrl = null, scheduleIso = null, streamUrl = null } = {}) {
+  const name = streamChannelName(streamUrl);
+  return {
+    color: MAIN_STREAM_COVERAGE_COLOR,
+    title: '📺 This match will be on the main stream!',
+    description: `**${String(matchup || 'This match').trim()}** will be casted live by **${name || 'the official CROSSFIRE stream'}**`,
+    fields: [
+      { name: 'When', value: formatScheduleForDiscord(scheduleIso, 'Time to be confirmed'), inline: false },
+      streamUrl ? { name: 'Watch', value: streamUrl, inline: false } : null,
+      faceitUrl ? { name: 'FACEIT Matchroom', value: faceitUrl, inline: false } : null
+    ].filter(Boolean),
+    footer: 'CROSSFIRE main stream'
+  };
+}
+
 // "You're being covered" notice for the two teams' match channel. Plain data so the
 // Discord embed is a thin wrapper and the wording can be tested. The caster is named
 // by tag, never mentioned: the teams only need to know who, not be pinged.
