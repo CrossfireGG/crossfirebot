@@ -12,6 +12,7 @@ import {
   PermissionFlagsBits,
   REST,
   Routes,
+  StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle
 } from 'discord.js';
@@ -146,10 +147,12 @@ import {
   buildStaffFormNudge,
   groupMissingForms,
   staffNudgeCooldownUntil,
-  STAFF_NUDGE_COOLDOWN_MINUTES,
   buildFormsOverview,
-  formsNudgeCasters,
-  selectFormCasts
+  formsCasterSummaries,
+  buildCasterFormsView,
+  selectFormCasts,
+  buildStreamListView,
+  isPostCastFormOverdue
 } from './streamRequest.js';
 import { parseScheduleClock } from './scheduleInput.js';
 import { createWebsitePublisher } from './websitePublisher.js';
@@ -351,7 +354,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await handleCrossfireCommand(interaction);
         return;
       }
-      if (!canUseBotAdminCommand(interaction.member)) {
+      const streamStaffCommand = interaction.commandName === 'cf'
+        && ['streams', 'forms'].includes(interaction.options.getSubcommand(false));
+      const allowed = streamStaffCommand ? canManageStreamRequests(interaction.member) : canUseBotAdminCommand(interaction.member);
+      if (!allowed) {
         await interaction.reply({ content: 'Only admins/match staff can use this bot command.', ephemeral: true });
         return;
       }
@@ -366,6 +372,26 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isButton() && interaction.customId.startsWith('stream_request_cancel:')) {
       await handleStreamRequestCancelButton(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('stream_retry:')) {
+      await handleStreamRetryButton(interaction);
+      return;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId === 'forms_caster') {
+      await handleFormsCasterSelect(interaction);
+      return;
+    }
+    if (interaction.isStringSelectMenu() && (interaction.customId === 'forms_mark_received' || interaction.customId.startsWith('forms_mark:'))) {
+      await handleFormsMarkReceived(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId === 'forms_nudge_all') {
+      await handleFormsNudgeAll(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId === 'forms_back') {
+      await handleFormsBack(interaction);
       return;
     }
     if (interaction.isButton() && interaction.customId.startsWith('forms_nudge:')) {
@@ -1037,9 +1063,9 @@ async function handleCommandHelp(interaction) {
       '`/cf sample` - create a sample match room for testing.',
       '`/cf mappings action:list|inspect|link|repair` - manage persistent team-role mappings.',
       '`/cf veto action:start|inspect|reset|cancel|seeds` - manage a playoff veto.',
-      '`/cf streams action:pending|approved|inspect|cancel|revoke|complete` - review stream requests.',
+      '`/cf streams action:list|inspect|cancel` - see, inspect or cancel caster requests (cancel by `request_id:`, `match:` or `caster:`).',
       '`/cf auditlog match_id:<optional>` - inspect scheduling and operations decisions.',
-      '`/cf forms` - who has submitted their post-cast form and who is missing, with a nudge button per caster.',
+      '`/cf forms` - who owes post-cast forms. Pick a caster to see their casts, nudge them or mark a form received, or press Nudge all.',
       '`/cf season action:list|start|rounds|edit|end|delete` - set season dates and each round\'s scheduling window.',
       '',
       '**Match Room Commands**',
@@ -1051,10 +1077,8 @@ async function handleCommandHelp(interaction) {
       '`!cancel` - cancel your open proposal before it is accepted.',
       '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.',
       '`/request stream` - open the community stream request form (`!request` now points casters here).',
-      '`/cf streams action:pending|approved|publish_failed|inspect|retry|cancel|revoke|complete` - manage caster requests and website publishing.',
-      '`!cancelreq FACEIT_LINK` or `!cancelreq @caster` - staff cancel grouped or individual approved caster requests.',
-      '`!resendip FACEIT_LINK` - staff restart the CSTV/Twitch delivery prompt.',
-      '`!sendip FACEIT_LINK MESSAGE` - staff immediately DM connection details or instructions to approved casters.',
+      '`!sendip FACEIT_LINK MESSAGE` - staff immediately DM connection details to approved casters. Without a message it reposts the IP prompt.',
+      '`!request mainstream FACEIT_LINK` - staff mark a match for the official stream and post its IP in #request-ip.',
       '',
       '**Public Slash Commands**',
       '`/request stream` - submit a stream request; `/request cancel` cancels your pending request.',
@@ -1106,11 +1130,17 @@ client.on(Events.MessageCreate, async (message) => {
     }
 
     if (/^!cancelreq\b/i.test(content)) {
-      await handleCancelStreamRequests(message, content);
+      await message.reply({
+        content: 'Canceling moved to `/cf streams action:cancel`. Give it `match:` (FACEIT link), `caster:` or `request_id:`.',
+        allowedMentions: { repliedUser: false }
+      });
     }
 
     if (/^!resendip\b/i.test(content)) {
-      await handleResendStreamDelivery(message, content);
+      await message.reply({
+        content: 'Use `!sendip FACEIT_LINK` with no message to repost the IP prompt.',
+        allowedMentions: { repliedUser: false }
+      });
     }
 
     if (/^!sendip\b/i.test(content)) {
@@ -3490,57 +3520,131 @@ async function missingFormGroups(requesterId = null) {
   return { groups, since, sheetCheckFailed: check.failed, arrived: check.foundIds.length };
 }
 
-// `/cf forms`: who has submitted their post-cast form and who has not, after checking the form
-// sheet, with a Nudge button per caster still missing one.
+// `/cf forms`: one line per caster who owes forms, a menu to open any caster, and a Nudge all
+// button. Picking a caster swaps the same message to their view (see buildCasterFormsPayload).
 async function showForms(interaction) {
   await interaction.deferReply({ ephemeral: true });
-  const since = config.postCastFormGateSince;
-  let requests = await listStreamRequests();
-  const check = await checkFormsInSheet(selectFormCasts(requests, { since }).missing.map((request) => request.id), '/cf forms');
-  if (check.foundIds.length) requests = await listStreamRequests();
-  const selection = selectFormCasts(requests, { since });
-  const buttons = formsNudgeCasters(requests, { since }).map((caster) => new ButtonBuilder()
-    .setCustomId(`forms_nudge:${caster.id}`)
-    .setLabel(`Nudge ${caster.tag || caster.id}`.slice(0, 80))
-    .setEmoji('📨')
-    .setStyle(ButtonStyle.Secondary));
-  const rows = [];
-  for (let index = 0; index < buttons.length; index += 5) rows.push(new ActionRowBuilder().addComponents(buttons.slice(index, index + 5)));
-  const embed = new EmbedBuilder()
-    .setTitle('📝 Post-cast forms')
-    .setDescription(buildFormsOverview(selection, { sheetCheckFailed: check.failed }))
-    .setColor(selection.missing.length ? 0xf1c40f : 0x2ecc71);
-  await interaction.editReply({ embeds: [embed], components: rows, allowedMentions: { parse: [] } });
+  await interaction.editReply(await buildFormsPayload({ checkSheet: true }));
 }
 
-// The Nudge button: re-checks the sheet, then DMs the caster every form they still owe. Staff
-// can nudge the same caster once an hour; a nudge also counts as the automatic 48-hour one.
-async function handleFormsNudgeButton(interaction) {
-  if (!canUseBotAdminCommand(interaction.member)) {
-    await interaction.reply({ content: 'Only admins/match staff can nudge casters.', ephemeral: true });
-    return;
+// Loads stream requests (all, or one caster's). With checkSheet, missing forms are looked up on
+// the form sheet first so a form that just came in shows as submitted.
+async function loadFormRequests({ checkSheet = true, casterId = null } = {}) {
+  const since = config.postCastFormGateSince;
+  const filter = casterId ? { requesterId: casterId } : {};
+  let requests = await listStreamRequests(filter);
+  let sheetCheckFailed = false;
+  if (checkSheet) {
+    const check = await checkFormsInSheet(selectFormCasts(requests, { since }).missing.map((request) => request.id), '/cf forms');
+    sheetCheckFailed = check.failed;
+    if (check.foundIds.length) requests = await listStreamRequests(filter);
   }
-  const casterId = interaction.customId.slice('forms_nudge:'.length);
-  await interaction.deferReply({ ephemeral: true });
-  const { groups, arrived } = await missingFormGroups(casterId);
-  const missing = groups.find((group) => group.requesterId === casterId)?.requests || [];
-  const quiet = { parse: [] };
-  if (!missing.length) {
-    await interaction.editReply({
-      content: `<@${casterId}> has no missing forms now${arrived ? ` (${arrived} just showed up on the sheet)` : ''}. Nothing was sent.`,
-      allowedMentions: quiet
-    });
-    return;
+  return { requests, since, sheetCheckFailed };
+}
+
+function formsDeniedReply(interaction) {
+  return interaction.reply({ content: 'Only admins/stream staff can manage post-cast forms.', ephemeral: true });
+}
+
+async function buildFormsPayload({ checkSheet = true } = {}) {
+  const { requests, since, sheetCheckFailed } = await loadFormRequests({ checkSheet });
+  const summaries = formsCasterSummaries(requests, { since });
+  const owing = summaries.filter((row) => row.missing);
+  const rows = [];
+  if (summaries.length) {
+    rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+      .setCustomId('forms_caster')
+      .setPlaceholder('Pick a caster…')
+      .addOptions(summaries.slice(0, 25).map((row) => ({
+        label: String(row.tag || row.id).slice(0, 100),
+        description: row.missing ? `${row.missing} missing · ${row.rate}% in` : `All in · ${row.submitted} submitted`,
+        emoji: row.missing ? '❌' : '✅',
+        value: row.id
+      })))));
   }
-  const until = staffNudgeCooldownUntil(missing);
-  if (until) {
-    const last = new Date(until - STAFF_NUDGE_COOLDOWN_MINUTES * 60 * 1000).toISOString();
-    await interaction.editReply({
-      content: `<@${casterId}> was already nudged by staff ${discordTimestamp(last, 'R')}. You can nudge again ${discordTimestamp(new Date(until).toISOString(), 'R')}.`,
-      allowedMentions: quiet
-    });
-    return;
+  if (owing.length) {
+    rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder()
+      .setCustomId('forms_nudge_all')
+      .setLabel(`Nudge all (${owing.length})`)
+      .setEmoji('📨')
+      .setStyle(ButtonStyle.Primary)));
   }
+  const embed = new EmbedBuilder()
+    .setTitle('📝 Post-cast forms')
+    .setDescription(buildFormsOverview(summaries, { sheetCheckFailed }))
+    .setColor(owing.length ? 0xf1c40f : 0x2ecc71);
+  return { content: '', embeds: [embed], components: rows, allowedMentions: { parse: [] } };
+}
+
+async function buildCasterFormsPayload(casterId, { checkSheet = true } = {}) {
+  const { requests, since, sheetCheckFailed } = await loadFormRequests({ checkSheet, casterId });
+  const view = buildCasterFormsView(requests, { casterId, since, sheetCheckFailed });
+  const tag = requests.find((request) => request.requesterTag)?.requesterTag || null;
+  const buttons = [];
+  if (view.missing.length) {
+    buttons.push(new ButtonBuilder()
+      .setCustomId(`forms_nudge:${casterId}`)
+      .setLabel(view.cooldownUntil ? 'Nudged recently' : 'Nudge')
+      .setEmoji('📨')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(Boolean(view.cooldownUntil)));
+  }
+  buttons.push(new ButtonBuilder().setCustomId('forms_back').setLabel('Back').setEmoji('◀️').setStyle(ButtonStyle.Secondary));
+  const rows = [new ActionRowBuilder().addComponents(buttons)];
+  if (view.missing.length) {
+    rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+      .setCustomId(`forms_mark:${casterId}`)
+      .setPlaceholder('Mark a form received…')
+      .addOptions(view.missing.slice(0, 25).map((request) => ({
+        label: String(request.matchup || request.id).slice(0, 100),
+        description: `Request ${request.id}`.slice(0, 100),
+        value: request.id
+      })))));
+  }
+  const embed = new EmbedBuilder()
+    .setTitle(`📝 Post-cast forms · ${tag || 'caster'}`.slice(0, 256))
+    .setDescription(view.description)
+    .setColor(view.missing.length ? 0xf1c40f : 0x2ecc71);
+  return { content: '', embeds: [embed], components: rows, allowedMentions: { parse: [] } };
+}
+
+// The "Pick a caster" menu: swaps the message to that caster's view.
+async function handleFormsCasterSelect(interaction) {
+  if (!canManageStreamRequests(interaction.member)) return formsDeniedReply(interaction);
+  const casterId = interaction.values?.[0];
+  await interaction.deferUpdate();
+  await interaction.editReply(await buildCasterFormsPayload(casterId, { checkSheet: true }));
+}
+
+async function handleFormsBack(interaction) {
+  if (!canManageStreamRequests(interaction.member)) return formsDeniedReply(interaction);
+  await interaction.deferUpdate();
+  await interaction.editReply(await buildFormsPayload({ checkSheet: false }));
+}
+
+// The "Mark a form received" menu on a caster's view: for a form sent without its request ID.
+// (`forms_mark_received` is the older main-view menu, still answered for messages already open.)
+async function handleFormsMarkReceived(interaction) {
+  if (!canManageStreamRequests(interaction.member)) return formsDeniedReply(interaction);
+  await interaction.deferUpdate();
+  const casterId = interaction.customId.startsWith('forms_mark:') ? interaction.customId.slice('forms_mark:'.length) : null;
+  const requestId = interaction.values?.[0];
+  const updated = requestId ? await markPostCastFormReceived(requestId, interaction.user.id) : null;
+  await interaction.editReply(casterId
+    ? await buildCasterFormsPayload(casterId, { checkSheet: false })
+    : await buildFormsPayload({ checkSheet: false }));
+  await interaction.followUp({
+    content: updated
+      ? `Marked the form for **${updated.matchup}** (<@${updated.requesterId}>) received.`
+      : 'That cast could not be marked received. It may have changed; run `/cf forms` again.',
+    ephemeral: true,
+    allowedMentions: { parse: [] }
+  });
+}
+
+// DMs one caster every form they still owe and records the nudge on each cast. A staff nudge also
+// counts as the automatic 48-hour one.
+async function sendStaffFormNudge(casterId, missing, actorId, { bulk = false } = {}) {
   const sent = await dmStreamRequester(missing[0], buildStaffFormNudge(missing, {
     formLink: postCastFormLinkFor,
     gate: config.postCastFormGate
@@ -3550,24 +3654,76 @@ async function handleFormsNudgeButton(interaction) {
     for (const request of missing) {
       await updateStreamRequest(request.id, {
         postCastStaffNudgeAt: now,
-        postCastStaffNudgeBy: interaction.user.id,
+        postCastStaffNudgeBy: actorId,
         ...(request.postCastNudgeSentAt ? {} : { postCastNudgeSentAt: now, postCastNudgeDelivery: 'delivered' })
       }, ['approved']);
     }
   }
   await appendAuditLog({
     type: 'stream_post_cast_staff_nudge',
-    actorId: interaction.user.id,
+    actorId,
     casterId,
     requestIds: missing.map((request) => request.id),
-    delivered: sent
+    delivered: sent,
+    bulk
   });
-  await interaction.editReply({
-    content: sent
-      ? `📨 DMed <@${casterId}> about ${missing.length} missing form(s): ${missing.map((request) => request.matchup || request.id).join(', ')}.`
-      : `⚠️ Could not DM <@${casterId}>. Their DMs are closed, so reach out another way.`,
-    allowedMentions: quiet
-  });
+  return sent;
+}
+
+// The Nudge button on a caster's view: re-checks the sheet, then DMs them every form they still
+// owe. Staff can nudge the same caster once an hour.
+async function handleFormsNudgeButton(interaction) {
+  if (!canManageStreamRequests(interaction.member)) return formsDeniedReply(interaction);
+  const casterId = interaction.customId.slice('forms_nudge:'.length);
+  await interaction.deferUpdate();
+  const { groups, arrived } = await missingFormGroups(casterId);
+  const missing = groups.find((group) => group.requesterId === casterId)?.requests || [];
+  let content;
+  if (!missing.length) {
+    content = `<@${casterId}> has no missing forms now${arrived ? ` (${arrived} just showed up on the sheet)` : ''}. Nothing was sent.`;
+  } else {
+    const until = staffNudgeCooldownUntil(missing);
+    if (until) {
+      content = `<@${casterId}> was already nudged by staff. You can nudge again ${discordTimestamp(new Date(until).toISOString(), 'R')}.`;
+    } else {
+      const sent = await sendStaffFormNudge(casterId, missing, interaction.user.id);
+      content = sent
+        ? `📨 DMed <@${casterId}> about ${missing.length} missing form(s): ${missing.map((request) => request.matchup || request.id).join(', ')}.`
+        : `⚠️ Could not DM <@${casterId}>. Their DMs are closed, so reach out another way.`;
+    }
+  }
+  await interaction.editReply(await buildCasterFormsPayload(casterId, { checkSheet: false }));
+  await interaction.followUp({ content, ephemeral: true, allowedMentions: { parse: [] } });
+}
+
+// The Nudge all button: re-checks the sheet once, then DMs every caster who still owes forms,
+// skipping anyone staff nudged in the last hour.
+async function handleFormsNudgeAll(interaction) {
+  if (!canManageStreamRequests(interaction.member)) return formsDeniedReply(interaction);
+  await interaction.deferUpdate();
+  const { groups, sheetCheckFailed } = await missingFormGroups();
+  const sent = [];
+  const failed = [];
+  const waiting = [];
+  for (const group of groups) {
+    if (staffNudgeCooldownUntil(group.requests)) {
+      waiting.push(group);
+      continue;
+    }
+    const delivered = await sendStaffFormNudge(group.requesterId, group.requests, interaction.user.id, { bulk: true });
+    (delivered ? sent : failed).push(group);
+  }
+  const mentions = (list) => list.map((group) => `<@${group.requesterId}>`).join(', ');
+  const forms = sent.reduce((sum, group) => sum + group.requests.length, 0);
+  const lines = [
+    groups.length ? null : 'Nobody owes a form right now. Nothing was sent.',
+    sent.length ? `📨 Nudged ${sent.length} caster(s) about ${forms} missing form(s): ${mentions(sent)}.` : null,
+    waiting.length ? `⏳ Skipped ${waiting.length} nudged by staff in the last hour: ${mentions(waiting)}.` : null,
+    failed.length ? `⚠️ Could not DM ${failed.length} (DMs closed), so reach out another way: ${mentions(failed)}.` : null,
+    sheetCheckFailed ? '⚠️ The form sheet could not be checked first, so someone who just sent a form may have been nudged.' : null
+  ].filter(Boolean);
+  await interaction.editReply(await buildFormsPayload({ checkSheet: false }));
+  await interaction.followUp({ content: lines.join('\n').slice(0, 2000), ephemeral: true, allowedMentions: { parse: [] } });
 }
 
 // Stats count the season running today; between seasons they cover all time.
@@ -4504,57 +4660,6 @@ async function disableStreamDeliveryPrompts(requests) {
   }
 }
 
-async function handleCancelStreamRequests(message, content) {
-  if (!canManageStreamRequests(message.member)) {
-    await message.reply('Only authorized staff can cancel caster requests.');
-    return;
-  }
-  const target = content.replace(/^!cancelreq\b/i, '').trim();
-  const parsed = parseFaceitMatchRoomLink(target);
-  const mentionedId = message.mentions.users.first()?.id || (/^\d{15,25}$/.test(target) ? target : null);
-  if (!parsed && !mentionedId) {
-    await message.reply('Use `!cancelreq FACEIT_MATCHROOM_LINK` or `!cancelreq @caster`.');
-    return;
-  }
-  const requests = await listStreamRequests();
-  const matches = requests.filter((request) => {
-    if (parsed) return request.matchId === parsed.matchId && STREAM_ACTIVE_STATUSES.includes(request.status);
-    return request.requesterId === mentionedId && ['approved', 'publish_failed'].includes(request.status);
-  });
-  for (const request of matches) {
-    const updated = await updateStreamRequest(request.id, {
-      status: 'canceled',
-      canceledBy: message.author.id,
-      canceledAt: new Date().toISOString(),
-      denialReason: 'Canceled by staff'
-    }, STREAM_ACTIVE_STATUSES);
-    if (!updated) continue;
-    await refreshStreamRequestStaffMessage(updated);
-    await syncStreamRequestToWebsite(updated, 'canceled');
-    await cancelCoverageNotice(updated, { reason: 'Staff canceled the cast.', actorId: message.author.id });
-    await endBroadcast(updated, { actorId: message.author.id, reason: 'staff_canceled' });
-    const sheetWarning = await removeStreamLinkFromSheet(updated, message.author.id);
-    if (sheetWarning) await alertStreamStaff(`⚠️ ${sheetWarning} (stream request ${updated.id}, ${updated.matchup})`);
-    await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} for ${updated.matchup} was canceled by staff.`);
-  }
-  await appendAuditLog({ type: 'stream_requests_canceled', actorId: message.author.id, matchId: parsed?.matchId || null, requesterId: mentionedId, count: matches.length });
-  await message.reply(`Canceled ${matches.length} matching request(s).`);
-}
-
-async function handleResendStreamDelivery(message, content) {
-  if (!canManageStreamRequests(message.member)) {
-    await message.reply('Only authorized staff can restart caster connection delivery.');
-    return;
-  }
-  const parsed = parseFaceitMatchRoomLink(content.replace(/^!resendip\b/i, '').trim());
-  if (!parsed) {
-    await message.reply('Use `!resendip FACEIT_MATCHROOM_LINK`.');
-    return;
-  }
-  const sent = await sendStreamDeliveryPrompt(parsed.matchId, true);
-  await message.reply(sent ? 'Restarted the staff CSTV/Twitch prompt.' : 'No approved caster requests were found for that FACEIT matchroom.');
-}
-
 // --- Main stream (official broadcast) ------------------------------------------
 // `!request mainstream FACEIT_LINK` (or inside a match channel, no link) marks a match
 // as covered by the official broadcast. The bot cannot read the server IP from FACEIT,
@@ -4702,9 +4807,16 @@ async function handleSendIp(message, content) {
   const faceitUrl = separator === -1 ? input : input.slice(0, separator);
   const deliveryText = separator === -1 ? '' : input.slice(separator).trim();
   const parsed = parseFaceitMatchRoomLink(faceitUrl);
+  if (parsed && !deliveryText) {
+    const sent = await sendStreamDeliveryPrompt(parsed.matchId, true);
+    await message.reply(sent
+      ? `Reposted the IP prompt${config.requestIpChannelId || config.streamRequestChannelId ? ` in <#${ipChannelId()}>` : ''}.`
+      : 'No approved caster requests were found for that FACEIT matchroom.');
+    return;
+  }
   const delivery = validateStreamDelivery('custom', deliveryText);
   if (!parsed || !delivery.valid) {
-    await message.reply('Use `!sendip FACEIT_MATCHROOM_LINK MESSAGE`, for example `!sendip https://www.faceit.com/en/cs2/room/1-... connect 123.45.67.89:27020`.');
+    await message.reply('Use `!sendip FACEIT_MATCHROOM_LINK MESSAGE` to send details now, for example `!sendip https://www.faceit.com/en/cs2/room/1-... connect 123.45.67.89:27020`, or `!sendip FACEIT_MATCHROOM_LINK` alone to repost the IP prompt.');
     return;
   }
   await message.delete().catch(() => null);
@@ -4726,108 +4838,164 @@ async function handleSendIp(message, content) {
 async function handleAdminStreams(interaction) {
   await interaction.deferReply({ ephemeral: true });
   const action = interaction.options.getString('action', true);
-  const requestId = interaction.options.getString('request_id');
-  const reason = interaction.options.getString('reason') || '';
-  if (action === 'pending' || action === 'approved' || action === 'publish_failed') {
-    const statuses = action === 'pending' ? ['pending', 'approving'] : [action];
-    const requests = (await listStreamRequests()).filter((request) => statuses.includes(request.status));
-    const scheduleOf = (request) => discordTimestamp(request.faceitScheduledAtIso || request.dateTimeIso, 'f') || request.dateTime || 'unscheduled';
-    await interaction.editReply(truncateDiscordMessage(requests.length
-      ? requests.slice(0, 40).map((request) => `- \`${request.id}\` **${request.matchup}** | <@${request.requesterId}> | ${scheduleOf(request)} | ${request.status.replace('_', ' ')}`).join('\n')
-      : `No ${action.replace('_', ' ')} stream requests.`));
-    return;
-  }
-  const request = requestId ? await getStreamRequest(requestId) : null;
-  if (!request) {
-    await interaction.editReply('Provide a valid `request_id`.');
+  const requestId = interaction.options.getString('request_id')?.trim() || null;
+  if (action === 'list') {
+    const view = buildStreamListView(await listStreamRequests());
+    const buttons = view.retryIds.map((id) => new ButtonBuilder()
+      .setCustomId(`stream_retry:${id}`)
+      .setLabel(`Retry ${id}`.slice(0, 80))
+      .setStyle(ButtonStyle.Secondary));
+    const rows = [];
+    for (let index = 0; index < buttons.length; index += 5) rows.push(new ActionRowBuilder().addComponents(buttons.slice(index, index + 5)));
+    const embed = new EmbedBuilder().setTitle('🎙️ Stream requests').setDescription(view.description).setColor(0x9146ff);
+    await interaction.editReply({ embeds: [embed], components: rows, allowedMentions: { parse: [] } });
     return;
   }
   if (action === 'inspect') {
-    await interaction.editReply({ embeds: [streamRequestEmbed(request)] });
-    return;
-  }
-  if (action === 'retry') {
-    if (request.status !== 'publish_failed') {
-      await interaction.editReply(`Only a publish-failed request can be retried. Request ${request.id} is **${STREAM_STATUS_LABELS[request.status] || request.status}**.`);
-      return;
-    }
-    const claimed = await claimStreamRepublish(requestId, interaction.user.id);
-    if (!claimed) {
-      await reportStreamAlreadyDecided(interaction, await getStreamRequest(requestId));
-      return;
-    }
-    await refreshStreamRequestStaffMessage(claimed);
-    await appendAuditLog({ type: 'stream_request_publish_retry', actorId: interaction.user.id, matchId: claimed.matchId, requestId });
-    await publishStreamApproval(claimed, interaction);
+    const request = requestId ? await getStreamRequest(requestId) : null;
+    await interaction.editReply(request ? { embeds: [streamRequestEmbed(request)] } : 'Give a valid `request_id`. `/cf streams action:list` shows them.');
     return;
   }
   if (action === 'cancel') {
-    const updated = await updateStreamRequest(requestId, {
-      status: 'canceled',
-      canceledBy: interaction.user.id,
-      canceledAt: new Date().toISOString(),
-      denialReason: reason || 'Canceled by staff'
-    }, STREAM_ACTIVE_STATUSES);
-    await interaction.editReply(updated ? 'Request canceled and the caster will be notified.' : 'Only an active request can be canceled.');
-    if (updated) {
-      await refreshStreamRequestStaffMessage(updated);
-      await syncStreamRequestToWebsite(updated, 'canceled');
-      await cancelCoverageNotice(updated, { reason: 'Staff canceled the cast.', actorId: interaction.user.id });
-      await endBroadcast(updated, { actorId: interaction.user.id, reason: 'staff_canceled' });
-      const sheetWarning = await removeStreamLinkFromSheet(updated, interaction.user.id);
-      if (sheetWarning) await alertStreamStaff(`⚠️ ${sheetWarning} (stream request ${updated.id}, ${updated.matchup})`);
-      await appendAuditLog({ type: 'stream_request_canceled_by_staff', actorId: interaction.user.id, matchId: updated.matchId, requestId, reason: updated.denialReason });
-      await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} was canceled by staff. Reason: ${updated.denialReason}`);
-    }
+    await staffCancelStreams(interaction, {
+      requestId,
+      matchLink: interaction.options.getString('match')?.trim() || null,
+      caster: interaction.options.getUser('caster'),
+      reason: interaction.options.getString('reason')?.trim() || ''
+    });
+  }
+}
+
+// One cancel for everything: a single request, every request on a match, or every active request
+// from a caster. Pending and approved requests alike; each caster is told why.
+async function staffCancelStreams(interaction, { requestId, matchLink, caster, reason }) {
+  const targets = [requestId, matchLink, caster].filter(Boolean).length;
+  if (targets !== 1) {
+    await interaction.editReply('Give exactly one of `request_id:`, `match:` (FACEIT matchroom link) or `caster:`.');
     return;
   }
-  if (action === 'revoke') {
-    const updated = await revokeStreamRequest(requestId, interaction.user.id, reason || 'Approval revoked by staff');
-    await interaction.editReply(updated ? 'Approval revoked and the caster will be notified.' : 'Only an approved or publish-failed request can be revoked.');
-    return;
-  }
-  if (action === 'complete') {
-    await sendPostCastReminder(request.matchId, interaction.user.id);
-    await interaction.editReply('Marked completion and processed eligible post-cast reminders.');
-    return;
-  }
-  if (action === 'form_received') {
-    const now = new Date().toISOString();
-    const updated = await updateStreamRequest(requestId, {
-      postCastFormSubmittedAt: request.postCastFormSubmittedAt || now,
-      postCastFormWaivedAt: now,
-      postCastFormWaivedBy: interaction.user.id,
-      postCastFormSource: 'staff',
-      postCastFormNote: reason || request.postCastFormNote || null
-    }, ['approved']);
-    if (!updated) {
-      await interaction.editReply('Only an approved (cast) request can have its post-cast form marked received.');
+  let requests = [];
+  let label = '';
+  if (requestId) {
+    const request = await getStreamRequest(requestId);
+    requests = request && STREAM_ACTIVE_STATUSES.includes(request.status) ? [request] : [];
+    label = `request ${requestId}`;
+  } else if (matchLink) {
+    const parsed = parseFaceitMatchRoomLink(matchLink);
+    if (!parsed) {
+      await interaction.editReply('That is not a FACEIT matchroom link.');
       return;
     }
-    await refreshStreamRequestStaffMessage(updated);
-    await appendAuditLog({ type: 'stream_post_cast_form_waived', actorId: interaction.user.id, matchId: updated.matchId, requestId, reason: reason || null });
-    await interaction.editReply(`Post-cast form for ${requestId} (${updated.matchup}) marked received. <@${updated.requesterId}> can request again.`);
+    requests = (await listStreamRequests()).filter((request) => requestRoomId(request) === parsed.matchId && STREAM_ACTIVE_STATUSES.includes(request.status));
+    label = 'that match';
+  } else {
+    requests = (await listStreamRequests({ requesterId: caster.id })).filter((request) => STREAM_ACTIVE_STATUSES.includes(request.status));
+    label = `<@${caster.id}>`;
   }
+  const canceled = [];
+  for (const request of requests) {
+    const updated = await cancelStreamRequestByStaff(request, interaction.user.id, reason || 'Canceled by staff');
+    if (updated) canceled.push(updated);
+  }
+  await interaction.editReply({
+    content: canceled.length
+      ? `Canceled ${canceled.length} request(s) for ${label}. Each caster was told:\n${canceled.map((request) => `- \`${request.id}\` ${request.matchup} · <@${request.requesterId}>`).join('\n')}`
+      : `No active requests found for ${label}.`,
+    allowedMentions: { parse: [] }
+  });
+}
+
+async function cancelStreamRequestByStaff(request, actorId, reason) {
+  const updated = await updateStreamRequest(request.id, {
+    status: 'canceled',
+    canceledBy: actorId,
+    canceledAt: new Date().toISOString(),
+    denialReason: reason
+  }, STREAM_ACTIVE_STATUSES);
+  if (!updated) return null;
+  await refreshStreamRequestStaffMessage(updated);
+  await syncStreamRequestToWebsite(updated, 'canceled');
+  await cancelCoverageNotice(updated, { reason: 'Staff canceled the cast.', actorId });
+  await endBroadcast(updated, { actorId, reason: 'staff_canceled' });
+  const sheetWarning = await removeStreamLinkFromSheet(updated, actorId);
+  if (sheetWarning) await alertStreamStaff(`⚠️ ${sheetWarning} (stream request ${updated.id}, ${updated.matchup})`);
+  await appendAuditLog({ type: 'stream_request_canceled_by_staff', actorId, matchId: updated.matchId, requestId: updated.id, reason });
+  await notifyStreamRequester(updated, `Your CROSSFIRE stream request ${updated.id} for **${updated.matchup}** was canceled by staff. Reason: ${reason}`);
+  return updated;
+}
+
+// The Retry button on `/cf streams action:list` for an approved cast the website did not accept.
+async function handleStreamRetryButton(interaction) {
+  if (!canManageStreamRequests(interaction.member)) {
+    await interaction.reply({ content: 'Only authorized staff can retry website publishing.', ephemeral: true });
+    return;
+  }
+  const requestId = interaction.customId.slice('stream_retry:'.length);
+  await interaction.deferReply({ ephemeral: true });
+  const request = await getStreamRequest(requestId);
+  if (request?.status !== 'publish_failed') {
+    await interaction.editReply(`Request ${requestId} is no longer waiting on the website (${STREAM_STATUS_LABELS[request?.status] || request?.status || 'missing'}).`);
+    return;
+  }
+  const claimed = await claimStreamRepublish(requestId, interaction.user.id);
+  if (!claimed) {
+    await reportStreamAlreadyDecided(interaction, await getStreamRequest(requestId));
+    return;
+  }
+  await refreshStreamRequestStaffMessage(claimed);
+  await appendAuditLog({ type: 'stream_request_publish_retry', actorId: interaction.user.id, matchId: claimed.matchId, requestId });
+  await publishStreamApproval(claimed, interaction);
+}
+
+// Marks one cast's post-cast form received (sent without its request ID, or otherwise handled).
+async function markPostCastFormReceived(requestId, actorId, note = null) {
+  const now = new Date().toISOString();
+  const request = await getStreamRequest(requestId);
+  if (!request) return null;
+  const updated = await updateStreamRequest(requestId, {
+    postCastFormSubmittedAt: request.postCastFormSubmittedAt || now,
+    postCastFormWaivedAt: now,
+    postCastFormWaivedBy: actorId,
+    postCastFormSource: 'staff',
+    postCastFormNote: note || request.postCastFormNote || null
+  }, ['approved']);
+  if (!updated) return null;
+  await refreshStreamRequestStaffMessage(updated);
+  await appendAuditLog({ type: 'stream_post_cast_form_waived', actorId, matchId: updated.matchId, requestId });
+  return updated;
 }
 
 async function sendPostCastReminder(matchId, actorId = null) {
   if (!matchId) return;
-  const requests = await listStreamRequests({ matchId, status: 'approved' });
-  for (const request of requests) {
-    const claimed = await claimPostCastReminder(request.id);
-    if (!claimed) continue;
-    const sent = await notifyStreamRequester(claimed, [
-      `Thanks for covering **${claimed.matchup}** for Crossfire! Please fill out the post-cast stats form (your request ID ${claimed.id} is already filled in):`,
-      postCastFormLinkFor(claimed.id),
-      config.postCastFormGate ? 'Your next stream request is blocked until this form is in.' : null
-    ].filter(Boolean).join('\n'));
-    await updateStreamRequest(claimed.id, {
-      postCastReminderSentAt: new Date().toISOString(),
-      postCastReminderDelivery: sent ? 'delivered' : 'failed',
-      completedBy: actorId
-    }, ['approved']);
-    await appendAuditLog({ type: 'stream_post_cast_form_sent', actorId, matchId: claimed.matchId || null, requestId: claimed.id, delivered: sent });
+  for (const request of await listStreamRequests({ matchId, status: 'approved' })) {
+    await sendPostCastForm(request, actorId);
   }
+}
+
+async function sendPostCastForm(request, actorId = null) {
+  const claimed = await claimPostCastReminder(request.id);
+  if (!claimed) return false;
+  const sent = await notifyStreamRequester(claimed, [
+    `Thanks for covering **${claimed.matchup}** for Crossfire! Please fill out the post-cast stats form (your request ID ${claimed.id} is already filled in):`,
+    postCastFormLinkFor(claimed.id),
+    config.postCastFormGate ? 'Your next stream request is blocked until this form is in.' : null
+  ].filter(Boolean).join('\n'));
+  await updateStreamRequest(claimed.id, {
+    postCastReminderSentAt: new Date().toISOString(),
+    postCastReminderDelivery: sent ? 'delivered' : 'failed',
+    completedBy: actorId
+  }, ['approved']);
+  await appendAuditLog({ type: 'stream_post_cast_form_sent', actorId, matchId: claimed.matchId || null, requestId: claimed.id, delivered: sent });
+  return true;
+}
+
+// Replaces the old manual "mark match completed": an approved cast still without the form 12 hours
+// after its match time (FACEIT never reported a result, or the link was not trackable) gets it now.
+async function sendOverduePostCastForms(now = Date.now()) {
+  const overdue = (await listStreamRequests())
+    .filter((request) => isPostCastFormOverdue(request, { now, since: config.postCastFormGateSince }))
+    .slice(0, 10);
+  for (const request of overdue) await sendPostCastForm(request, null);
 }
 
 function scheduleStatusEmbed({
@@ -6488,6 +6656,7 @@ async function runStreamOperationsTick(now = Date.now()) {
   await autoEndStaleBroadcasts(now).catch((error) => console.error('Live board auto-end failed:', error));
   await sendPreCastReminders(now).catch((error) => console.error('Pre-cast reminders failed:', error));
   await sendPostCastNudges(now).catch((error) => console.error('Post-cast form nudges failed:', error));
+  await sendOverduePostCastForms(now).catch((error) => console.error('Overdue post-cast forms failed:', error));
   const active = (await listStreamRequests()).filter((request) =>
     request.faceitLinkValid && request.matchId && !request.terminalNotifiedAt && STREAM_ACTIVE_STATUSES.includes(request.status)
   );

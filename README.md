@@ -213,7 +213,7 @@ Set `LIVE_NOW_CHANNEL_ID` to a channel (for example `#live-now`) that should onl
 
 ### Post-cast stats form gate
 
-After a cast's match finishes on FACEIT (or staff run `/cf streams action:complete`), the caster is DMed the post-cast stats form with the form's required **Request ID** question pre-filled from `POST_CAST_FORM_PREFILL_URL`. The next time that caster tries to open the stream request form, the bot checks whether their most recent finished cast has a response: it asks the Apps Script (`postCastForms` action), which reads the form's response tab (`Season 7` in the "CF Streams & Streamers" spreadsheet) and matches on the Request ID column. No response means the request form does not open; the caster gets the pre-filled link and is told to try again afterwards. A found response is remembered on the request, so the lookup happens at most once per cast.
+After a cast's match finishes on FACEIT, the caster is DMed the post-cast stats form with the form's required **Request ID** question pre-filled from `POST_CAST_FORM_PREFILL_URL`. The next time that caster tries to open the stream request form, the bot checks whether their most recent finished cast has a response: it asks the Apps Script (`postCastForms` action), which reads the form's response tab (`Season 7` in the "CF Streams & Streamers" spreadsheet) and matches on the Request ID column. No response means the request form does not open; the caster gets the pre-filled link and is told to try again afterwards. A found response is remembered on the request, so the lookup happens at most once per cast. If FACEIT never reports a result (or the link could not be tracked), an approved cast still gets the form 12 hours after its match time; casts before `POST_CAST_FORM_GATE_SINCE` are left alone.
 
 Only the most recent finished cast is checked, casts that finished before `POST_CAST_FORM_GATE_SINCE` are exempt, and `POST_CAST_FORM_GATE=false` turns the block off. If the sheet lookup fails or the sheet is in log-only mode the caster is let through and the staff request card shows a "could not verify" note instead. Staff can clear a caster who filled the form without the request ID with `/cf streams action:"mark post-cast form received" request_id:<id>`; approved request cards show the form as received, outstanding, or marked received by staff.
 
@@ -230,9 +230,15 @@ Before it answers, the bot checks the form sheet for any missing forms in the li
 
 ### Post-cast forms (`/cf forms`)
 
-`/cf forms` shows staff who has submitted their post-cast form and who has not: a count, then one line per cast with the match and the caster, missing first. It covers casts whose form DM went out on or after `POST_CAST_FORM_GATE_SINCE`. The bot checks the form sheet for the missing ones first, so a form that just came in shows as submitted.
+`/cf forms` shows staff the totals (submitted and missing) and one line per caster who owes forms, with how many are missing and their form rate. It covers casts whose form DM went out on or after `POST_CAST_FORM_GATE_SINCE`. The bot checks the form sheet for the missing ones first, so a form that just came in shows as submitted.
 
-Each caster with a missing form gets a **Nudge** button. It DMs them one message listing every form they still owe, each with its own pre-filled link. Staff can nudge the same caster once an hour, and a staff nudge also counts as the automatic 48-hour nudge. For a form that came in without its request ID, use `/cf streams action:form_received`. Form DMs, forms found on the sheet and nudges are all recorded in `/cf auditlog`.
+- **Pick a caster** (menu): opens that caster's view in the same message: their form rate, every missing form with its date and request ID, and their latest submitted forms. Casters who owe forms are listed first.
+  - **Nudge** DMs them one message listing every form they still owe, each with its own pre-filled link. Staff can nudge the same caster once an hour; the button is greyed out until then.
+  - **Mark a form received** (menu, only their missing casts) is for a form that came in without its request ID.
+  - **Back** returns to the main view.
+- **Nudge all** nudges every caster who owes forms in one press, skipping anyone staff nudged in the last hour, and reports who could not be DMed.
+
+A staff nudge also counts as the automatic 48-hour nudge. Form DMs, forms found on the sheet and nudges are all recorded in `/cf auditlog`.
 
 ### Caster reminders
 
@@ -275,7 +281,7 @@ Veto setup requires the playoff championship ID in `PLAYOFF_SOURCE_IDS`, exactly
 
 Streamers use `/request stream`. Typing the old `!request` gets a reply pointing to `/request stream`. Requests require only a FACEIT matchroom link, a Twitch/YouTube/Kick channel URL, and an X/Twitter profile URL. Any number of casters may be approved for the same match. The bot reads the matchup and schedule from FACEIT, prevents duplicate active requests from the same caster, and gives the requester a one-click cancel button. Valid FACEIT links are grouped by match ID and checked every `STREAM_SCHEDULE_CHECK_MINUTES` (15-30 minutes); newly posted schedules, reschedules, removed schedules, cancellations, and completion update every active request. A schedule change is sent only to the casters who requested that match (pending or approved), by DM or, if their DMs are closed, in the channel they requested from. Tournament Ops are not pinged; the staff card is edited in place to show the new time. Invalid links remain reviewable but are clearly marked as ineligible for grouping, automatic schedule monitoring, and connection delivery. `STREAM_REQUEST_CHANNEL_ID` receives race-safe Approve/Deny controls, and FACEIT is refreshed immediately before approval.
 
-At the scheduled time, staff receive one prompt per FACEIT match to submit either the CSTV connect command or official CROSSFIRE Twitch link. The value is DMed only to approved casters and is never posted to their source channel. `STREAM_STAFF_GUILD_ID` and `STREAM_STAFF_ROLE_IDS` explicitly authorize the internal Tournament Operations role to approve requests and deliver connection details. Staff can use `!sendip FACEIT_MATCHROOM_LINK MESSAGE` to immediately DM any connection details or instructions, plus `!cancelreq FACEIT_MATCHROOM_LINK`, `!cancelreq @caster`, `!resendip FACEIT_MATCHROOM_LINK`, or `/cf streams action:cancel|revoke|complete`. The bot deletes a valid `!sendip` command message when it has permission so its contents are not left in the channel. Verified FACEIT completion sends the configured post-cast form once; delivery state is persisted.
+At the scheduled time, staff receive one prompt per FACEIT match to submit either the CSTV connect command or official CROSSFIRE Twitch link. The value is DMed only to approved casters and is never posted to their source channel. `STREAM_STAFF_GUILD_ID` and `STREAM_STAFF_ROLE_IDS` explicitly authorize the internal Tournament Operations role to approve requests and deliver connection details. Staff can use `!sendip FACEIT_MATCHROOM_LINK MESSAGE` to immediately DM any connection details or instructions, or `!sendip FACEIT_MATCHROOM_LINK` alone to repost the IP prompt. The bot deletes a valid `!sendip` command message when it has permission so its contents are not left in the channel. Verified FACEIT completion sends the configured post-cast form once; delivery state is persisted.
 
 Operations reporting:
 
@@ -313,7 +319,18 @@ When `REQUEST_IP_CHANNEL_ID` is set, that channel is the one place for match IPs
 
 When the official CROSSFIRE broadcast covers a match, staff run `!request mainstream FACEIT_MATCHROOM_LINK` (or just `!request mainstream` inside the match channel; `main stream`, `main-stream` and `main` also work). The bot cannot read server IPs from FACEIT, so it forwards what staff enter: if the CSTV connect or IP has already been entered for that match (connection prompt or `!sendip`), it is posted to `REQUEST_IP_CHANNEL_ID` straight away; otherwise it is posted there the moment it is entered. A match with no approved community casters gets a **Main Stream Connection Needed** prompt in #request-ip immediately, using the same Submit CSTV Connect modal. Entering new details later posts them again. The official Twitch link delivery type is never posted there. Keep `#request-ip` private to the production crew; the post contains the connect command. Audit events: `main_stream_requested` and `request_ip_posted` (the connection value is never logged).
 
-Staff management: `/cf streams action:pending|approved|publish_failed|inspect|retry|cancel|revoke|complete`, plus `!cancelreq`, `!resendip`, and `!sendip` as described above. Embeds use Discord timestamps so each viewer sees the match time in their own time zone.
+Staff management (admins and the stream staff role):
+
+| Command | What it does |
+|---|---|
+| `/cf streams action:list` | Every active request: waiting for review, approved, and approved casts the website did not accept (each with a **Retry** button). |
+| `/cf streams action:inspect request_id:` | Everything about one request. |
+| `/cf streams action:cancel` | Cancels pending or approved requests by `request_id:`, `match:` (FACEIT link) or `caster:`, with an optional `reason:` sent to each caster. |
+| `/cf forms` | Who owes post-cast forms. Pick a caster to see their casts, **Nudge** them or **Mark a form received**; **Nudge all** nudges everyone who owes. |
+| `!sendip FACEIT_LINK MESSAGE` | DMs connection details to every approved caster now. Without a message it reposts the IP prompt. |
+| `!request mainstream FACEIT_LINK` | Marks a match for the official stream and posts its IP in #request-ip. |
+
+The retired `!cancelreq` and `!resendip` reply with a pointer to their replacements. Embeds use Discord timestamps so each viewer sees the match time in their own time zone.
 
 ### Website contract
 

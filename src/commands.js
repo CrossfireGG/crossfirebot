@@ -180,20 +180,16 @@ export const commands = [
     .addSubcommand((subcommand) =>
       subcommand
         .setName('streams')
-        .setDescription('Review and manage streamer requests')
-        .addStringOption((option) => option.setName('action').setDescription('Request action').setRequired(true).addChoices(
-          { name: 'list pending', value: 'pending' },
-          { name: 'list approved', value: 'approved' },
-          { name: 'list website publish failures', value: 'publish_failed' },
-          { name: 'inspect', value: 'inspect' },
-          { name: 'retry website publish', value: 'retry' },
-          { name: 'cancel request', value: 'cancel' },
-          { name: 'revoke approval', value: 'revoke' },
-          { name: 'mark match completed', value: 'complete' },
-          { name: 'mark post-cast form received', value: 'form_received' }
+        .setDescription('See, inspect or cancel community caster requests')
+        .addStringOption((option) => option.setName('action').setDescription('What to do').setRequired(true).addChoices(
+          { name: 'list active requests', value: 'list' },
+          { name: 'inspect one request', value: 'inspect' },
+          { name: 'cancel requests', value: 'cancel' }
         ))
-        .addStringOption((option) => option.setName('request_id').setDescription('Streamer request ID').setRequired(false))
-        .addStringOption((option) => option.setName('reason').setDescription('Reason for cancel/revoke/completion').setRequired(false))
+        .addStringOption((option) => option.setName('request_id').setDescription('Request ID (inspect, or cancel one request)').setRequired(false))
+        .addStringOption((option) => option.setName('match').setDescription('Cancel every request on this FACEIT matchroom link').setRequired(false))
+        .addUserOption((option) => option.setName('caster').setDescription('Cancel every active request from this caster').setRequired(false))
+        .addStringOption((option) => option.setName('reason').setDescription('Reason sent to the caster when canceling').setRequired(false))
     )
     .addSubcommand((subcommand) =>
       subcommand

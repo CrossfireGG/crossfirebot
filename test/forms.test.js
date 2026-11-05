@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildCasterFormsView,
   buildFormsOverview,
   buildStaffFormNudge,
-  formsNudgeCasters,
+  formsCasterSummaries,
   groupMissingForms,
   selectFormCasts,
   staffNudgeCooldownUntil
@@ -43,43 +44,57 @@ test('selectFormCasts splits casts that got the form into missing and submitted,
   assert.ok(selectFormCasts(requests).missing.some((request) => request.id === 'old'), 'no cutoff includes older casts');
 });
 
-test('the overview is a count and one short line per cast, missing first', () => {
-  const text = buildFormsOverview(selectFormCasts(requests, { since }));
+test('one summary per caster: owing casters first (most missing), then everyone else', () => {
+  assert.deepEqual(formsCasterSummaries(requests, { since }), [
+    { id: '2', tag: 'caster2', missing: 2, submitted: 0, rate: 0 },
+    { id: '3', tag: 'caster3', missing: 1, submitted: 0, rate: 0 },
+    { id: '1', tag: 'caster1', missing: 1, submitted: 1, rate: 50 },
+    { id: '4', tag: 'caster4', missing: 0, submitted: 1, rate: 100 }
+  ]);
+  assert.deepEqual(groupMissingForms(requests, { since })[0].requests.map((request) => request.id), ['b1', 'b2']);
+});
+
+test('the main view is the totals and one line per caster who owes forms', () => {
+  const text = buildFormsOverview(formsCasterSummaries(requests, { since }));
   assert.equal(text, [
     '✅ **2** submitted · ❌ **4** missing',
     '',
-    '**Missing**',
-    '❌ b2 vs X · <@2>',
-    '❌ a1 vs X · <@1>',
-    '❌ b1 vs X · <@2>',
-    '❌ c1 vs X · <@3>',
+    '**Owes forms**',
+    '❌ <@2> · 2 missing · 0% in',
+    '❌ <@3> · 1 missing · 0% in',
+    '❌ <@1> · 1 missing · 50% in',
     '',
-    '**Submitted**',
-    '✅ done vs X · <@1>',
-    '✅ waived vs X · <@4>',
-    '',
-    'Press a caster’s button to DM them their missing form links.'
+    'Pick a caster below to see their casts, nudge them or mark a form received.'
   ].join('\n'));
 });
 
-test('the overview caps long lists, flags a failed sheet check and handles nothing sent yet', () => {
-  const many = Array.from({ length: 30 }, (_, index) => cast(`m${index}`, '1', '2026-11-03T03:00:00Z'));
-  const text = buildFormsOverview(selectFormCasts(many, { since }), { maxLines: 10, sheetCheckFailed: true });
+test('the main view caps long lists, flags a failed sheet check and handles nobody owing', () => {
+  const many = Array.from({ length: 30 }, (_, index) => cast(`m${index}`, String(100 + index), '2026-11-03T03:00:00Z'));
+  const text = buildFormsOverview(formsCasterSummaries(many, { since }), { maxLines: 10, sheetCheckFailed: true });
   assert.match(text, /…and 20 more/);
-  assert.doesNotMatch(text, /\*\*Submitted\*\*/);
   assert.match(text, /could not be checked just now/);
-  assert.equal(buildFormsOverview({ missing: [], submitted: [] }), 'No casts have been sent the post-cast form yet.');
-  assert.doesNotMatch(buildFormsOverview(selectFormCasts([requests[4]], { since })), /Missing|button/);
+  assert.equal(buildFormsOverview([]), 'No casts have been sent the post-cast form yet.');
+  assert.match(buildFormsOverview(formsCasterSummaries([requests[4]], { since })), /Everyone is caught up\./);
 });
 
-test('one Nudge button per caster with a missing form, most missing first', () => {
-  assert.deepEqual(formsNudgeCasters(requests, { since }), [
-    { id: '2', tag: 'caster2', count: 2 },
-    { id: '3', tag: 'caster3', count: 1 },
-    { id: '1', tag: 'caster1', count: 1 }
-  ]);
-  assert.equal(formsNudgeCasters(requests, { since, max: 2 }).length, 2);
-  assert.deepEqual(groupMissingForms(requests, { since })[0].requests.map((request) => request.id), ['b1', 'b2']);
+test('the caster view shows their rate, missing forms with request IDs and recent submissions', () => {
+  const now = Date.parse('2026-11-08T12:00:00Z');
+  const view = buildCasterFormsView(requests, { casterId: '1', since, now });
+  assert.match(view.description, /^<@1> · \*\*1 of 2\*\* forms in \(50%\)/);
+  assert.match(view.description, /\*\*Missing\*\*\n❌ \*\*a1 vs X\*\* · <t:\d+:D> · `a1`/);
+  assert.match(view.description, /\*\*Recently submitted\*\*\n✅ \*\*done vs X\*\*/);
+  assert.deepEqual(view.missing.map((request) => request.id), ['a1']);
+  assert.equal(view.cooldownUntil, null);
+
+  const waived = buildCasterFormsView(requests, { casterId: '4', since, now });
+  assert.match(waived.description, /✅ Nothing missing\./);
+  assert.match(waived.description, /☑️ \*\*waived vs X\*\* · <t:\d+:D> · marked by staff/);
+
+  const nudged = buildCasterFormsView([cast('n', '9', since, { postCastStaffNudgeAt: '2026-11-08T11:30:00Z' })], { casterId: '9', since, now });
+  assert.equal(nudged.cooldownUntil, Date.parse('2026-11-08T12:30:00Z'));
+  assert.match(nudged.description, /Nudged by staff <t:\d+:R>\. You can nudge again <t:\d+:R>\./);
+
+  assert.match(buildCasterFormsView(requests, { casterId: '7', since }).description, /has not been sent any post-cast forms yet/);
 });
 
 test('the staff nudge DM lists every missing form with its own link', () => {
