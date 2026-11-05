@@ -31,7 +31,9 @@ function normalizeDb(db) {
     adminTickets: db.adminTickets || {},
     auditLog: Array.isArray(db.auditLog) ? db.auditLog : [],
     sclDemos: db.sclDemos || {},
-    sclMessages: db.sclMessages || {}
+    sclMessages: db.sclMessages || {},
+    mainStreamCoverage: db.mainStreamCoverage || {},
+    matchConnections: db.matchConnections || {}
   };
 }
 
@@ -611,4 +613,34 @@ export async function saveSclDiscordMessage(matchId, channelId, messageId) {
 
 function sclDemoKey(matchId, mapNumber, viewerUrl) {
   return `${matchId}:${mapNumber}:${viewerUrl}`;
+}
+
+// Matches the official CROSSFIRE broadcast is covering (`!request mainstream`).
+export async function saveMainStreamCoverage(matchId, patch) {
+  return mutateDb((db) => {
+    db.mainStreamCoverage[matchId] = {
+      ...(db.mainStreamCoverage[matchId] || {}),
+      ...patch,
+      matchId,
+      updatedAt: new Date().toISOString()
+    };
+    return db.mainStreamCoverage[matchId];
+  });
+}
+
+export async function getMainStreamCoverage(matchId) {
+  return (await snapshot()).mainStreamCoverage[matchId] || null;
+}
+
+// Last connection details staff entered for a match (CSTV connect / server IP),
+// so a later `!request mainstream` can post them without asking staff again.
+export async function saveMatchConnection(matchId, connection) {
+  return mutateDb((db) => {
+    db.matchConnections[matchId] = { ...connection, matchId };
+    return db.matchConnections[matchId];
+  });
+}
+
+export async function getMatchConnection(matchId) {
+  return (await snapshot()).matchConnections[matchId] || null;
 }

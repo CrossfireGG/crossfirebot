@@ -211,6 +211,8 @@ export function getConfig() {
     streamRequestChannelId: process.env.STREAM_REQUEST_CHANNEL_ID || null,
     // Optional: "live now" board channel. Empty = the Going live / End broadcast buttons are not offered.
     liveNowChannelId: process.env.LIVE_NOW_CHANNEL_ID || null,
+    // Optional: where `!request mainstream` posts connection details for the official broadcast.
+    requestIpChannelId: process.env.REQUEST_IP_CHANNEL_ID || null,
     // Optional: when set, `/request stream` and `!request` only work in these channels.
     streamCommunityChannelIds: parseSnowflakeList(process.env.STREAM_COMMUNITY_CHANNEL_IDS || ''),
     // Optional: restrict accepted stream platforms (twitch, youtube, kick). Empty = all.

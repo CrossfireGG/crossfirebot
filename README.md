@@ -254,6 +254,18 @@ Flow:
 | Schedule monitoring | FACEIT is polled every `STREAM_SCHEDULE_CHECK_MINUTES`. Schedule changes edit the staff card in place without pinging staff, notify only the casters who requested the match, and re-publish already-published streams to the website. Cancels, revokes and completed matches are also sent to the website as status updates. |
 | Restart | Buttons keep working. Anything stuck in `approving` becomes `publish_failed` with a retry button and a staff alert. The bot audits that it can see and post in the stream channels and reports problems to staff. |
 
+### Who gets the connection details
+
+Every caster approved for the match gets their own DM, one per caster. That includes casters whose FACEIT link could not be verified when they submitted (matched on the room in their link) and casters whose website publish is still failing. A caster approved after the IP was already entered is DMed the saved details at approval, and the approver is told. When a DM fails (DMs closed or the bot blocked), staff are told which caster by name so it can be sent another way.
+
+### #request-ip (`REQUEST_IP_CHANNEL_ID`)
+
+When `REQUEST_IP_CHANNEL_ID` is set, that channel is the one place for match IPs. The **Caster Connection Needed** and **Main Stream Connection Needed** prompts are posted there instead of `STREAM_REQUEST_CHANNEL_ID`, and every CSTV connect or IP staff enter for any match (prompt or `!sendip`) is posted there in a copyable line, tagged with who entered it, whether the main stream is covering the match, and how many approved casters it was DMed to. Entering new details for a match posts them again. The official Twitch link is never posted. Audit event: `request_ip_posted` (the value itself is never logged). Because the prompt buttons check the Tournament Ops role in `STREAM_STAFF_GUILD_ID`, the channel should live in that server; admins can press them anywhere.
+
+### Main stream IP (`!request mainstream`)
+
+When the official CROSSFIRE broadcast covers a match, staff run `!request mainstream FACEIT_MATCHROOM_LINK` (or just `!request mainstream` inside the match channel; `main stream`, `main-stream` and `main` also work). The bot cannot read server IPs from FACEIT, so it forwards what staff enter: if the CSTV connect or IP has already been entered for that match (connection prompt or `!sendip`), it is posted to `REQUEST_IP_CHANNEL_ID` straight away; otherwise it is posted there the moment it is entered. A match with no approved community casters gets a **Main Stream Connection Needed** prompt in #request-ip immediately, using the same Submit CSTV Connect modal. Entering new details later posts them again. The official Twitch link delivery type is never posted there. Keep `#request-ip` private to the production crew; the post contains the connect command. Audit events: `main_stream_requested` and `request_ip_posted` (the connection value is never logged).
+
 Staff management: `/cf streams action:pending|approved|publish_failed|inspect|retry|cancel|revoke|complete`, plus `!cancelreq`, `!resendip`, and `!sendip` as described above. Embeds use Discord timestamps so each viewer sees the match time in their own time zone.
 
 ### Website contract

@@ -469,3 +469,63 @@ export function buildLiveBoardNotice(request) {
     footer: `Stream request ${request?.id || ''}`.trim()
   };
 }
+
+// --- Main stream (official broadcast) -------------------------------------------
+// "!request mainstream <link>", "!request main stream", "!request main-stream",
+// "!request main". Returns the text after the keyword, or null when the message is
+// an ordinary caster request ("!request" alone, or "!request maintenance").
+export function parseMainStreamCommand(content) {
+  const match = String(content || '').trim().match(/^!request\s+main(?:\s*-?\s*stream)?(?=\s|$)([\s\S]*)$/i);
+  return match ? { rest: match[1].trim() } : null;
+}
+
+// Plain-text post for #request-ip so whoever needs it can copy the command.
+// Every IP staff enter is posted; main-stream matches are flagged as such.
+export function buildRequestIpMessage({ matchup, faceitUrl, value, enteredBy = null, mainStream = false, casterCount = 0, delivered = 0 }) {
+  const text = String(value || '').trim();
+  const detail = /\n/.test(text) ? text : `\`${text.replace(/`/g, '')}\``;
+  const label = String(matchup || 'FACEIT match').trim();
+  const sentTo = [
+    mainStream ? 'main stream' : null,
+    casterCount > 0 ? `DMed to ${delivered}/${casterCount} approved caster(s)` : null
+  ].filter(Boolean).join(' · ');
+  return [
+    mainStream ? `📺 **MAIN STREAM: ${label}**` : `🔌 **IP: ${label}**`,
+    detail,
+    faceitUrl ? `FACEIT: <${faceitUrl}>` : null,
+    [enteredBy ? `Entered by <@${enteredBy}>` : null, sentTo || null].filter(Boolean).join(' · ') || null
+  ].filter(Boolean).join('\n');
+}
+
+// --- Connection details (CSTV connect / IP) -------------------------------------
+// Statuses whose caster gets the IP: approved by staff, even if the website publish
+// is still failing (that is a website problem, not a reason to leave a caster out).
+export const STREAM_CONNECTION_STATUSES = ['approved', 'publish_failed'];
+
+// FACEIT room id for a request: the verified match id, or the room in the link the
+// caster submitted when FACEIT could not be reached at submit time.
+export function requestRoomId(request) {
+  return request?.matchId || parseFaceitMatchRoomLink(request?.faceitUrl)?.matchId || null;
+}
+
+// Every caster who should get this match's connection details, one request each.
+export function selectConnectionRecipients(requests, matchId) {
+  const wanted = String(matchId || '').toLowerCase();
+  const matching = (requests || []).filter((request) =>
+    wanted && STREAM_CONNECTION_STATUSES.includes(request?.status) && requestRoomId(request) === wanted
+  );
+  const byCaster = new Map();
+  for (const request of matching) {
+    const existing = byCaster.get(request.requesterId);
+    if (!existing || (existing.status !== 'approved' && request.status === 'approved')) byCaster.set(request.requesterId, request);
+  }
+  return { requests: matching, recipients: [...byCaster.values()] };
+}
+
+export function buildConnectionDm({ matchup, type, value }) {
+  const label = type === 'cstv'
+    ? 'FACEIT CSTV connect'
+    : type === 'twitch' ? 'official CROSSFIRE stream' : 'connection details from Tournament Operations';
+  const detail = type === 'cstv' ? `\`${value}\`` : value;
+  return `**${matchup}** is ready. ${label}:\n${detail}`;
+}
