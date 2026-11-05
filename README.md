@@ -228,15 +228,11 @@ The reply starts with the caster's stats for the season running today (all time 
 
 Before it answers, the bot checks the form sheet for any missing forms in the list (the same `postCastForms` lookup the form gate uses), so a form sent since the last check shows as received. If the sheet cannot be reached, the reply says so. FACEIT-canceled matches are not listed, and a cast whose match time passed more than six hours ago counts as past even if FACEIT never reported a result.
 
-### Missing post-cast forms (`/cf streams action:missing_forms`)
+### Post-cast forms (`/cf forms`)
 
-Staff get a private list of every cast still missing its post-cast form, grouped by caster with the most missing first. Each cast shows the match, its date, the request ID and when the caster was last nudged. Only casts whose form DM went out on or after `POST_CAST_FORM_GATE_SINCE` are listed. Before answering, the bot checks the form sheet for every listed cast and records forms it finds, so the list matches the sheet. If the sheet cannot be reached, the reply says so.
+`/cf forms` shows staff who has submitted their post-cast form and who has not: a count, then one line per cast with the match and the caster, missing first. It covers casts whose form DM went out on or after `POST_CAST_FORM_GATE_SINCE`. The bot checks the form sheet for the missing ones first, so a form that just came in shows as submitted.
 
-Each caster gets a **Nudge** button. It checks the sheet again for that caster, then DMs them one message listing every missing form, each with its own pre-filled link. Staff can nudge the same caster once an hour. A staff nudge also counts as the automatic 48-hour nudge, so the caster is not DMed twice. Every nudge is written to the audit log with whether the DM was delivered. For a form that came in without its request ID, use `/cf streams action:form_received`.
-
-### Form history (`/cf auditlog view:forms`)
-
-`/cf auditlog view:forms` lists every cast that got the post-cast form DM since `POST_CAST_FORM_GATE_SINCE`, in two sections: **Not submitted** and **Submitted**. Each line has the match, the caster, the cast date and the request ID. Missing forms show when the form DM went out, whether it failed because the caster's DMs were closed, and when they were last nudged. Submitted forms show when they arrived, or which staff member marked them received. Add `caster:` for one caster or `match_id:` for one match. The bot checks the form sheet for the missing ones first. The regular audit log also records `stream_post_cast_form_sent` and `stream_post_cast_form_received` events.
+Each caster with a missing form gets a **Nudge** button. It DMs them one message listing every form they still owe, each with its own pre-filled link. Staff can nudge the same caster once an hour, and a staff nudge also counts as the automatic 48-hour nudge. For a form that came in without its request ID, use `/cf streams action:form_received`. Form DMs, forms found on the sheet and nudges are all recorded in `/cf auditlog`.
 
 ### Caster reminders
 

@@ -190,8 +190,7 @@ export const commands = [
           { name: 'cancel request', value: 'cancel' },
           { name: 'revoke approval', value: 'revoke' },
           { name: 'mark match completed', value: 'complete' },
-          { name: 'mark post-cast form received', value: 'form_received' },
-          { name: 'list missing post-cast forms', value: 'missing_forms' }
+          { name: 'mark post-cast form received', value: 'form_received' }
         ))
         .addStringOption((option) => option.setName('request_id').setDescription('Streamer request ID').setRequired(false))
         .addStringOption((option) => option.setName('reason').setDescription('Reason for cancel/revoke/completion').setRequired(false))
@@ -215,14 +214,14 @@ export const commands = [
     )
     .addSubcommand((subcommand) =>
       subcommand
+        .setName('forms')
+        .setDescription('Post-cast forms: who has submitted and who is missing')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
         .setName('auditlog')
-        .setDescription('Show recent audit events, or which post-cast forms are in and which are missing')
+        .setDescription('Show recent scheduling and operations audit events')
         .addStringOption((option) => option.setName('match_id').setDescription('Optional FACEIT match ID').setRequired(false))
-        .addStringOption((option) => option.setName('view').setDescription('What to show (default: recent events)').setRequired(false).addChoices(
-          { name: 'recent events', value: 'events' },
-          { name: 'post-cast forms: submitted and missing', value: 'forms' }
-        ))
-        .addUserOption((option) => option.setName('caster').setDescription('Forms view: only this caster').setRequired(false))
     )
   ,
   new SlashCommandBuilder()

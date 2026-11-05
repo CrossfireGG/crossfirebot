@@ -744,21 +744,17 @@ export function buildPostCastNudge(request, { formUrl = '', gate = false } = {})
   ].filter(Boolean).join('\n');
 }
 
-// ---------- missing post-cast forms (staff) ----------
+// ---------- post-cast forms (staff: `/cf forms`) ----------
 
 export const STAFF_NUDGE_COOLDOWN_MINUTES = 60;
-const MISSING_FORMS_PER_CASTER = 5;
-const MISSING_FORMS_MAX_CASTERS = 25;
+const FORMS_MAX_LINES = 40;
+const FORMS_MAX_NUDGE_BUTTONS = 25;
 
 // Casts whose form DM went out (on or after `since`) and still have no form, grouped by caster.
 // Most missing first, then whoever has waited longest.
 export function groupMissingForms(requests, { since = null } = {}) {
-  const sinceMs = Date.parse(since || '');
   const byCaster = new Map();
-  for (const request of requests || []) {
-    if (request?.status !== 'approved' || postCastFormState(request) !== 'missing') continue;
-    const sentMs = Date.parse(request.postCastReminderSentAt || '');
-    if (Number.isFinite(sinceMs) && (!Number.isFinite(sentMs) || sentMs < sinceMs)) continue;
+  for (const request of selectFormCasts(requests, { since }).missing) {
     if (!byCaster.has(request.requesterId)) {
       byCaster.set(request.requesterId, { requesterId: request.requesterId, requesterTag: request.requesterTag || null, requests: [] });
     }
@@ -772,38 +768,49 @@ export function groupMissingForms(requests, { since = null } = {}) {
   return groups.sort((a, b) => b.requests.length - a.requests.length || oldest(a) - oldest(b));
 }
 
-function lastNudgeIso(request) {
-  return [request.postCastStaffNudgeAt, request.postCastNudgeSentAt].filter(Boolean).sort().pop() || null;
+// Every cast that got the post-cast form DM (on or after `since`), split into missing and
+// submitted. Newest first.
+export function selectFormCasts(requests, { since = null } = {}) {
+  const sinceMs = Date.parse(since || '');
+  const casts = (requests || []).filter((request) =>
+    request?.status === 'approved'
+    && request.postCastReminderSentAt
+    && !(Number.isFinite(sinceMs) && Date.parse(request.postCastReminderSentAt) < sinceMs))
+    .sort((a, b) => Date.parse(b.postCastReminderSentAt) - Date.parse(a.postCastReminderSentAt));
+  return {
+    missing: casts.filter((request) => postCastFormState(request) === 'missing'),
+    submitted: casts.filter((request) => postCastFormState(request) !== 'missing')
+  };
 }
 
-export function buildMissingFormsReport(groups, { sheetCheckFailed = false, since = null, maxCasters = MISSING_FORMS_MAX_CASTERS } = {}) {
-  const total = groups.reduce((sum, group) => sum + group.requests.length, 0);
-  if (!total) {
-    return {
-      description: sheetCheckFailed
-        ? '⚠️ The form sheet could not be checked, but no forms are listed as missing.'
-        : '✅ Every post-cast form is in.',
-      casterIds: [],
-      total: 0
-    };
-  }
-  const shown = groups.slice(0, maxCasters);
-  const lines = [`**${total}** missing form(s) from **${groups.length}** caster(s)${since ? ` since ${discordTimestamp(since, 'D')}` : ''}.`, ''];
-  for (const group of shown) {
-    lines.push(`<@${group.requesterId}>${group.requesterTag ? ` (${group.requesterTag})` : ''} · ${group.requests.length} missing`);
-    for (const request of group.requests.slice(0, MISSING_FORMS_PER_CASTER)) {
-      const day = discordTimestamp(castTimeIso(request) || request.postCastReminderSentAt, 'D');
-      const nudged = lastNudgeIso(request);
-      lines.push(`- ${request.matchup || request.id}${day ? ` · ${day}` : ''} · \`${request.id}\` · ${nudged ? `nudged ${discordTimestamp(nudged, 'R')}` : 'not nudged'}`);
-    }
-    if (group.requests.length > MISSING_FORMS_PER_CASTER) lines.push(`- …and ${group.requests.length - MISSING_FORMS_PER_CASTER} more`);
-  }
-  if (groups.length > shown.length) lines.push('', `${groups.length - shown.length} more caster(s) not shown.`);
-  if (sheetCheckFailed) lines.push('', '⚠️ The form sheet could not be checked just now, so a form sent recently may still be listed.');
-  lines.push('', 'Each button DMs that caster their missing forms. Use `/cf streams action:form_received` when a form came in without its request ID.');
-  let description = lines.join('\n');
-  if (description.length > 4096) description = `${description.slice(0, 4060)}\n…list cut short.`;
-  return { description, casterIds: shown.map((group) => group.requesterId), total };
+// The `/cf forms` reply: a count, then one short line per cast (match and caster), missing first.
+export function buildFormsOverview({ missing, submitted }, { sheetCheckFailed = false, maxLines = FORMS_MAX_LINES } = {}) {
+  if (!missing.length && !submitted.length) return 'No casts have been sent the post-cast form yet.';
+  const lines = [`✅ **${submitted.length}** submitted · ❌ **${missing.length}** missing`, ''];
+  let budget = maxLines;
+  const section = (title, icon, list) => {
+    if (!list.length) return;
+    lines.push(`**${title}**`);
+    const shown = list.slice(0, Math.max(0, budget));
+    for (const request of shown) lines.push(`${icon} ${request.matchup || request.id} · <@${request.requesterId}>`);
+    budget -= shown.length;
+    if (list.length > shown.length) lines.push(`…and ${list.length - shown.length} more`);
+    lines.push('');
+  };
+  section('Missing', '❌', missing);
+  section('Submitted', '✅', submitted);
+  if (missing.length) lines.push('Press a caster’s button to DM them their missing form links.');
+  if (sheetCheckFailed) lines.push('⚠️ The form sheet could not be checked just now, so a form sent recently may still show as missing.');
+  let text = lines.join('\n').trim();
+  if (text.length > 4096) text = `${text.slice(0, 4060)}\n…list cut short.`;
+  return text;
+}
+
+// One Nudge button per caster with a missing form, most missing first.
+export function formsNudgeCasters(requests, { since = null, max = FORMS_MAX_NUDGE_BUTTONS } = {}) {
+  return groupMissingForms(requests, { since })
+    .slice(0, max)
+    .map((group) => ({ id: group.requesterId, tag: group.requesterTag, count: group.requests.length }));
 }
 
 // The DM a staff nudge sends: every missing form for that caster, each with its own pre-filled link.
@@ -826,68 +833,4 @@ export function staffNudgeCooldownUntil(requests, now = Date.now()) {
   const last = Math.max(...(requests || []).map((request) => Date.parse(request.postCastStaffNudgeAt || '') || 0));
   const until = last + STAFF_NUDGE_COOLDOWN_MINUTES * 60 * 1000;
   return last && until > now ? until : null;
-}
-
-// ---------- `/cf auditlog view:forms` ----------
-
-const FORMS_AUDIT_MAX_LINES = 40;
-
-// Every cast that got the post-cast form DM (on or after `since`), optionally for one match or one
-// caster, split into missing and submitted. Newest first within each section.
-export function selectFormsAudit(requests, { since = null, matchId = null, casterId = null } = {}) {
-  const sinceMs = Date.parse(since || '');
-  const casts = (requests || []).filter((request) => {
-    if (request?.status !== 'approved' || !request.postCastReminderSentAt) return false;
-    if (Number.isFinite(sinceMs) && Date.parse(request.postCastReminderSentAt) < sinceMs) return false;
-    if (matchId && request.matchId !== matchId) return false;
-    if (casterId && request.requesterId !== casterId) return false;
-    return true;
-  }).sort((a, b) => Date.parse(b.postCastReminderSentAt) - Date.parse(a.postCastReminderSentAt));
-  return {
-    missing: casts.filter((request) => postCastFormState(request) === 'missing'),
-    submitted: casts.filter((request) => postCastFormState(request) !== 'missing')
-  };
-}
-
-function formsAuditLine(request) {
-  const state = postCastFormState(request);
-  const day = discordTimestamp(castTimeIso(request) || request.postCastReminderSentAt, 'D');
-  const head = `**${request.matchup || request.id}** · <@${request.requesterId}>${day ? ` · ${day}` : ''} · \`${request.id}\``;
-  if (state === 'waived') {
-    return `☑️ ${head} · marked received by ${request.postCastFormWaivedBy ? `<@${request.postCastFormWaivedBy}>` : 'staff'} ${discordTimestamp(request.postCastFormWaivedAt, 'R') || ''}`.trim();
-  }
-  if (state === 'received') return `✅ ${head} · received ${discordTimestamp(request.postCastFormSubmittedAt, 'R') || ''}`.trim();
-  const nudged = [request.postCastStaffNudgeAt, request.postCastNudgeSentAt].filter(Boolean).sort().pop();
-  const dm = request.postCastReminderDelivery === 'failed' ? ' (form DM failed: DMs closed)' : '';
-  return `❌ ${head} · form sent ${discordTimestamp(request.postCastReminderSentAt, 'R')}${dm} · ${nudged ? `nudged ${discordTimestamp(nudged, 'R')}` : 'not nudged'}`;
-}
-
-export function buildFormsAuditReport({ missing, submitted }, { since = null, sheetCheckFailed = false, scope = null, maxLines = FORMS_AUDIT_MAX_LINES } = {}) {
-  const total = missing.length + submitted.length;
-  const scopeText = scope ? ` for ${scope}` : '';
-  if (!total) {
-    return `No casts${scopeText} have been sent the post-cast form${since ? ` since ${discordTimestamp(since, 'D')}` : ''}.`;
-  }
-  const waived = submitted.filter((request) => postCastFormState(request) === 'waived').length;
-  const lines = [
-    `**${total}** cast(s)${scopeText} got the post-cast form${since ? ` since ${discordTimestamp(since, 'D')}` : ''}: `
-      + `✅ ${submitted.length - waived} received · ☑️ ${waived} marked by staff · ❌ ${missing.length} missing`,
-    ''
-  ];
-  let budget = maxLines;
-  const section = (title, list) => {
-    lines.push(`**${title} (${list.length})**`);
-    if (!list.length) lines.push('None.');
-    const shown = list.slice(0, Math.max(0, budget));
-    for (const request of shown) lines.push(formsAuditLine(request));
-    budget -= shown.length;
-    if (list.length > shown.length) lines.push(`…and ${list.length - shown.length} more.`);
-    lines.push('');
-  };
-  section('Not submitted', missing);
-  section('Submitted', submitted);
-  if (sheetCheckFailed) lines.push('⚠️ The form sheet could not be checked just now, so a form sent recently may still show as missing.');
-  let text = lines.join('\n').trim();
-  if (text.length > 4096) text = `${text.slice(0, 4060)}\n…list cut short.`;
-  return text;
 }

@@ -143,13 +143,13 @@ import {
   postCastFormState,
   splitMyCasts,
   streamChannelName,
-  buildMissingFormsReport,
   buildStaffFormNudge,
   groupMissingForms,
   staffNudgeCooldownUntil,
   STAFF_NUDGE_COOLDOWN_MINUTES,
-  buildFormsAuditReport,
-  selectFormsAudit
+  buildFormsOverview,
+  formsNudgeCasters,
+  selectFormCasts
 } from './streamRequest.js';
 import { parseScheduleClock } from './scheduleInput.js';
 import { createWebsitePublisher } from './websitePublisher.js';
@@ -530,6 +530,11 @@ async function handleAdminCommand(interaction) {
 
     if (subcommand === 'season') {
       await handleSeasonCommand(interaction);
+      return;
+    }
+
+    if (subcommand === 'forms') {
+      await showForms(interaction);
       return;
     }
   }
@@ -1007,30 +1012,10 @@ async function handleSeasonAutocomplete(interaction) {
 async function handleAuditLog(interaction) {
   await interaction.deferReply({ ephemeral: true });
   const matchId = interaction.options.getString('match_id') || null;
-  if (interaction.options.getString('view') === 'forms') {
-    await showFormsAudit(interaction, { matchId, caster: interaction.options.getUser('caster') });
-    return;
-  }
   const entries = (await listAuditLog({ matchId })).slice(-40).reverse();
   await interaction.editReply(truncateDiscordMessage(entries.length
     ? entries.map((entry) => `- ${entry.timestamp} | ${entry.type} | actor ${entry.actorId || 'system'}${entry.matchId ? ` | match ${entry.matchId}` : ''}${entry.requestId ? ` | request ${entry.requestId}` : ''}${entry.reason ? ` | ${entry.reason}` : ''}`).join('\n')
     : 'No matching audit events.'));
-}
-
-// `/cf auditlog view:forms`: every cast that got the post-cast form, split into not submitted and
-// submitted, after asking the form sheet about the missing ones.
-async function showFormsAudit(interaction, { matchId = null, caster = null } = {}) {
-  const since = config.postCastFormGateSince;
-  const filters = { since, matchId, casterId: caster?.id || null };
-  let selection = selectFormsAudit(await listStreamRequests(), filters);
-  const check = await checkFormsInSheet(selection.missing.map((request) => request.id), '/cf auditlog view:forms');
-  if (check.foundIds.length) selection = selectFormsAudit(await listStreamRequests(), filters);
-  const scope = [caster ? `<@${caster.id}>` : null, matchId ? `match ${matchId}` : null].filter(Boolean).join(', ') || null;
-  const embed = new EmbedBuilder()
-    .setTitle('📝 Post-cast forms')
-    .setDescription(buildFormsAuditReport(selection, { since, sheetCheckFailed: check.failed, scope }))
-    .setColor(selection.missing.length ? 0xf1c40f : 0x2ecc71);
-  await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } });
 }
 
 async function handleCommandHelp(interaction) {
@@ -1053,9 +1038,8 @@ async function handleCommandHelp(interaction) {
       '`/cf mappings action:list|inspect|link|repair` - manage persistent team-role mappings.',
       '`/cf veto action:start|inspect|reset|cancel|seeds` - manage a playoff veto.',
       '`/cf streams action:pending|approved|inspect|cancel|revoke|complete` - review stream requests.',
-      '`/cf streams action:missing_forms` - every cast still missing its post-cast form, with a nudge button per caster.',
       '`/cf auditlog match_id:<optional>` - inspect scheduling and operations decisions.',
-      '`/cf auditlog view:forms caster:<optional>` - which post-cast forms are submitted and which are missing.',
+      '`/cf forms` - who has submitted their post-cast form and who is missing, with a nudge button per caster.',
       '`/cf season action:list|start|rounds|edit|end|delete` - set season dates and each round\'s scheduling window.',
       '',
       '**Match Room Commands**',
@@ -3506,22 +3490,26 @@ async function missingFormGroups(requesterId = null) {
   return { groups, since, sheetCheckFailed: check.failed, arrived: check.foundIds.length };
 }
 
-// `/cf streams action:missing_forms`
-async function showMissingForms(interaction) {
-  const { groups, since, sheetCheckFailed } = await missingFormGroups();
-  const report = buildMissingFormsReport(groups, { sheetCheckFailed, since });
-  const tags = new Map(groups.map((group) => [group.requesterId, group.requesterTag]));
-  const buttons = report.casterIds.map((casterId) => new ButtonBuilder()
-    .setCustomId(`forms_nudge:${casterId}`)
-    .setLabel(`Nudge ${tags.get(casterId) || casterId}`.slice(0, 80))
+// `/cf forms`: who has submitted their post-cast form and who has not, after checking the form
+// sheet, with a Nudge button per caster still missing one.
+async function showForms(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const since = config.postCastFormGateSince;
+  let requests = await listStreamRequests();
+  const check = await checkFormsInSheet(selectFormCasts(requests, { since }).missing.map((request) => request.id), '/cf forms');
+  if (check.foundIds.length) requests = await listStreamRequests();
+  const selection = selectFormCasts(requests, { since });
+  const buttons = formsNudgeCasters(requests, { since }).map((caster) => new ButtonBuilder()
+    .setCustomId(`forms_nudge:${caster.id}`)
+    .setLabel(`Nudge ${caster.tag || caster.id}`.slice(0, 80))
     .setEmoji('📨')
     .setStyle(ButtonStyle.Secondary));
   const rows = [];
   for (let index = 0; index < buttons.length; index += 5) rows.push(new ActionRowBuilder().addComponents(buttons.slice(index, index + 5)));
   const embed = new EmbedBuilder()
-    .setTitle('📝 Missing post-cast forms')
-    .setDescription(report.description)
-    .setColor(report.total ? 0xf1c40f : 0x2ecc71);
+    .setTitle('📝 Post-cast forms')
+    .setDescription(buildFormsOverview(selection, { sheetCheckFailed: check.failed }))
+    .setColor(selection.missing.length ? 0xf1c40f : 0x2ecc71);
   await interaction.editReply({ embeds: [embed], components: rows, allowedMentions: { parse: [] } });
 }
 
@@ -4740,10 +4728,6 @@ async function handleAdminStreams(interaction) {
   const action = interaction.options.getString('action', true);
   const requestId = interaction.options.getString('request_id');
   const reason = interaction.options.getString('reason') || '';
-  if (action === 'missing_forms') {
-    await showMissingForms(interaction);
-    return;
-  }
   if (action === 'pending' || action === 'approved' || action === 'publish_failed') {
     const statuses = action === 'pending' ? ['pending', 'approving'] : [action];
     const requests = (await listStreamRequests()).filter((request) => statuses.includes(request.status));
