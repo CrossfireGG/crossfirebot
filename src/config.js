@@ -213,7 +213,7 @@ export function getConfig() {
     liveNowChannelId: process.env.LIVE_NOW_CHANNEL_ID || null,
     // Optional: where `!request mainstream` posts connection details for the official broadcast.
     requestIpChannelId: process.env.REQUEST_IP_CHANNEL_ID || null,
-    // Optional: when set, `/request stream` and `!request` only work in these channels.
+    // Optional: when set, `/request stream` only works in these channels.
     streamCommunityChannelIds: parseSnowflakeList(process.env.STREAM_COMMUNITY_CHANNEL_IDS || ''),
     // Optional: restrict accepted stream platforms (twitch, youtube, kick). Empty = all.
     streamAllowedPlatforms: parseCsvValue(process.env.STREAM_ALLOWED_PLATFORMS || '').map((value) => value.toLowerCase()),

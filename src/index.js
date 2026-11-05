@@ -147,7 +147,9 @@ import {
   buildStaffFormNudge,
   groupMissingForms,
   staffNudgeCooldownUntil,
-  STAFF_NUDGE_COOLDOWN_MINUTES
+  STAFF_NUDGE_COOLDOWN_MINUTES,
+  buildFormsAuditReport,
+  selectFormsAudit
 } from './streamRequest.js';
 import { parseScheduleClock } from './scheduleInput.js';
 import { createWebsitePublisher } from './websitePublisher.js';
@@ -643,7 +645,7 @@ async function handleCrossfireCommand(interaction) {
       '`/crossfire team name:<team>` - that team’s matches when you have access.',
       '`/crossfire rounds` - round windows and defaults.',
       '`/crossfire veto` - veto status for this linked match room.',
-      `\`/request stream\` or \`!request\` - request permission to stream (${streamPlatformLabel()} links accepted).`,
+      `\`/request stream\` - request permission to stream (${streamPlatformLabel()} links accepted).`,
       '`/request mine` - your casts, IP status, and any post-cast forms still missing.',
       config.streamGuidelinesUrl ? `Streaming guidelines: ${config.streamGuidelinesUrl}` : null,
       config.rulesUrl ? `Rules: ${config.rulesUrl}` : 'Rules link is not configured; ask Tournament Operations for the current rules.'
@@ -1005,10 +1007,30 @@ async function handleSeasonAutocomplete(interaction) {
 async function handleAuditLog(interaction) {
   await interaction.deferReply({ ephemeral: true });
   const matchId = interaction.options.getString('match_id') || null;
+  if (interaction.options.getString('view') === 'forms') {
+    await showFormsAudit(interaction, { matchId, caster: interaction.options.getUser('caster') });
+    return;
+  }
   const entries = (await listAuditLog({ matchId })).slice(-40).reverse();
   await interaction.editReply(truncateDiscordMessage(entries.length
-    ? entries.map((entry) => `- ${entry.timestamp} | ${entry.type} | actor ${entry.actorId || 'system'}${entry.matchId ? ` | match ${entry.matchId}` : ''}${entry.reason ? ` | ${entry.reason}` : ''}`).join('\n')
+    ? entries.map((entry) => `- ${entry.timestamp} | ${entry.type} | actor ${entry.actorId || 'system'}${entry.matchId ? ` | match ${entry.matchId}` : ''}${entry.requestId ? ` | request ${entry.requestId}` : ''}${entry.reason ? ` | ${entry.reason}` : ''}`).join('\n')
     : 'No matching audit events.'));
+}
+
+// `/cf auditlog view:forms`: every cast that got the post-cast form, split into not submitted and
+// submitted, after asking the form sheet about the missing ones.
+async function showFormsAudit(interaction, { matchId = null, caster = null } = {}) {
+  const since = config.postCastFormGateSince;
+  const filters = { since, matchId, casterId: caster?.id || null };
+  let selection = selectFormsAudit(await listStreamRequests(), filters);
+  const check = await checkFormsInSheet(selection.missing.map((request) => request.id), '/cf auditlog view:forms');
+  if (check.foundIds.length) selection = selectFormsAudit(await listStreamRequests(), filters);
+  const scope = [caster ? `<@${caster.id}>` : null, matchId ? `match ${matchId}` : null].filter(Boolean).join(', ') || null;
+  const embed = new EmbedBuilder()
+    .setTitle('📝 Post-cast forms')
+    .setDescription(buildFormsAuditReport(selection, { since, sheetCheckFailed: check.failed, scope }))
+    .setColor(selection.missing.length ? 0xf1c40f : 0x2ecc71);
+  await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } });
 }
 
 async function handleCommandHelp(interaction) {
@@ -1033,6 +1055,7 @@ async function handleCommandHelp(interaction) {
       '`/cf streams action:pending|approved|inspect|cancel|revoke|complete` - review stream requests.',
       '`/cf streams action:missing_forms` - every cast still missing its post-cast form, with a nudge button per caster.',
       '`/cf auditlog match_id:<optional>` - inspect scheduling and operations decisions.',
+      '`/cf auditlog view:forms caster:<optional>` - which post-cast forms are submitted and which are missing.',
       '`/cf season action:list|start|rounds|edit|end|delete` - set season dates and each round\'s scheduling window.',
       '',
       '**Match Room Commands**',
@@ -1043,7 +1066,7 @@ async function handleCommandHelp(interaction) {
       '`!decline` - decline the open proposal.',
       '`!cancel` - cancel your open proposal before it is accepted.',
       '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.',
-      '`!request` - open the community stream request workflow.',
+      '`/request stream` - open the community stream request form (`!request` now points casters here).',
       '`/cf streams action:pending|approved|publish_failed|inspect|retry|cancel|revoke|complete` - manage caster requests and website publishing.',
       '`!cancelreq FACEIT_LINK` or `!cancelreq @caster` - staff cancel grouped or individual approved caster requests.',
       '`!resendip FACEIT_LINK` - staff restart the CSTV/Twitch delivery prompt.',
@@ -3030,23 +3053,11 @@ function streamCommunityChannelHint() {
   return `Please request streams in ${config.streamCommunityChannelIds.map((id) => `<#${id}>`).join(' or ')}.`;
 }
 
+// `!request` for casters was retired in favour of `/request stream`; point anyone who still types it there.
 async function handleTextStreamRequest(message) {
-  if (!streamRequestChannelAllowed(message.channelId)) {
-    await message.reply(streamCommunityChannelHint());
-    return;
-  }
   await message.reply({
-    content: [
-      '**Stream Request**',
-      'Submitting a request does not grant permission to stream.',
-      config.streamGuidelinesUrl ? `Guidelines: ${config.streamGuidelinesUrl}` : config.streamGuidelinesText
-    ].join('\n'),
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`stream_request_open:${message.author.id}`)
-        .setLabel('Request to Stream')
-        .setStyle(ButtonStyle.Primary)
-    )]
+    content: 'Stream requests now use `/request stream`. Type it in this channel to open the request form.',
+    allowedMentions: { repliedUser: false }
   });
 }
 
@@ -3474,10 +3485,11 @@ async function checkFormsInSheet(requestIds, context) {
     for (const id of batch) {
       const hit = lookup.found?.[id];
       if (!hit) continue;
-      await updateStreamRequest(id, {
+      const updated = await updateStreamRequest(id, {
         postCastFormSubmittedAt: hit.submittedAt || new Date().toISOString(),
         postCastFormSource: 'form'
       });
+      await appendAuditLog({ type: 'stream_post_cast_form_received', matchId: updated?.matchId || null, requestId: id, source: 'sheet' });
       foundIds.push(id);
     }
   }
@@ -3652,6 +3664,7 @@ async function sendPostCastNudges(now = Date.now()) {
         postCastFormSubmittedAt: hit.submittedAt || checkedAt,
         postCastFormSource: 'form'
       }, ['approved']);
+      await appendAuditLog({ type: 'stream_post_cast_form_received', matchId: request.matchId || null, requestId: request.id, source: 'sheet' });
       continue;
     }
     const sent = await dmStreamRequester(request, buildPostCastNudge(request, {
@@ -3687,6 +3700,7 @@ async function checkPostCastFormGate(requesterId) {
       postCastFormSubmittedAt: hit.submittedAt || new Date().toISOString(),
       postCastFormSource: 'form'
     });
+    await appendAuditLog({ type: 'stream_post_cast_form_received', matchId: outstanding.matchId || null, requestId: outstanding.id, source: 'sheet' });
     return { blocked: false, note: `Form received for last cast ${outstanding.id} (${outstanding.matchup}).` };
   }
   if (!lookup.ok || lookup.skipped) {
@@ -4828,6 +4842,7 @@ async function sendPostCastReminder(matchId, actorId = null) {
       postCastReminderDelivery: sent ? 'delivered' : 'failed',
       completedBy: actorId
     }, ['approved']);
+    await appendAuditLog({ type: 'stream_post_cast_form_sent', actorId, matchId: claimed.matchId || null, requestId: claimed.id, delivered: sent });
   }
 }
 

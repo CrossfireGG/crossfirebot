@@ -475,7 +475,7 @@ export function buildLiveBoardNotice(request) {
 // --- Main stream (official broadcast) -------------------------------------------
 // "!request mainstream <link>", "!request main stream", "!request main-stream",
 // "!request main". Returns the text after the keyword, or null when the message is
-// an ordinary caster request ("!request" alone, or "!request maintenance").
+// anything else ("!request" alone, or "!request maintenance"), which is pointed at /request stream.
 export function parseMainStreamCommand(content) {
   const match = String(content || '').trim().match(/^!request\s+main(?:\s*-?\s*stream)?(?=\s|$)([\s\S]*)$/i);
   return match ? { rest: match[1].trim() } : null;
@@ -826,4 +826,68 @@ export function staffNudgeCooldownUntil(requests, now = Date.now()) {
   const last = Math.max(...(requests || []).map((request) => Date.parse(request.postCastStaffNudgeAt || '') || 0));
   const until = last + STAFF_NUDGE_COOLDOWN_MINUTES * 60 * 1000;
   return last && until > now ? until : null;
+}
+
+// ---------- `/cf auditlog view:forms` ----------
+
+const FORMS_AUDIT_MAX_LINES = 40;
+
+// Every cast that got the post-cast form DM (on or after `since`), optionally for one match or one
+// caster, split into missing and submitted. Newest first within each section.
+export function selectFormsAudit(requests, { since = null, matchId = null, casterId = null } = {}) {
+  const sinceMs = Date.parse(since || '');
+  const casts = (requests || []).filter((request) => {
+    if (request?.status !== 'approved' || !request.postCastReminderSentAt) return false;
+    if (Number.isFinite(sinceMs) && Date.parse(request.postCastReminderSentAt) < sinceMs) return false;
+    if (matchId && request.matchId !== matchId) return false;
+    if (casterId && request.requesterId !== casterId) return false;
+    return true;
+  }).sort((a, b) => Date.parse(b.postCastReminderSentAt) - Date.parse(a.postCastReminderSentAt));
+  return {
+    missing: casts.filter((request) => postCastFormState(request) === 'missing'),
+    submitted: casts.filter((request) => postCastFormState(request) !== 'missing')
+  };
+}
+
+function formsAuditLine(request) {
+  const state = postCastFormState(request);
+  const day = discordTimestamp(castTimeIso(request) || request.postCastReminderSentAt, 'D');
+  const head = `**${request.matchup || request.id}** · <@${request.requesterId}>${day ? ` · ${day}` : ''} · \`${request.id}\``;
+  if (state === 'waived') {
+    return `☑️ ${head} · marked received by ${request.postCastFormWaivedBy ? `<@${request.postCastFormWaivedBy}>` : 'staff'} ${discordTimestamp(request.postCastFormWaivedAt, 'R') || ''}`.trim();
+  }
+  if (state === 'received') return `✅ ${head} · received ${discordTimestamp(request.postCastFormSubmittedAt, 'R') || ''}`.trim();
+  const nudged = [request.postCastStaffNudgeAt, request.postCastNudgeSentAt].filter(Boolean).sort().pop();
+  const dm = request.postCastReminderDelivery === 'failed' ? ' (form DM failed: DMs closed)' : '';
+  return `❌ ${head} · form sent ${discordTimestamp(request.postCastReminderSentAt, 'R')}${dm} · ${nudged ? `nudged ${discordTimestamp(nudged, 'R')}` : 'not nudged'}`;
+}
+
+export function buildFormsAuditReport({ missing, submitted }, { since = null, sheetCheckFailed = false, scope = null, maxLines = FORMS_AUDIT_MAX_LINES } = {}) {
+  const total = missing.length + submitted.length;
+  const scopeText = scope ? ` for ${scope}` : '';
+  if (!total) {
+    return `No casts${scopeText} have been sent the post-cast form${since ? ` since ${discordTimestamp(since, 'D')}` : ''}.`;
+  }
+  const waived = submitted.filter((request) => postCastFormState(request) === 'waived').length;
+  const lines = [
+    `**${total}** cast(s)${scopeText} got the post-cast form${since ? ` since ${discordTimestamp(since, 'D')}` : ''}: `
+      + `✅ ${submitted.length - waived} received · ☑️ ${waived} marked by staff · ❌ ${missing.length} missing`,
+    ''
+  ];
+  let budget = maxLines;
+  const section = (title, list) => {
+    lines.push(`**${title} (${list.length})**`);
+    if (!list.length) lines.push('None.');
+    const shown = list.slice(0, Math.max(0, budget));
+    for (const request of shown) lines.push(formsAuditLine(request));
+    budget -= shown.length;
+    if (list.length > shown.length) lines.push(`…and ${list.length - shown.length} more.`);
+    lines.push('');
+  };
+  section('Not submitted', missing);
+  section('Submitted', submitted);
+  if (sheetCheckFailed) lines.push('⚠️ The form sheet could not be checked just now, so a form sent recently may still show as missing.');
+  let text = lines.join('\n').trim();
+  if (text.length > 4096) text = `${text.slice(0, 4060)}\n…list cut short.`;
+  return text;
 }

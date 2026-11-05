@@ -216,8 +216,13 @@ export const commands = [
     .addSubcommand((subcommand) =>
       subcommand
         .setName('auditlog')
-        .setDescription('Show recent scheduling and operations audit events')
+        .setDescription('Show recent audit events, or which post-cast forms are in and which are missing')
         .addStringOption((option) => option.setName('match_id').setDescription('Optional FACEIT match ID').setRequired(false))
+        .addStringOption((option) => option.setName('view').setDescription('What to show (default: recent events)').setRequired(false).addChoices(
+          { name: 'recent events', value: 'events' },
+          { name: 'post-cast forms: submitted and missing', value: 'forms' }
+        ))
+        .addUserOption((option) => option.setName('caster').setDescription('Forms view: only this caster').setRequired(false))
     )
   ,
   new SlashCommandBuilder()
