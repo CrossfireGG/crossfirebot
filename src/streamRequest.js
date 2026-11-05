@@ -399,7 +399,7 @@ export function buildCoverageNotice(request, { cancelled = false, reason = null,
     return {
       color: COVERAGE_COLORS.active,
       title: '🎙️ This match will be streamed!',
-      description: `**${matchup}** will be cast live by **${caster}**`,
+      description: `**${matchup}** will be casted live by **${caster}**`,
       fields: [
         { name: 'When', value: when, inline: false },
         { name: 'Watch', value: request?.streamUrl || 'Stream link to follow', inline: false },

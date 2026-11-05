@@ -17,7 +17,7 @@ const request = {
 test('active coverage notice names the stream channel without mentioning anyone', () => {
   const notice = buildCoverageNotice(request);
   assert.equal(notice.title, '🎙️ This match will be streamed!');
-  assert.equal(notice.description, '**Alpha vs Bravo** will be cast live by **caster**');
+  assert.equal(notice.description, '**Alpha vs Bravo** will be casted live by **caster**');
   assert.doesNotMatch(JSON.stringify(notice), /<@123>/);
   assert.equal(notice.fields.find((field) => field.name === 'Watch').value, request.streamUrl);
   assert.equal(notice.fields.some((field) => /twitch/i.test(field.name)), false);
@@ -26,7 +26,7 @@ test('active coverage notice names the stream channel without mentioning anyone'
 
 test('a link that is not a channel page falls back to the Discord tag', () => {
   const notice = buildCoverageNotice({ ...request, streamUrl: 'https://www.twitch.tv/search?term=OmenEsportsCS2' });
-  assert.match(notice.description, /cast live by \*\*caster#0001\*\*$/);
+  assert.match(notice.description, /casted live by \*\*caster#0001\*\*$/);
 });
 
 test('streamChannelName reads the channel from each platform', () => {
