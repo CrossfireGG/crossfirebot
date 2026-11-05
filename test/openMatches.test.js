@@ -126,3 +126,9 @@ test('the daily post is due once per Eastern day, from 5 PM until 7 PM', async (
   assert.equal(openMatchesDigestDue(Date.parse('2026-07-01T21:00:00Z')), '2026-07-01');
   assert.equal(openMatchesDigestDue(Date.parse('2026-11-05T14:00:00Z'), { time: '09:00' }), '2026-11-05');
 });
+
+test('the channel post can use its own footer', async () => {
+  const { UPCOMING_POST_FOOTER } = await import('../src/streamRequest.js');
+  const view = buildOpenMatchesView(selectOpenMatches(data, { now: NOW }), { now: NOW, footer: UPCOMING_POST_FOOTER });
+  assert.equal(view.embeds.at(-1).footer, 'Times are in your local time. Use /request open to request a match.');
+});

@@ -159,7 +159,8 @@ import {
   isPostCastFormOverdue,
   selectOpenMatches,
   buildOpenMatchesView,
-  openMatchesDigestDue
+  openMatchesDigestDue,
+  UPCOMING_POST_FOOTER
 } from './streamRequest.js';
 import { parseScheduleClock } from './scheduleInput.js';
 import { createWebsitePublisher } from './websitePublisher.js';
@@ -3151,9 +3152,10 @@ async function loadOpenMatches({ viewerId = null, now = Date.now() } = {}) {
   return selectOpenMatches({ matches, schedules, requests, mainStreamMatchIds }, { now, viewerId });
 }
 
-function buildOpenMatchesPayload(open, { content = '**Upcoming Matches**' } = {}) {
-  const view = buildOpenMatchesView(open);
-  const buttons = view.buttons.map((entry) => new ButtonBuilder()
+// withButtons: false is the channel post (daily and /cf upcoming): just the list, no buttons.
+function buildOpenMatchesPayload(open, { content = '**Upcoming Matches**', withButtons = true } = {}) {
+  const view = buildOpenMatchesView(open, withButtons ? {} : { footer: UPCOMING_POST_FOOTER });
+  const buttons = (withButtons ? view.buttons : []).map((entry) => new ButtonBuilder()
     .setCustomId(`open_request:${entry.matchId}`)
     .setLabel(entry.matchup.slice(0, 80))
     .setEmoji(entry.tonight ? '🔥' : '🎙️')
@@ -3201,7 +3203,7 @@ async function postOpenMatchesDigest(now = Date.now()) {
 async function sendUpcomingMatchesPost(channel, open, { ping = true } = {}) {
   const roleId = ping ? config.communityCasterRoleId : null;
   return channel.send({
-    ...buildOpenMatchesPayload(open, { content: `${roleId ? `<@&${roleId}> ` : ''}**Upcoming Matches**` }),
+    ...buildOpenMatchesPayload(open, { content: `${roleId ? `<@&${roleId}> ` : ''}**Upcoming Matches**`, withButtons: false }),
     allowedMentions: { parse: [], roles: roleId ? [roleId] : [] }
   }).catch((error) => {
     console.error('Upcoming Matches post failed:', error);

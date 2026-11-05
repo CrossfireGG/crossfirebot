@@ -731,7 +731,10 @@ function upcomingMatchLine(entry) {
 // in their own highlighted embed, then the rest grouped under a heading per day, all in date and time
 // order. Times render in each viewer's local time. `buttons` are the matches casters can request
 // (everything shown except main stream ones), at most `maxButtons`.
-export function buildOpenMatchesView(entries, { now = Date.now(), maxButtons = OPEN_MATCHES_LIMIT, budget = UPCOMING_EMBED_BUDGET } = {}) {
+export const UPCOMING_POST_FOOTER = 'Times are in your local time. Use /request open to request a match.';
+const UPCOMING_REPLY_FOOTER = 'Press a match below to request it. The FACEIT link is filled in for you. More than one caster can cover a match. Times are in your local time.';
+
+export function buildOpenMatchesView(entries, { now = Date.now(), maxButtons = OPEN_MATCHES_LIMIT, budget = UPCOMING_EMBED_BUDGET, footer = UPCOMING_REPLY_FOOTER } = {}) {
   if (!entries?.length) {
     return {
       embeds: [{ description: 'No confirmed upcoming matches right now. Check back later.', color: UPCOMING_COLOR }],
@@ -761,7 +764,6 @@ export function buildOpenMatchesView(entries, { now = Date.now(), maxButtons = O
   }
   const hidden = entries.length - shown.length;
   if (hidden) (laterLines.length ? laterLines : tonightLines).push(`\n…and ${hidden} more after these.`);
-  const footer = 'Press a match below to request it. The FACEIT link is filled in for you. More than one caster can cover a match. Times are in your local time.';
   const embeds = [];
   if (tonightLines.length) {
     embeds.push({ title: `🔥 Tonight · ${easternDayHeading(new Date(now).toISOString())}`, description: tonightLines.join('\n'), color: TONIGHT_COLOR });
