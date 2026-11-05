@@ -1,3 +1,5 @@
+import { easternDateKey, seasonContains } from './season.js';
+
 // Request lifecycle. "Active" requests block duplicate submissions and are
 // monitored against FACEIT. `approving` and `publish_failed` are approved by
 // staff but not yet confirmed by the website, so the caster is not told yet.
@@ -528,4 +530,300 @@ export function buildConnectionDm({ matchup, type, value }) {
     : type === 'twitch' ? 'official CROSSFIRE stream' : 'connection details from Tournament Operations';
   const detail = type === 'cstv' ? `\`${value}\`` : value;
   return `**${matchup}** is ready. ${label}:\n${detail}`;
+}
+
+// ---------- `/request mine`: a caster's own casts ----------
+
+export const MY_CASTS_LIMIT = 10;
+// A cast whose match time passed this long ago counts as past even if FACEIT never reported it finished.
+const MY_CASTS_GRACE_MS = 6 * 60 * 60 * 1000;
+
+export function castTimeIso(request) {
+  return request?.faceitScheduledAtIso || request?.dateTimeIso || null;
+}
+
+// Approved casts split into upcoming (soonest first) and past (most recent first). Matches FACEIT
+// canceled are not casts, so they are left out.
+export function splitMyCasts(requests, { requesterId, now = Date.now() } = {}) {
+  const upcoming = [];
+  const past = [];
+  for (const request of requests || []) {
+    if (request?.requesterId !== requesterId || !STREAM_CONNECTION_STATUSES.includes(request.status)) continue;
+    if (request.terminalNotifiedAt && isCanceledFaceitStatus(request.faceitStatus)) continue;
+    const startMs = Date.parse(castTimeIso(request) || '');
+    const finished = Boolean(request.postCastReminderSentAt || request.terminalNotifiedAt)
+      || (Number.isFinite(startMs) && startMs < now - MY_CASTS_GRACE_MS);
+    (finished ? past : upcoming).push(request);
+  }
+  const startOf = (request) => {
+    const ms = Date.parse(castTimeIso(request) || '');
+    return Number.isFinite(ms) ? ms : Infinity;
+  };
+  const finishedOf = (request) => Date.parse(request.postCastReminderSentAt || request.terminalNotifiedAt || castTimeIso(request) || '') || 0;
+  upcoming.sort((a, b) => startOf(a) - startOf(b));
+  past.sort((a, b) => finishedOf(b) - finishedOf(a));
+  return { upcoming, past };
+}
+
+// received: the form is in. waived: staff marked it received. missing: the form DM went out and
+// nothing came back. not_required: the cast finished without a form DM (before the form existed).
+export function postCastFormState(request) {
+  if (request?.postCastFormSource === 'staff' || request?.postCastFormWaivedAt) return 'waived';
+  if (request?.postCastFormSubmittedAt) return 'received';
+  if (request?.postCastReminderSentAt) return 'missing';
+  return 'not_required';
+}
+
+export function connectionStatusLine(request) {
+  if (!request?.deliverySentAt) return '⏳ IP not sent yet. It comes by DM when staff send it.';
+  const what = request.deliveryType === 'cstv'
+    ? 'CSTV connect'
+    : request.deliveryType === 'twitch' ? 'Official stream link' : 'Server IP';
+  return request.deliveryStatus === 'failed'
+    ? `⚠️ ${what} was sent, but your DMs were closed. Open your DMs and ask staff to resend it.`
+    : `✅ ${what} sent to your DMs ${discordTimestamp(request.deliverySentAt, 'R') || ''}`.trim();
+}
+
+const FORM_STATE_ICONS = { received: '✅', waived: '☑️', missing: '❌', not_required: '▫️' };
+const FORM_STATE_TEXT = {
+  received: 'form received',
+  waived: 'form marked received by staff',
+  missing: 'form missing',
+  not_required: 'no form needed'
+};
+
+// The `/request mine` reply. `formLink(requestId)` builds the pre-filled form URL.
+export function buildMyCastsView(requests, { requesterId, now = Date.now(), formLink = () => '', formCheckFailed = false, limit = MY_CASTS_LIMIT, stats = null } = {}) {
+  const { upcoming, past } = splitMyCasts(requests, { requesterId, now });
+  if (!upcoming.length && !past.length) {
+    return {
+      description: 'You have no approved casts yet. Use `/request stream` to ask to cover a match.',
+      missingForms: [],
+      upcomingCount: 0,
+      pastCount: 0
+    };
+  }
+  const lines = [];
+  if (stats) lines.push(formatStatsLine(stats), '');
+  lines.push('**Upcoming**');
+  if (!upcoming.length) lines.push('Nothing scheduled. Use `/request stream` to pick up a match.');
+  for (const request of upcoming.slice(0, limit)) {
+    const when = discordTimestamp(castTimeIso(request), 'F');
+    const room = request.faceitUrl ? ` · [Matchroom](${request.faceitUrl})` : '';
+    lines.push(`**${request.matchup || request.id}**${isBroadcastLive(request) ? ' · 🔴 live now' : ''}`);
+    lines.push(`${when ? `${when} (${discordTimestamp(castTimeIso(request), 'R')})` : 'Not scheduled on FACEIT yet'}${room}`);
+    lines.push(connectionStatusLine(request));
+  }
+  if (upcoming.length > limit) lines.push(`…and ${upcoming.length - limit} more.`);
+
+  const shownPast = past.slice(0, limit);
+  const missingForms = [];
+  lines.push('', '**Past casts**');
+  if (!past.length) lines.push('None yet.');
+  for (const request of shownPast) {
+    const state = postCastFormState(request);
+    const day = discordTimestamp(castTimeIso(request) || request.postCastReminderSentAt, 'D');
+    const url = state === 'missing' ? formLink(request.id) : '';
+    if (state === 'missing' && url) missingForms.push({ id: request.id, matchup: request.matchup || request.id, url });
+    const hint = state === 'missing' && !url ? ' (ask staff for the form link)' : '';
+    lines.push(`${FORM_STATE_ICONS[state]} **${request.matchup || request.id}**${day ? ` · ${day}` : ''} · ${FORM_STATE_TEXT[state]}${hint}`);
+  }
+  if (past.length > limit) lines.push(`Showing your ${limit} most recent of ${past.length} past casts.`);
+  if (missingForms.length) lines.push('', 'Use the buttons below to fill in each missing form. Your request ID is already filled in.');
+  if (formCheckFailed) lines.push('', '⚠️ I could not reach the form sheet just now, so a form you sent recently may still show ❌.');
+  return { description: lines.join('\n'), missingForms, upcomingCount: upcoming.length, pastCount: past.length };
+}
+
+// ---------- personal stats ----------
+
+// Past casts in the season (by match date, Eastern time), or all time when no season is given.
+// The form rate counts only casts that got the post-cast form DM; staff-marked forms count as in.
+export function computeCasterStats(requests, { requesterId, season = null, now = Date.now() } = {}) {
+  const { past } = splitMyCasts(requests, { requesterId, now });
+  const inScope = season
+    ? past.filter((request) => {
+      const ms = Date.parse(castTimeIso(request) || request.postCastReminderSentAt || request.createdAt || '');
+      return Number.isFinite(ms) && seasonContains(season, easternDateKey(new Date(ms)));
+    })
+    : past;
+  const formsDue = inScope.filter((request) => request.postCastReminderSentAt);
+  const formsIn = formsDue.filter((request) => ['received', 'waived'].includes(postCastFormState(request)));
+  return {
+    scope: season?.name || 'All time',
+    casts: inScope.length,
+    formsDue: formsDue.length,
+    formsIn: formsIn.length,
+    rate: formsDue.length ? Math.round((formsIn.length / formsDue.length) * 100) : null,
+    matchups: inScope.map((request) => request.matchup || request.id)
+  };
+}
+
+function plural(count, word) {
+  return `${count} ${word}${count === 1 ? '' : 's'}`;
+}
+
+function formRateText(stats) {
+  return stats.rate === null ? 'no forms due yet' : `${stats.rate}% (${stats.formsIn}/${stats.formsDue})`;
+}
+
+export function formatStatsLine(stats) {
+  return `📊 **${stats.scope}** · ${plural(stats.casts, 'cast')} · forms ${formRateText(stats)}`;
+}
+
+// The public card a caster can choose to post with the Share button. No upcoming games,
+// connection status or links: only what they chose to show off.
+export function buildStatsCard(stats, { userId } = {}) {
+  const shown = stats.matchups.slice(0, 10);
+  const more = stats.matchups.length - shown.length;
+  return {
+    title: `🎙️ Casting stats · ${stats.scope}`,
+    description: userId ? `<@${userId}>` : null,
+    fields: [
+      { name: 'Casts', value: String(stats.casts), inline: true },
+      { name: 'Post-cast forms', value: stats.rate === null ? 'None due yet' : `${stats.rate}% (${stats.formsIn}/${stats.formsDue})`, inline: true },
+      {
+        name: 'Matches covered',
+        value: shown.length ? [...shown.map((matchup) => `• ${matchup}`), more > 0 ? `…and ${more} more` : null].filter(Boolean).join('\n').slice(0, 1024) : 'None yet',
+        inline: false
+      }
+    ]
+  };
+}
+
+// ---------- reminders ----------
+
+export const PRE_CAST_REMINDER_MINUTES = 30;
+export const POST_CAST_NUDGE_HOURS = 48;
+// How long to wait before asking the form sheet again when a nudge check could not run.
+export const POST_CAST_NUDGE_RECHECK_MINUTES = 60;
+
+// Due from 30 minutes before game time until the match starts, once per scheduled time (a
+// reschedule makes it due again). Casters approved inside that window just got the approval
+// DM, so they are skipped.
+export function isPreCastReminderDue(request, now = Date.now()) {
+  if (!STREAM_CONNECTION_STATUSES.includes(request?.status) || request.terminalNotifiedAt) return false;
+  const startIso = castTimeIso(request);
+  const startMs = Date.parse(startIso || '');
+  if (!Number.isFinite(startMs) || request.preCastReminderFor === startIso) return false;
+  const opensAt = startMs - PRE_CAST_REMINDER_MINUTES * 60 * 1000;
+  if (now < opensAt || now >= startMs) return false;
+  const approvedMs = Date.parse(request.reviewedAt || '');
+  return !(Number.isFinite(approvedMs) && approvedMs >= opensAt);
+}
+
+export function buildPreCastReminder(request, { coCasters = [], liveBoard = false } = {}) {
+  const startIso = castTimeIso(request);
+  return [
+    `⏰ **${request.matchup || request.id}** starts ${discordTimestamp(startIso, 'R')} (${discordTimestamp(startIso, 't')}).`,
+    request.faceitUrl ? `Matchroom: ${request.faceitUrl}` : null,
+    connectionStatusLine(request),
+    coCasters.length ? `Co-casting with: ${coCasters.join(', ')}` : null,
+    liveBoard ? 'When you start streaming, press **Going live** below so you show up on the live board.' : null
+  ].filter(Boolean).join('\n');
+}
+
+// One nudge, 48 hours after the form DM, while the form is still missing. Casts whose form DM
+// went out before `since` are left alone. A failed sheet check is retried an hour later.
+export function isPostCastNudgeDue(request, now = Date.now(), { since = null } = {}) {
+  if (request?.status !== 'approved' || request.postCastNudgeSentAt) return false;
+  if (postCastFormState(request) !== 'missing') return false;
+  const sentMs = Date.parse(request.postCastReminderSentAt || '');
+  if (!Number.isFinite(sentMs) || now - sentMs < POST_CAST_NUDGE_HOURS * 60 * 60 * 1000) return false;
+  const sinceMs = Date.parse(since || '');
+  if (Number.isFinite(sinceMs) && sentMs < sinceMs) return false;
+  const checkedMs = Date.parse(request.postCastNudgeCheckedAt || '');
+  return !(Number.isFinite(checkedMs) && now - checkedMs < POST_CAST_NUDGE_RECHECK_MINUTES * 60 * 1000);
+}
+
+export function buildPostCastNudge(request, { formUrl = '', gate = false } = {}) {
+  return [
+    `📝 Reminder: we still do not have your post-cast stats form for **${request.matchup || request.id}** (request ${request.id}).`,
+    formUrl ? `Form, with your request ID already filled in: ${formUrl}` : 'Ask staff for the form link.',
+    gate ? 'Your next stream request is blocked until this form is in.' : null,
+    'If you already sent it without the request ID, ask staff to mark it received.'
+  ].filter(Boolean).join('\n');
+}
+
+// ---------- missing post-cast forms (staff) ----------
+
+export const STAFF_NUDGE_COOLDOWN_MINUTES = 60;
+const MISSING_FORMS_PER_CASTER = 5;
+const MISSING_FORMS_MAX_CASTERS = 25;
+
+// Casts whose form DM went out (on or after `since`) and still have no form, grouped by caster.
+// Most missing first, then whoever has waited longest.
+export function groupMissingForms(requests, { since = null } = {}) {
+  const sinceMs = Date.parse(since || '');
+  const byCaster = new Map();
+  for (const request of requests || []) {
+    if (request?.status !== 'approved' || postCastFormState(request) !== 'missing') continue;
+    const sentMs = Date.parse(request.postCastReminderSentAt || '');
+    if (Number.isFinite(sinceMs) && (!Number.isFinite(sentMs) || sentMs < sinceMs)) continue;
+    if (!byCaster.has(request.requesterId)) {
+      byCaster.set(request.requesterId, { requesterId: request.requesterId, requesterTag: request.requesterTag || null, requests: [] });
+    }
+    byCaster.get(request.requesterId).requests.push(request);
+  }
+  const oldest = (group) => Math.min(...group.requests.map((request) => Date.parse(request.postCastReminderSentAt) || Infinity));
+  const groups = [...byCaster.values()];
+  for (const group of groups) {
+    group.requests.sort((a, b) => (Date.parse(a.postCastReminderSentAt) || 0) - (Date.parse(b.postCastReminderSentAt) || 0));
+  }
+  return groups.sort((a, b) => b.requests.length - a.requests.length || oldest(a) - oldest(b));
+}
+
+function lastNudgeIso(request) {
+  return [request.postCastStaffNudgeAt, request.postCastNudgeSentAt].filter(Boolean).sort().pop() || null;
+}
+
+export function buildMissingFormsReport(groups, { sheetCheckFailed = false, since = null, maxCasters = MISSING_FORMS_MAX_CASTERS } = {}) {
+  const total = groups.reduce((sum, group) => sum + group.requests.length, 0);
+  if (!total) {
+    return {
+      description: sheetCheckFailed
+        ? '⚠️ The form sheet could not be checked, but no forms are listed as missing.'
+        : '✅ Every post-cast form is in.',
+      casterIds: [],
+      total: 0
+    };
+  }
+  const shown = groups.slice(0, maxCasters);
+  const lines = [`**${total}** missing form(s) from **${groups.length}** caster(s)${since ? ` since ${discordTimestamp(since, 'D')}` : ''}.`, ''];
+  for (const group of shown) {
+    lines.push(`<@${group.requesterId}>${group.requesterTag ? ` (${group.requesterTag})` : ''} · ${group.requests.length} missing`);
+    for (const request of group.requests.slice(0, MISSING_FORMS_PER_CASTER)) {
+      const day = discordTimestamp(castTimeIso(request) || request.postCastReminderSentAt, 'D');
+      const nudged = lastNudgeIso(request);
+      lines.push(`- ${request.matchup || request.id}${day ? ` · ${day}` : ''} · \`${request.id}\` · ${nudged ? `nudged ${discordTimestamp(nudged, 'R')}` : 'not nudged'}`);
+    }
+    if (group.requests.length > MISSING_FORMS_PER_CASTER) lines.push(`- …and ${group.requests.length - MISSING_FORMS_PER_CASTER} more`);
+  }
+  if (groups.length > shown.length) lines.push('', `${groups.length - shown.length} more caster(s) not shown.`);
+  if (sheetCheckFailed) lines.push('', '⚠️ The form sheet could not be checked just now, so a form sent recently may still be listed.');
+  lines.push('', 'Each button DMs that caster their missing forms. Use `/cf streams action:form_received` when a form came in without its request ID.');
+  let description = lines.join('\n');
+  if (description.length > 4096) description = `${description.slice(0, 4060)}\n…list cut short.`;
+  return { description, casterIds: shown.map((group) => group.requesterId), total };
+}
+
+// The DM a staff nudge sends: every missing form for that caster, each with its own pre-filled link.
+export function buildStaffFormNudge(requests, { formLink = () => '', gate = false } = {}) {
+  const lines = [
+    requests.length === 1
+      ? '📝 Tournament Operations is still waiting on your post-cast stats form:'
+      : `📝 Tournament Operations is still waiting on ${requests.length} post-cast stats forms from you:`
+  ];
+  for (const request of requests) {
+    const url = formLink(request.id);
+    lines.push(`- **${request.matchup || request.id}** (request ${request.id})${url ? `: ${url}` : ''}`);
+  }
+  if (gate) lines.push('Your next stream request is blocked until these are in.');
+  lines.push('Each link has your request ID filled in. If you already sent a form without it, ask staff to mark it received.');
+  return lines.join('\n');
+}
+
+export function staffNudgeCooldownUntil(requests, now = Date.now()) {
+  const last = Math.max(...(requests || []).map((request) => Date.parse(request.postCastStaffNudgeAt || '') || 0));
+  const until = last + STAFF_NUDGE_COOLDOWN_MINUTES * 60 * 1000;
+  return last && until > now ? until : null;
 }

@@ -69,8 +69,30 @@ import {
   saveScheduleProposal,
   saveTeamMapping,
   saveVeto,
-  updateStreamRequest
+  updateStreamRequest,
+  listSeasons,
+  seedSeasonsOnce,
+  updateSeasons
 } from './store.js';
+import {
+  LEGACY_SEASON_SEED,
+  PLAYOFF_ROUND_NAMES,
+  currentSeason,
+  easternDateKey,
+  findSeasonByRef,
+  findSeasonRound,
+  formatRoundLine,
+  formatRoundsText,
+  formatSeasonRange,
+  makeSeasonId,
+  parseRoundsText,
+  parseSeasonDate,
+  planDeleteSeason,
+  planStartSeason,
+  planUpdateSeason,
+  roundWindowForDisplay,
+  seasonForDate
+} from './season.js';
 import { scheduleFaceitMatch } from './faceitSchedule.js';
 import { auditMissingCaptains, auditMissingPlayers, getTeamMappingScope, syncRolesFromSheet } from './sheetRoles.js';
 import { startWebhookServer } from './webhookServer.js';
@@ -108,7 +130,24 @@ import {
   validateDenialReason,
   validateStreamDelivery,
   validateStreamRequest,
-  STREAM_WITHDRAWABLE_STATUSES
+  STREAM_WITHDRAWABLE_STATUSES,
+  MY_CASTS_LIMIT,
+  buildMyCastsView,
+  buildPostCastNudge,
+  buildPreCastReminder,
+  buildStatsCard,
+  castTimeIso,
+  computeCasterStats,
+  isPostCastNudgeDue,
+  isPreCastReminderDue,
+  postCastFormState,
+  splitMyCasts,
+  streamChannelName,
+  buildMissingFormsReport,
+  buildStaffFormNudge,
+  groupMissingForms,
+  staffNudgeCooldownUntil,
+  STAFF_NUDGE_COOLDOWN_MINUTES
 } from './streamRequest.js';
 import { parseScheduleClock } from './scheduleInput.js';
 import { createWebsitePublisher } from './websitePublisher.js';
@@ -139,31 +178,7 @@ const EMBED_COLORS = {
   warning: 0xe67e22
 };
 
-const SEASON6_GROUP_STAGE_ID = '6301070e-7096-42b3-830c-d72dfb586398';
 const SEASON6_PLAYOFF_ID = 'c0c0b1fd-fa0b-4488-98b8-be7fdeaee7c0';
-
-const SEASON_SCHEDULE = [
-  { name: 'Group Stage', start: 'November 2, 2026', end: 'November 11, 2026', defaultDate: 'November 6, 2026' },
-  { name: 'Round 1', start: 'November 2, 2026', end: 'November 4, 2026', defaultDate: 'November 3, 2026', defaultDateTime: 'November 3, 2026 at 8:00 PM EST' },
-  { name: 'Round 2', start: 'November 5, 2026', end: 'November 7, 2026', defaultDate: 'November 6, 2026', defaultDateTime: 'November 6, 2026 at 8:00 PM EST' },
-  { name: 'Round 3', start: 'November 8, 2026', end: 'November 11, 2026', defaultDate: 'November 9, 2026', defaultDateTime: 'November 9, 2026 at 8:00 PM EST' },
-  { name: 'Seeding Break', start: 'September 9, 2026', end: 'September 11, 2026', defaultDate: 'September 10, 2026' },
-  { name: 'Playoff Stage', start: 'September 12, 2026', end: 'October 11, 2026', defaultDate: 'September 26, 2026' },
-  { name: 'Upper Bracket - Round 1', start: 'September 12, 2026', end: 'September 14, 2026', defaultDate: 'September 14, 2026', defaultDateTime: 'Mon, 14 Sep 2026, 20:00 EDT' },
-  { name: 'Upper Bracket - Round 2', start: 'September 15, 2026', end: 'September 17, 2026', defaultDate: 'September 16, 2026', defaultDateTime: 'Wed, 16 Sep 2026, 20:00 EDT' },
-  { name: 'Lower Bracket - Round 1', start: 'September 15, 2026', end: 'September 17, 2026', defaultDate: 'September 16, 2026', defaultDateTime: 'Wed, 16 Sep 2026, 20:00 EDT' },
-  { name: 'Upper Bracket - Round 3', start: 'September 18, 2026', end: 'September 20, 2026', defaultDate: 'September 19, 2026', defaultDateTime: 'Sat, 19 Sep 2026, 20:00 EDT' },
-  { name: 'Lower Bracket - Round 2', start: 'September 18, 2026', end: 'September 20, 2026', defaultDate: 'September 19, 2026', defaultDateTime: 'Sat, 19 Sep 2026, 20:00 EDT' },
-  { name: 'Lower Bracket - Round 3', start: 'September 21, 2026', end: 'September 23, 2026', defaultDate: 'September 22, 2026', defaultDateTime: 'Tue, 22 Sep 2026, 20:00 EDT' },
-  { name: 'Upper Bracket - Round 4', start: 'September 24, 2026', end: 'September 26, 2026', defaultDate: 'September 25, 2026', defaultDateTime: 'Fri, 25 Sep 2026, 20:00 EDT' },
-  { name: 'Lower Bracket - Round 4', start: 'September 24, 2026', end: 'September 26, 2026', defaultDate: 'September 25, 2026', defaultDateTime: 'Fri, 25 Sep 2026, 20:00 EDT' },
-  { name: 'Lower Bracket - Round 5', start: 'September 27, 2026', end: 'September 29, 2026', defaultDate: 'September 28, 2026', defaultDateTime: 'Mon, 28 Sep 2026, 20:00 EDT' },
-  { name: 'Upper Bracket - Round 5', start: 'September 30, 2026', end: 'October 2, 2026', defaultDate: 'October 1, 2026', defaultDateTime: 'Thu, 01 Oct 2026, 20:00 EDT' },
-  { name: 'Lower Bracket - Round 6', start: 'September 30, 2026', end: 'October 2, 2026', defaultDate: 'October 1, 2026', defaultDateTime: 'Thu, 01 Oct 2026, 20:00 EDT' },
-  { name: 'Lower Bracket - Round 7', start: 'October 3, 2026', end: 'October 5, 2026', defaultDate: 'October 4, 2026', defaultDateTime: 'Sun, 04 Oct 2026, 20:00 EDT' },
-  { name: 'Lower Bracket - Round 8', start: 'October 6, 2026', end: 'October 8, 2026', defaultDate: 'October 7, 2026', defaultDateTime: 'Wed, 07 Oct 2026, 20:00 EDT' },
-  { name: 'Grand Final (BO5)', start: 'October 9, 2026', end: 'October 11, 2026', defaultDate: 'October 10, 2026', defaultDateTime: 'Saturday, 10 Oct 2026, 20:00 EDT' }
-];
 
 const PLAYOFF_ROUND_FILTERS = {
   'upper-r1': {
@@ -289,6 +304,7 @@ client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
   await registerCommands();
   console.log('Slash commands registered');
+  await loadSeasons().catch((error) => console.error('Could not load seasons:', error));
 
   if (!webhookServer) {
     webhookServer = startWebhookServer(config, {
@@ -321,6 +337,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
       if (interaction.commandName === 'request') await handleStreamRequestAutocomplete(interaction);
+      if (interaction.commandName === 'cf') await handleSeasonAutocomplete(interaction);
       return;
     }
     if (interaction.isChatInputCommand()) {
@@ -349,8 +366,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleStreamRequestCancelButton(interaction);
       return;
     }
+    if (interaction.isButton() && interaction.customId.startsWith('forms_nudge:')) {
+      await handleFormsNudgeButton(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('my_casts_share:')) {
+      await handleMyCastsShare(interaction);
+      return;
+    }
     if (interaction.isButton() && interaction.customId.startsWith('stream_live:')) {
       await handleStreamLiveButton(interaction);
+      return;
+    }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('season_rounds_submit:')) {
+      await handleSeasonRoundsSubmit(interaction);
       return;
     }
     if (interaction.isModalSubmit() && interaction.customId.startsWith('stream_withdraw_submit:')) {
@@ -496,6 +525,11 @@ async function handleAdminCommand(interaction) {
       await handleAuditLog(interaction);
       return;
     }
+
+    if (subcommand === 'season') {
+      await handleSeasonCommand(interaction);
+      return;
+    }
   }
 
   if (interaction.commandName === 'matches') {
@@ -591,10 +625,15 @@ async function handleCrossfireCommand(interaction) {
   const storedMatches = await listStoredMatches();
 
   if (subcommand === 'rounds') {
+    const season = activeSeason();
+    const lines = season?.rounds?.length
+      ? [`**${season.name}** (${formatSeasonRange(season)})`, ...season.rounds.map((round) => `- ${formatRoundLine(round)}`)]
+      : [];
     const configuredRounds = Object.entries(config.roundWindows)
       .map(([name, window]) => `- **${name}**: ${window.start} - ${window.end}`);
-    await interaction.editReply(truncateDiscordMessage(configuredRounds.length
-      ? configuredRounds.join('\n')
+    if (configuredRounds.length) lines.push(...(lines.length ? ['', '**Other configured windows**'] : []), ...configuredRounds);
+    await interaction.editReply(truncateDiscordMessage(lines.length
+      ? lines.join('\n')
       : `No round windows are configured yet for ${configuredFaceitSourceSummary()}. FACEIT scheduled times will be shown once matches are published.`));
     return;
   }
@@ -605,6 +644,7 @@ async function handleCrossfireCommand(interaction) {
       '`/crossfire rounds` - round windows and defaults.',
       '`/crossfire veto` - veto status for this linked match room.',
       `\`/request stream\` or \`!request\` - request permission to stream (${streamPlatformLabel()} links accepted).`,
+      '`/request mine` - your casts, IP status, and any post-cast forms still missing.',
       config.streamGuidelinesUrl ? `Streaming guidelines: ${config.streamGuidelinesUrl}` : null,
       config.rulesUrl ? `Rules: ${config.rulesUrl}` : 'Rules link is not configured; ask Tournament Operations for the current rules.'
     ].filter(Boolean).join('\n'));
@@ -655,6 +695,313 @@ function memberCanSeeStoredMatch(member, stored) {
     .some((roleId) => member.roles.cache.has(roleId));
 }
 
+// ---------- Seasons (/cf season) ----------
+// Seasons live in the data store; this in-memory copy keeps the synchronous scheduling code fast.
+// Only this process writes seasons, so refreshing after every change keeps it accurate.
+let seasonCache = [];
+
+async function refreshSeasonCache() {
+  seasonCache = await listSeasons();
+}
+
+async function loadSeasons() {
+  const seeded = await seedSeasonsOnce(LEGACY_SEASON_SEED);
+  if (seeded) {
+    console.log(`[Season] Copied the built-in ${seeded.name} round dates into the data store.`);
+    await appendAuditLog({ type: 'season_seeded', seasonId: seeded.id, name: seeded.name });
+  }
+  await refreshSeasonCache();
+}
+
+function seasonTodayKey() {
+  return easternDateKey(new Date());
+}
+
+function activeSeason() {
+  return currentSeason(seasonCache, seasonTodayKey());
+}
+
+function seasonDateHelp(field, value) {
+  return `Could not read the ${field} date "${value}". Use something like 11/2/2026, Nov 2 or 2026-11-02.`;
+}
+
+function seasonRoundsModal(season) {
+  const text = formatRoundsText(season);
+  const input = new TextInputBuilder()
+    .setCustomId('rounds')
+    .setLabel('Name | start - end | default time')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setMaxLength(4000)
+    .setPlaceholder('Round 1 | 11/2 - 11/4 | 11/3 8:00 PM');
+  if (text) input.setValue(text.slice(0, 4000));
+  return new ModalBuilder()
+    .setCustomId(`season_rounds_submit:${season.id}`)
+    .setTitle(`${season.name} round dates`.slice(0, 45))
+    .addComponents(new ActionRowBuilder().addComponents(input));
+}
+
+function describeCurrentSeason() {
+  const current = activeSeason();
+  if (!current) return 'There is no current season now.';
+  return current.startDate > seasonTodayKey()
+    ? `No season is running today; **${current.name}** is next and its round dates are used.`
+    : `Current season: **${current.name}**.`;
+}
+
+async function handleSeasonCommand(interaction) {
+  const action = interaction.options.getString('action', true);
+  const ref = interaction.options.getString('season');
+  const nameInput = interaction.options.getString('name')?.trim() || null;
+  const startInput = interaction.options.getString('start')?.trim() || null;
+  const endInput = interaction.options.getString('end')?.trim() || null;
+
+  if (action === 'rounds') {
+    // A modal has to be the first response, so this action cannot defer.
+    await refreshSeasonCache();
+    const season = ref ? findSeasonByRef(seasonCache, ref) : activeSeason();
+    if (!season) {
+      await interaction.reply({
+        content: ref
+          ? `No season called "${ref}". See \`/cf season action:list\`.`
+          : 'There is no current season. Start one with `/cf season action:start`, or pick one with `season:`.',
+        ephemeral: true
+      });
+      return;
+    }
+    await interaction.showModal(seasonRoundsModal(season));
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  await refreshSeasonCache();
+  const today = seasonTodayKey();
+
+  if (action === 'list') {
+    const current = activeSeason();
+    const seasons = [...seasonCache].sort((a, b) => b.startDate.localeCompare(a.startDate));
+    if (!seasons.length) {
+      await interaction.editReply('No seasons yet. Start one with `/cf season action:start name:<name> start:<date>`.');
+      return;
+    }
+    const lines = seasons.map((season) =>
+      `- **${season.name}** · ${formatSeasonRange(season)} · ${season.rounds?.length || 0} round(s)${current?.id === season.id ? ' · current' : ''}`);
+    if (current?.rounds?.length) lines.push('', `**${current.name} rounds**`, ...current.rounds.map((round) => `- ${formatRoundLine(round)}`));
+    else if (current) lines.push('', `${current.name} has no round dates yet. Add them with \`/cf season action:rounds\`.`);
+    await interaction.editReply(truncateDiscordMessage(lines.join('\n')));
+    return;
+  }
+
+  if (action === 'start') {
+    if (!nameInput || !startInput) {
+      await interaction.editReply('Give the season a `name` and a `start` date, for example `/cf season action:start name:Season 8 start:1/10/2027`.');
+      return;
+    }
+    const startDate = parseSeasonDate(startInput, { defaultYear: Number(today.slice(0, 4)), after: today });
+    if (!startDate) {
+      await interaction.editReply(seasonDateHelp('start', startInput));
+      return;
+    }
+    const endDate = endInput ? parseSeasonDate(endInput, { defaultYear: Number(startDate.slice(0, 4)), after: startDate }) : null;
+    if (endInput && !endDate) {
+      await interaction.editReply(seasonDateHelp('end', endInput));
+      return;
+    }
+    const result = await updateSeasons((seasons) => planStartSeason(seasons, {
+      id: makeSeasonId(nameInput, seasons),
+      name: nameInput,
+      startDate,
+      endDate,
+      actorId: interaction.user.id
+    }));
+    if (result.error) {
+      await interaction.editReply(`Nothing changed. ${result.error}`);
+      return;
+    }
+    await refreshSeasonCache();
+    await appendAuditLog({
+      type: 'season_started',
+      actorId: interaction.user.id,
+      seasonId: result.season.id,
+      name: result.season.name,
+      startDate,
+      endDate,
+      closedSeasonIds: result.closed.map((season) => season.id)
+    });
+    await interaction.editReply([
+      `Started **${result.season.name}** (${formatSeasonRange(result.season)}).`,
+      ...result.closed.map((season) => `**${season.name}** now ends the day before (${formatSeasonRange(season)}).`),
+      `Next, add its round dates with \`/cf season action:rounds season:${result.season.name}\`.`,
+      describeCurrentSeason()
+    ].join('\n'));
+    return;
+  }
+
+  const season = ref ? findSeasonByRef(seasonCache, ref) : action === 'delete' ? null : activeSeason();
+  if (!season) {
+    await interaction.editReply(ref
+      ? `No season called "${ref}". See \`/cf season action:list\`.`
+      : action === 'delete'
+        ? 'Pick the season to delete with `season:`.'
+        : 'There is no current season. Pick one with `season:`.');
+    return;
+  }
+
+  if (action === 'edit') {
+    if (!nameInput && !startInput && !endInput) {
+      await interaction.editReply('Give a new `name`, `start` or `end`. Use `end:none` to remove the end date.');
+      return;
+    }
+    const patch = {};
+    if (nameInput) patch.name = nameInput;
+    if (startInput) {
+      patch.startDate = parseSeasonDate(startInput, { defaultYear: Number(season.startDate.slice(0, 4)) });
+      if (!patch.startDate) {
+        await interaction.editReply(seasonDateHelp('start', startInput));
+        return;
+      }
+    }
+    if (endInput) {
+      const startDate = patch.startDate || season.startDate;
+      patch.endDate = /^(none|open|clear|-)$/i.test(endInput)
+        ? null
+        : parseSeasonDate(endInput, { defaultYear: Number(startDate.slice(0, 4)), after: startDate });
+      if (patch.endDate === undefined || (patch.endDate === null && !/^(none|open|clear|-)$/i.test(endInput))) {
+        await interaction.editReply(seasonDateHelp('end', endInput));
+        return;
+      }
+    }
+    const result = await updateSeasons((seasons) => planUpdateSeason(seasons, season.id, patch));
+    if (result.error) {
+      await interaction.editReply(`Nothing changed. ${result.error}`);
+      return;
+    }
+    await refreshSeasonCache();
+    await appendAuditLog({
+      type: 'season_edited',
+      actorId: interaction.user.id,
+      seasonId: season.id,
+      before: { name: season.name, startDate: season.startDate, endDate: season.endDate || null },
+      after: { name: result.season.name, startDate: result.season.startDate, endDate: result.season.endDate || null }
+    });
+    await interaction.editReply(`Updated **${result.season.name}** (${formatSeasonRange(result.season)}).\n${describeCurrentSeason()}`);
+    return;
+  }
+
+  if (action === 'end') {
+    const endDate = endInput ? parseSeasonDate(endInput, { defaultYear: Number(season.startDate.slice(0, 4)), after: season.startDate }) : today;
+    if (!endDate) {
+      await interaction.editReply(seasonDateHelp('end', endInput));
+      return;
+    }
+    const result = await updateSeasons((seasons) => planUpdateSeason(seasons, season.id, { endDate }));
+    if (result.error) {
+      await interaction.editReply(`Nothing changed. ${result.error}`);
+      return;
+    }
+    await refreshSeasonCache();
+    await appendAuditLog({ type: 'season_ended', actorId: interaction.user.id, seasonId: season.id, name: season.name, endDate });
+    await interaction.editReply(`**${result.season.name}** now ends on ${formatSeasonRange(result.season).split(' – ')[1]}.\n${describeCurrentSeason()}`);
+    return;
+  }
+
+  if (action === 'delete') {
+    const result = await updateSeasons((seasons) => planDeleteSeason(seasons, season.id));
+    if (result.error) {
+      await interaction.editReply(`Nothing changed. ${result.error}`);
+      return;
+    }
+    await refreshSeasonCache();
+    await appendAuditLog({
+      type: 'season_deleted',
+      actorId: interaction.user.id,
+      seasonId: season.id,
+      name: season.name,
+      startDate: season.startDate,
+      endDate: season.endDate || null,
+      roundCount: season.rounds?.length || 0
+    });
+    await interaction.editReply(`Deleted **${season.name}** and its ${season.rounds?.length || 0} round(s).\n${describeCurrentSeason()}`);
+    return;
+  }
+
+  await interaction.editReply('Unknown season action.');
+}
+
+async function handleSeasonRoundsSubmit(interaction) {
+  if (!canUseBotAdminCommand(interaction.member)) {
+    await interaction.reply({ content: 'Only admins/match staff can change season dates.', ephemeral: true });
+    return;
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const seasonId = interaction.customId.slice('season_rounds_submit:'.length);
+  await refreshSeasonCache();
+  const season = seasonCache.find((entry) => entry.id === seasonId);
+  if (!season) {
+    await interaction.editReply('That season no longer exists. Nothing was saved.');
+    return;
+  }
+  const text = interaction.fields.getTextInputValue('rounds') || '';
+  const parsed = parseRoundsText(text, season);
+  if (parsed.errors.length) {
+    await interaction.editReply(truncateDiscordMessage([
+      'Nothing was saved. Fix these lines and run `/cf season action:rounds` again:',
+      ...parsed.errors.map((error) => `- ${error}`),
+      '',
+      'What you entered, so you can copy it back:',
+      '```',
+      text.replace(/```/g, "'''").slice(0, 1500),
+      '```'
+    ].join('\n')));
+    return;
+  }
+  const result = await updateSeasons((seasons) => planUpdateSeason(seasons, season.id, { rounds: parsed.rounds }));
+  if (result.error) {
+    await interaction.editReply(`Nothing was saved. ${result.error}`);
+    return;
+  }
+  await refreshSeasonCache();
+  await appendAuditLog({
+    type: 'season_rounds_updated',
+    actorId: interaction.user.id,
+    seasonId: season.id,
+    name: season.name,
+    roundCount: parsed.rounds.length,
+    previousRoundCount: season.rounds?.length || 0
+  });
+  const isCurrent = activeSeason()?.id === season.id;
+  await interaction.editReply(truncateDiscordMessage([
+    parsed.rounds.length
+      ? `Saved ${parsed.rounds.length} round(s) for **${season.name}**:`
+      : `Cleared every round from **${season.name}**. Match rooms will show "Scheduling window: not configured yet".`,
+    ...parsed.rounds.map((round) => `- ${formatRoundLine(round)}`),
+    ...(parsed.warnings.length ? ['', '**Check these**', ...parsed.warnings.map((warning) => `- ${warning}`)] : []),
+    '',
+    isCurrent
+      ? '`!schedule` checks use these dates right away. Run `/cf sync target:matches` to update the pinned intro in existing match rooms.'
+      : `${season.name} is not the current season, so these dates apply once it starts.`
+  ].join('\n')));
+}
+
+async function handleSeasonAutocomplete(interaction) {
+  if (!canUseBotAdminCommand(interaction.member)) {
+    await interaction.respond([]).catch(() => null);
+    return;
+  }
+  const focused = String(interaction.options.getFocused() || '').toLowerCase();
+  await refreshSeasonCache();
+  const current = activeSeason();
+  const choices = [...seasonCache]
+    .sort((a, b) => b.startDate.localeCompare(a.startDate))
+    .map((season) => ({
+      name: `${season.name} · ${formatSeasonRange(season)}${current?.id === season.id ? ' · current' : ''}`.slice(0, 100),
+      value: season.id
+    }))
+    .filter((choice) => !focused || choice.name.toLowerCase().includes(focused))
+    .slice(0, 25);
+  await interaction.respond(choices).catch(() => null);
+}
+
 async function handleAuditLog(interaction) {
   await interaction.deferReply({ ephemeral: true });
   const matchId = interaction.options.getString('match_id') || null;
@@ -669,7 +1016,7 @@ async function handleCommandHelp(interaction) {
     content: [
       '**CROSSFIRE Admin Commands**',
       '`/cf sync target:matches` - create/update FACEIT match rooms.',
-      '`/cf sync target:matches round:Group Stage - Round 1` - sync one Season 7 group-stage round only.',
+      '`/cf sync target:matches round:Group Stage - Round 1` - sync one group-stage round only.',
       '`/cf sync target:teams` - sync roles, captains, participants, and nicknames from the sheet.',
       '`/cf sync target:teams notify_captains:true` - also DM captains about missing players.',
       '`/cf sync target:teams dry_run:true` - preview roster changes without changing Discord.',
@@ -684,7 +1031,9 @@ async function handleCommandHelp(interaction) {
       '`/cf mappings action:list|inspect|link|repair` - manage persistent team-role mappings.',
       '`/cf veto action:start|inspect|reset|cancel|seeds` - manage a playoff veto.',
       '`/cf streams action:pending|approved|inspect|cancel|revoke|complete` - review stream requests.',
+      '`/cf streams action:missing_forms` - every cast still missing its post-cast form, with a nudge button per caster.',
       '`/cf auditlog match_id:<optional>` - inspect scheduling and operations decisions.',
+      '`/cf season action:list|start|rounds|edit|end|delete` - set season dates and each round\'s scheduling window.',
       '',
       '**Match Room Commands**',
       '`!schedule November 2 8 PM ET` - propose a match time.',
@@ -2703,6 +3052,10 @@ async function handleTextStreamRequest(message) {
 
 async function handleStreamRequestCommand(interaction) {
   const subcommand = interaction.options.getSubcommand();
+  if (subcommand === 'mine') {
+    await handleMyCasts(interaction);
+    return;
+  }
   if (subcommand === 'cancel') {
     const requestId = interaction.options.getString('request_id', true).trim();
     const request = await getStreamRequest(requestId);
@@ -3063,6 +3416,255 @@ async function sendStreamRequestToStaff(request, suppliedChannel = null) {
     allowedMentions: { roles: [], users: [], repliedUser: false }
   });
   await updateStreamRequest(request.id, { staffChannelId: channel.id, staffMessageId: message.id, staffPostError: null }, ['pending']);
+}
+
+// `/request mine`: only the caster sees it. Past casts still missing a form are checked against the
+// form sheet first, so a form sent since the last check shows as received.
+async function handleMyCasts(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const requesterId = interaction.user.id;
+  let requests = await listStreamRequests({ requesterId });
+  const toCheck = splitMyCasts(requests, { requesterId }).past
+    .slice(0, MY_CASTS_LIMIT)
+    .filter((request) => postCastFormState(request) === 'missing')
+    .map((request) => request.id);
+  const check = await checkFormsInSheet(toCheck, '/request mine');
+  const formCheckFailed = check.failed;
+  if (check.foundIds.length) requests = await listStreamRequests({ requesterId });
+  const stats = computeCasterStats(requests, { requesterId, season: statsSeason() });
+  const view = buildMyCastsView(requests, { requesterId, formLink: postCastFormLinkFor, formCheckFailed, stats });
+  const embed = new EmbedBuilder()
+    .setTitle('🎙️ Your casts')
+    .setDescription(view.description.slice(0, 4096))
+    .setColor(0x9146ff);
+  const buttons = view.missingForms
+    .filter((form) => /^https?:\/\//i.test(form.url))
+    .slice(0, 25)
+    .map((form) => new ButtonBuilder()
+      .setStyle(ButtonStyle.Link)
+      .setURL(form.url)
+      .setLabel(`Form: ${form.matchup}`.slice(0, 80)));
+  const rows = [];
+  for (let index = 0; index < buttons.length; index += 5) rows.push(new ActionRowBuilder().addComponents(buttons.slice(index, index + 5)));
+  if (view.pastCount && rows.length < 5) {
+    rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder()
+      .setCustomId(`my_casts_share:${requesterId}`)
+      .setLabel('Share my stats')
+      .setEmoji('📣')
+      .setStyle(ButtonStyle.Primary)));
+  }
+  await interaction.editReply({ embeds: [embed], components: rows });
+}
+
+// Asks the form sheet about casts still missing a form and records any it finds, so every view
+// agrees with the sheet. `failed` means at least one batch could not be checked.
+async function checkFormsInSheet(requestIds, context) {
+  const ids = [...new Set(requestIds || [])];
+  const foundIds = [];
+  let failed = false;
+  for (let index = 0; index < ids.length; index += 50) {
+    const batch = ids.slice(index, index + 50);
+    const lookup = await scheduleSheet.lookupPostCastForms(batch)
+      .catch((error) => ({ ok: false, error: error?.message || String(error), found: {} }));
+    if (!lookup.ok) {
+      failed = true;
+      console.error(`Post-cast form check for ${context} could not run: ${lookup.error}`);
+      continue;
+    }
+    for (const id of batch) {
+      const hit = lookup.found?.[id];
+      if (!hit) continue;
+      await updateStreamRequest(id, {
+        postCastFormSubmittedAt: hit.submittedAt || new Date().toISOString(),
+        postCastFormSource: 'form'
+      });
+      foundIds.push(id);
+    }
+  }
+  return { foundIds, failed };
+}
+
+// Every cast still missing its form, grouped by caster, after checking the sheet.
+async function missingFormGroups(requesterId = null) {
+  const since = config.postCastFormGateSince;
+  const load = async () => groupMissingForms(await listStreamRequests(requesterId ? { requesterId } : {}), { since });
+  let groups = await load();
+  const check = await checkFormsInSheet(groups.flatMap((group) => group.requests.map((request) => request.id)), 'the missing forms list');
+  if (check.foundIds.length) groups = await load();
+  return { groups, since, sheetCheckFailed: check.failed, arrived: check.foundIds.length };
+}
+
+// `/cf streams action:missing_forms`
+async function showMissingForms(interaction) {
+  const { groups, since, sheetCheckFailed } = await missingFormGroups();
+  const report = buildMissingFormsReport(groups, { sheetCheckFailed, since });
+  const tags = new Map(groups.map((group) => [group.requesterId, group.requesterTag]));
+  const buttons = report.casterIds.map((casterId) => new ButtonBuilder()
+    .setCustomId(`forms_nudge:${casterId}`)
+    .setLabel(`Nudge ${tags.get(casterId) || casterId}`.slice(0, 80))
+    .setEmoji('📨')
+    .setStyle(ButtonStyle.Secondary));
+  const rows = [];
+  for (let index = 0; index < buttons.length; index += 5) rows.push(new ActionRowBuilder().addComponents(buttons.slice(index, index + 5)));
+  const embed = new EmbedBuilder()
+    .setTitle('📝 Missing post-cast forms')
+    .setDescription(report.description)
+    .setColor(report.total ? 0xf1c40f : 0x2ecc71);
+  await interaction.editReply({ embeds: [embed], components: rows, allowedMentions: { parse: [] } });
+}
+
+// The Nudge button: re-checks the sheet, then DMs the caster every form they still owe. Staff
+// can nudge the same caster once an hour; a nudge also counts as the automatic 48-hour one.
+async function handleFormsNudgeButton(interaction) {
+  if (!canUseBotAdminCommand(interaction.member)) {
+    await interaction.reply({ content: 'Only admins/match staff can nudge casters.', ephemeral: true });
+    return;
+  }
+  const casterId = interaction.customId.slice('forms_nudge:'.length);
+  await interaction.deferReply({ ephemeral: true });
+  const { groups, arrived } = await missingFormGroups(casterId);
+  const missing = groups.find((group) => group.requesterId === casterId)?.requests || [];
+  const quiet = { parse: [] };
+  if (!missing.length) {
+    await interaction.editReply({
+      content: `<@${casterId}> has no missing forms now${arrived ? ` (${arrived} just showed up on the sheet)` : ''}. Nothing was sent.`,
+      allowedMentions: quiet
+    });
+    return;
+  }
+  const until = staffNudgeCooldownUntil(missing);
+  if (until) {
+    const last = new Date(until - STAFF_NUDGE_COOLDOWN_MINUTES * 60 * 1000).toISOString();
+    await interaction.editReply({
+      content: `<@${casterId}> was already nudged by staff ${discordTimestamp(last, 'R')}. You can nudge again ${discordTimestamp(new Date(until).toISOString(), 'R')}.`,
+      allowedMentions: quiet
+    });
+    return;
+  }
+  const sent = await dmStreamRequester(missing[0], buildStaffFormNudge(missing, {
+    formLink: postCastFormLinkFor,
+    gate: config.postCastFormGate
+  }));
+  const now = new Date().toISOString();
+  if (sent) {
+    for (const request of missing) {
+      await updateStreamRequest(request.id, {
+        postCastStaffNudgeAt: now,
+        postCastStaffNudgeBy: interaction.user.id,
+        ...(request.postCastNudgeSentAt ? {} : { postCastNudgeSentAt: now, postCastNudgeDelivery: 'delivered' })
+      }, ['approved']);
+    }
+  }
+  await appendAuditLog({
+    type: 'stream_post_cast_staff_nudge',
+    actorId: interaction.user.id,
+    casterId,
+    requestIds: missing.map((request) => request.id),
+    delivered: sent
+  });
+  await interaction.editReply({
+    content: sent
+      ? `📨 DMed <@${casterId}> about ${missing.length} missing form(s): ${missing.map((request) => request.matchup || request.id).join(', ')}.`
+      : `⚠️ Could not DM <@${casterId}>. Their DMs are closed, so reach out another way.`,
+    allowedMentions: quiet
+  });
+}
+
+// Stats count the season running today; between seasons they cover all time.
+function statsSeason() {
+  return seasonForDate(seasonCache, seasonTodayKey());
+}
+
+// Posts the caster's stats card in the channel, only when they press Share. Upcoming games,
+// connection status and links stay private.
+async function handleMyCastsShare(interaction) {
+  const requesterId = interaction.customId.slice('my_casts_share:'.length);
+  if (interaction.user.id !== requesterId) {
+    await interaction.reply({ content: 'Only the caster can share these stats. Use `/request mine` to see your own.', ephemeral: true });
+    return;
+  }
+  const stats = computeCasterStats(await listStreamRequests({ requesterId }), { requesterId, season: statsSeason() });
+  const card = buildStatsCard(stats, { userId: requesterId });
+  const embed = new EmbedBuilder()
+    .setTitle(card.title)
+    .addFields(card.fields)
+    .setColor(0x9146ff);
+  if (card.description) embed.setDescription(card.description);
+  await interaction.reply({ embeds: [embed], allowedMentions: { parse: [] } });
+  await appendAuditLog({ type: 'caster_stats_shared', actorId: requesterId, channelId: interaction.channelId || null });
+}
+
+// DM each approved caster 30 minutes before game time (see isPreCastReminderDue). The reminder is
+// recorded before the DM goes out, so a restart mid-send cannot DM twice.
+async function sendPreCastReminders(now = Date.now()) {
+  const requests = await listStreamRequests();
+  const due = requests.filter((request) => isPreCastReminderDue(request, now));
+  const remindedKeys = new Set();
+  for (const request of due) {
+    const startIso = castTimeIso(request);
+    const claimed = await updateStreamRequest(request.id, {
+      preCastReminderFor: startIso,
+      preCastReminderAt: new Date(now).toISOString()
+    }, STREAM_CONNECTION_STATUSES);
+    if (!claimed) continue;
+    // One reminder per caster per match, even with duplicate requests.
+    const roomId = requestRoomId(claimed);
+    const key = `${claimed.requesterId}:${roomId || claimed.id}`;
+    if (remindedKeys.has(key)) continue;
+    remindedKeys.add(key);
+    const coCasters = [...new Set(requests
+      .filter((other) => other.requesterId !== claimed.requesterId
+        && STREAM_CONNECTION_STATUSES.includes(other.status)
+        && roomId && requestRoomId(other) === roomId)
+      .map((other) => streamChannelName(other.streamUrl) || other.requesterTag)
+      .filter(Boolean))];
+    const liveBoard = Boolean(config.liveNowChannelId && claimed.status === 'approved');
+    const sent = await dmStreamRequester(claimed, {
+      content: buildPreCastReminder(claimed, { coCasters, liveBoard }),
+      components: liveBoard ? [streamCasterWithdrawRow(claimed, { live: true })] : []
+    });
+    await updateStreamRequest(claimed.id, { preCastReminderDelivery: sent ? 'delivered' : 'failed' }, STREAM_CONNECTION_STATUSES);
+    await appendAuditLog({ type: 'stream_pre_cast_reminder', matchId: claimed.matchId || null, requestId: claimed.id, delivered: sent });
+    if (!sent) console.warn(`[Stream] pre-cast reminder for ${claimed.id} could not be delivered (DMs closed?)`);
+  }
+}
+
+// One DM 48 hours after the post-cast form DM when the form is still missing. The form sheet is
+// checked first; a form found there is recorded and no nudge goes out. When the sheet cannot be
+// checked, nobody is nudged and the check is retried an hour later.
+async function sendPostCastNudges(now = Date.now()) {
+  const due = (await listStreamRequests())
+    .filter((request) => isPostCastNudgeDue(request, now, { since: config.postCastFormGateSince }))
+    .slice(0, 25);
+  if (!due.length) return;
+  const checkedAt = new Date(now).toISOString();
+  for (const request of due) await updateStreamRequest(request.id, { postCastNudgeCheckedAt: checkedAt }, ['approved']);
+  const lookup = await scheduleSheet.lookupPostCastForms(due.map((request) => request.id))
+    .catch((error) => ({ ok: false, error: error?.message || String(error), found: {} }));
+  if (!lookup.ok || lookup.skipped) {
+    console.warn(`[Stream] post-cast nudges waiting: the form sheet could not be checked (${lookup.skipped ? 'sheet is in log-only mode' : lookup.error}).`);
+    return;
+  }
+  for (const request of due) {
+    const hit = lookup.found?.[request.id];
+    if (hit) {
+      await updateStreamRequest(request.id, {
+        postCastFormSubmittedAt: hit.submittedAt || checkedAt,
+        postCastFormSource: 'form'
+      }, ['approved']);
+      continue;
+    }
+    const sent = await dmStreamRequester(request, buildPostCastNudge(request, {
+      formUrl: postCastFormLinkFor(request.id),
+      gate: config.postCastFormGate
+    }));
+    await updateStreamRequest(request.id, {
+      postCastNudgeSentAt: checkedAt,
+      postCastNudgeDelivery: sent ? 'delivered' : 'failed'
+    }, ['approved']);
+    await appendAuditLog({ type: 'stream_post_cast_nudge', matchId: request.matchId || null, requestId: request.id, delivered: sent });
+    if (!sent) console.warn(`[Stream] post-cast form nudge for ${request.id} could not be delivered (DMs closed?)`);
+  }
 }
 
 function postCastFormLinkFor(requestId) {
@@ -4124,6 +4726,10 @@ async function handleAdminStreams(interaction) {
   const action = interaction.options.getString('action', true);
   const requestId = interaction.options.getString('request_id');
   const reason = interaction.options.getString('reason') || '';
+  if (action === 'missing_forms') {
+    await showMissingForms(interaction);
+    return;
+  }
   if (action === 'pending' || action === 'approved' || action === 'publish_failed') {
     const statuses = action === 'pending' ? ['pending', 'approving'] : [action];
     const requests = (await listStreamRequests()).filter((request) => statuses.includes(request.status));
@@ -4616,7 +5222,7 @@ function buildMatchIntroMessage(channel, match, discordIds = {}) {
     isGroupStageMatch(displayMatch)
       ? scheduleWindow
         ? `Group Stage note: teams may schedule by mutual agreement inside ${formatScheduleWindow(scheduleWindow)}.`
-        : 'Season 7 Group Stage note: the scheduling window is not configured yet; admins must verify proposed times until the dates are announced.'
+        : `${activeSeason()?.name ? `${activeSeason().name} ` : ''}Group Stage note: the scheduling window is not configured yet; admins must verify proposed times until the dates are announced.`
       : 'Playoff note: teams may agree to schedule their match any time during the assigned three-day window.',
     `Roster changes: go to ${ticketChannel}.`,
     '',
@@ -4685,7 +5291,26 @@ function getIntroAllowedMentions(discordIds = {}) {
   };
 }
 
+// Round windows come from the current season (`/cf season`), then ROUND_WINDOWS in the environment.
+// A season's broad "Playoff Stage" row is the last resort for playoff rounds it does not list.
+function seasonRoundForMatch(match) {
+  const season = activeSeason();
+  if (isGroupStageMatch(match)) {
+    const roundNumber = getGroupStageRoundNumber(match);
+    return findSeasonRound(season, [roundNumber !== 999 ? `Round ${roundNumber}` : null, 'Group Stage'].filter(Boolean));
+  }
+  return findSeasonRound(season, [match?.categoryName, match?.round].filter(Boolean));
+}
+
+function seasonPlayoffStageRound(match) {
+  const playoff = isPlayoffMatch(match) || /playoff/i.test(`${match?.source?.name || ''} ${match?.round || ''}`);
+  return playoff ? findSeasonRound(activeSeason(), ['Playoff Stage']) : null;
+}
+
 function getSeasonRoundInfo(match) {
+  const round = seasonRoundForMatch(match);
+  if (round) return roundWindowForDisplay(round);
+
   const configuredWindow = getConfiguredRoundWindow(match);
   if (configuredWindow) {
     return {
@@ -4695,56 +5320,7 @@ function getSeasonRoundInfo(match) {
     };
   }
 
-  if (isGroupStageMatch(match)) {
-    const groupStageRound = getGroupStageRoundNumber(match);
-    if (groupStageRound === 1) return seasonWindow('Round 1');
-    if (groupStageRound === 2) return seasonWindow('Round 2');
-    if (groupStageRound === 3) return seasonWindow('Round 3');
-    return seasonWindow('Group Stage');
-  }
-
-  if (!isLegacySeason6Match(match)) return null;
-
-  const stageName = String(match.source?.name || match.round || '').toLowerCase();
-  const roundName = String(match.round || '').toLowerCase();
-
-  if (stageName.includes('group')) {
-    const groupStageRound = getGroupStageRoundNumber(match);
-    if (groupStageRound === 1) return seasonWindow('Round 1');
-    if (groupStageRound === 2) return seasonWindow('Round 2');
-    if (groupStageRound === 3) return seasonWindow('Round 3');
-    if (/\bround\s*1\b/.test(roundName)) return seasonWindow('Round 1');
-    if (/\bround\s*2\b/.test(roundName)) return seasonWindow('Round 2');
-    if (/\bround\s*3\b/.test(roundName)) return seasonWindow('Round 3');
-    return seasonWindow('Group Stage');
-  }
-
-  const text = normalizeRoundCategory(`${stageName} ${roundName}`);
-  if (text.includes('grand final')) return seasonWindow('Grand Final (BO5)');
-  if (text.includes('lower bracket round 8') || text.includes('lower bracket final') || text.includes('losers final') || text.includes('lower final')) return seasonWindow('Lower Bracket - Round 8');
-  if (text.includes('lower bracket round 7') || text.includes('losers round 7') || text.includes('lower round 7')) return seasonWindow('Lower Bracket - Round 7');
-  if (text.includes('upper bracket round 5') || (text.includes('winner') && text.includes('final')) || text.includes('wb final') || text.includes('upper final')) return seasonWindow('Upper Bracket - Round 5');
-  if (text.includes('lower bracket round 6') || text.includes('losers round 6') || text.includes('lower round 6')) return seasonWindow('Lower Bracket - Round 6');
-  if (text.includes('lower bracket round 5') || text.includes('losers round 5') || text.includes('lower round 5')) return seasonWindow('Lower Bracket - Round 5');
-  if (text.includes('lower bracket round 4') || text.includes('losers round 4') || text.includes('lower round 4')) return seasonWindow('Lower Bracket - Round 4');
-  if (text.includes('upper bracket round 4') || text.includes('semi')) return seasonWindow('Upper Bracket - Round 4');
-  if (text.includes('lower bracket round 3') || text.includes('losers round 3') || text.includes('lower round 3')) return seasonWindow('Lower Bracket - Round 3');
-  if (text.includes('lower bracket round 2') || text.includes('losers round 2') || text.includes('lower round 2')) return seasonWindow('Lower Bracket - Round 2');
-  if (text.includes('upper bracket round 3') || text.includes('quarter')) return seasonWindow('Upper Bracket - Round 3');
-  if (text.includes('upper bracket round 2') || text.includes('round of 16')) return seasonWindow('Upper Bracket - Round 2');
-  if (text.includes('lower bracket round 1') || text.includes('losers round 1') || text.includes('lower round 1')) return seasonWindow('Lower Bracket - Round 1');
-  if (text.includes('upper bracket round 1') || text.includes('round of 32')) return seasonWindow('Upper Bracket - Round 1');
-
-  if (stageName.includes('playoff') || text.includes('playoff')) return seasonWindow('Playoff Stage');
-  return null;
-}
-
-function seasonWindow(name) {
-  return SEASON_SCHEDULE.find((entry) => entry.name === name) || null;
-}
-
-function isLegacySeason6Match(match) {
-  return [SEASON6_GROUP_STAGE_ID, SEASON6_PLAYOFF_ID].includes(match?.source?.id);
+  return roundWindowForDisplay(seasonPlayoffStageRound(match));
 }
 
 function getConfiguredRoundWindow(match) {
@@ -4941,55 +5517,7 @@ function normalizeMatchForDisplay(match) {
 }
 
 function canonicalPlayoffRoundName(value) {
-  const normalized = normalizeRoundCategory(value);
-  const names = new Map([
-    ['wb round of 32', 'Upper Bracket - Round 1'],
-    ['winner bracket round 1', 'Upper Bracket - Round 1'],
-    ['winners bracket round 1', 'Upper Bracket - Round 1'],
-    ['upper bracket round 1', 'Upper Bracket - Round 1'],
-    ['wb round of 16', 'Upper Bracket - Round 2'],
-    ['winner bracket round 2', 'Upper Bracket - Round 2'],
-    ['winners bracket round 2', 'Upper Bracket - Round 2'],
-    ['upper bracket round 2', 'Upper Bracket - Round 2'],
-    ['wb quarterfinals', 'Upper Bracket - Round 3'],
-    ['wb quarter finals', 'Upper Bracket - Round 3'],
-    ['upper bracket round 3', 'Upper Bracket - Round 3'],
-    ['wb semifinals', 'Upper Bracket - Round 4'],
-    ['wb semi finals', 'Upper Bracket - Round 4'],
-    ['upper bracket round 4', 'Upper Bracket - Round 4'],
-    ['wb final', 'Upper Bracket - Round 5'],
-    ['upper bracket final', 'Upper Bracket - Round 5'],
-    ['upper bracket round 5', 'Upper Bracket - Round 5'],
-    ['losers round 1', 'Lower Bracket - Round 1'],
-    ['lower round 1', 'Lower Bracket - Round 1'],
-    ['lower bracket round 1', 'Lower Bracket - Round 1'],
-    ['losers round 2', 'Lower Bracket - Round 2'],
-    ['lower round 2', 'Lower Bracket - Round 2'],
-    ['lower bracket round 2', 'Lower Bracket - Round 2'],
-    ['losers round 3', 'Lower Bracket - Round 3'],
-    ['lower round 3', 'Lower Bracket - Round 3'],
-    ['lower bracket round 3', 'Lower Bracket - Round 3'],
-    ['losers round 4', 'Lower Bracket - Round 4'],
-    ['lower round 4', 'Lower Bracket - Round 4'],
-    ['lower bracket round 4', 'Lower Bracket - Round 4'],
-    ['losers round 5', 'Lower Bracket - Round 5'],
-    ['lower round 5', 'Lower Bracket - Round 5'],
-    ['lower bracket round 5', 'Lower Bracket - Round 5'],
-    ['losers round 6', 'Lower Bracket - Round 6'],
-    ['lower round 6', 'Lower Bracket - Round 6'],
-    ['lower bracket round 6', 'Lower Bracket - Round 6'],
-    ['losers round 7', 'Lower Bracket - Round 7'],
-    ['lower round 7', 'Lower Bracket - Round 7'],
-    ['lower bracket round 7', 'Lower Bracket - Round 7'],
-    ['losers final', 'Lower Bracket - Round 8'],
-    ['lower final', 'Lower Bracket - Round 8'],
-    ['lower bracket final', 'Lower Bracket - Round 8'],
-    ['lower bracket round 8', 'Lower Bracket - Round 8'],
-    ['grand final', 'Grand Final (BO5)'],
-    ['grand final bo5', 'Grand Final (BO5)']
-  ]);
-
-  return names.get(normalized) || String(value || 'Playoff Stage');
+  return PLAYOFF_ROUND_NAMES.get(normalizeRoundCategory(value)) || String(value || 'Playoff Stage');
 }
 
 async function findStoredMatchFromAdminMessage(message, channelId) {
@@ -5428,7 +5956,7 @@ function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) 
   }
 
   if (!window && isGroupStageMatch(stored.match)) {
-    result.warning = 'Season 7 round windows are not configured yet. Admins must verify this proposed time before approval.';
+    result.warning = `Round windows for ${activeSeason()?.name || 'this season'} are not configured yet. Admins must verify this proposed time before approval.`;
   }
 
   return result;
@@ -5436,7 +5964,11 @@ function validateScheduleRequest(stored, proposedText, kind, parsedDate = null) 
 
 function getScheduleWindowForMatch(match) {
   if (isGroupStageMatch(match)) {
-    const groupStage = config.roundWindows['group stage'] || seasonWindow('Group Stage');
+    // Group Stage teams may schedule anywhere in the whole Group Stage window, not just their round's.
+    const roundNumber = getGroupStageRoundNumber(match);
+    const groupStage = roundWindowForDisplay(findSeasonRound(activeSeason(), ['Group Stage']))
+      || config.roundWindows['group stage']
+      || roundWindowForDisplay(findSeasonRound(activeSeason(), roundNumber !== 999 ? [`Round ${roundNumber}`] : []));
     if (!groupStage) return null;
 
     return {
@@ -5446,21 +5978,14 @@ function getScheduleWindowForMatch(match) {
     };
   }
 
-  const configuredWindow = getConfiguredRoundWindow(match) ||
-    config.roundWindows[String(canonicalPlayoffRoundName(match.round || match.categoryName)).toLowerCase()];
-  if (configuredWindow) {
-    return {
-      ...configuredWindow,
-      label: 'Scheduling window'
-    };
-  }
-
-  const roundInfo = getSeasonRoundInfo(match);
-  if (!roundInfo) return null;
+  const window = roundWindowForDisplay(seasonRoundForMatch(match))
+    || getConfiguredRoundWindow(match)
+    || config.roundWindows[String(canonicalPlayoffRoundName(match.round || match.categoryName)).toLowerCase()]
+    || roundWindowForDisplay(seasonPlayoffStageRound(match));
+  if (!window) return null;
 
   return {
-    start: roundInfo.start,
-    end: roundInfo.end,
+    ...window,
     label: 'Scheduling window'
   };
 }
@@ -5962,6 +6487,8 @@ async function runOperationsTick() {
 async function runStreamOperationsTick(now = Date.now()) {
   await repostStreamRequestsAwaitingStaff().catch((error) => console.error('Stream request re-post failed:', error));
   await autoEndStaleBroadcasts(now).catch((error) => console.error('Live board auto-end failed:', error));
+  await sendPreCastReminders(now).catch((error) => console.error('Pre-cast reminders failed:', error));
+  await sendPostCastNudges(now).catch((error) => console.error('Post-cast form nudges failed:', error));
   const active = (await listStreamRequests()).filter((request) =>
     request.faceitLinkValid && request.matchId && !request.terminalNotifiedAt && STREAM_ACTIVE_STATUSES.includes(request.status)
   );

@@ -97,7 +97,7 @@ https://your-railway-domain.up.railway.app/webhooks/scl
 
 SCL sends `demo_ready` once per map. The bot verifies the SCL JWT, calls SCL for the FACEIT match, posts each ready `viewer_url` into the saved Discord match channel, and avoids reposting the same map link if SCL retries the webhook.
 
-Optional round windows:
+Optional round windows. Prefer `/cf season action:rounds` (see "Seasons and round dates"); this variable is only a fallback for rounds the current season does not list:
 
 ```env
 ROUND_WINDOWS=Upper Bracket - Round 1=2026-09-12..2026-09-14;Lower Bracket - Round 1=2026-09-15..2026-09-17
@@ -164,7 +164,30 @@ Run `/cf sync target:teams` before syncing match rooms so the new Season 7 role 
 
 Match sync checks every selected FACEIT team role before creating channels. If a mapping is missing, it creates no channels and reports the unresolved team names so a round cannot be left half-created.
 
-Season 7 Group Stage round windows are November 2-4, November 5-7, and November 8-11, with defaults on November 3, 6, and 9 at 8:00 PM EST. Teams in any Group Stage round may mutually schedule anywhere inside the extended November 2-11 Group Stage window.
+Round windows and default match times come from the current season (below). Season 7 Group Stage round windows are November 2-4, November 5-7, and November 8-11, with defaults on November 3, 6, and 9 at 8:00 PM ET. Teams in any Group Stage round may mutually schedule anywhere inside the extended November 2-11 Group Stage window.
+
+### Seasons and round dates
+
+Staff manage seasons with `/cf season`. Each season has a name, a start date, an optional end date, and its rounds. All dates are Eastern time.
+
+- `action:list` shows every season and the current season's rounds.
+- `action:start name:"Season 8" start:1/10/2027 end:3/15/2027` adds a season. A running season with no end date is closed the day before the new one starts. Seasons may not overlap or share a name.
+- `action:rounds` opens a form with the season's rounds, one per line, already filled in:
+
+  ```
+  Group Stage | 11/2 - 11/11 | 11/6
+  Round 1 | 11/2 - 11/4 | 11/3 8:00 PM
+  Upper Bracket - Round 1 | 12/1 - 12/3 | 12/2 8:00 PM
+  Grand Final (BO5) | 1/8 - 1/10 | 1/9 8:00 PM
+  ```
+
+  The columns are the round name, its scheduling window, and an optional default match date and time. A date without a year that would land far in the past is read as next year. Nothing is saved if any line has an error; the reply lists the problems and echoes what was typed so it can be copied back. FACEIT's alternative names (`WB Round of 32`, `Losers Final`, `Grand Final`) match the same round. A `Playoff Stage` row covers any playoff round that is not listed.
+- `action:edit` renames a season or changes its dates (`end:none` removes the end date). `action:end` sets the end date to today, or to `end:`. `action:delete season:<name>` removes a season.
+- `season:` picks the season to change; it defaults to the current one.
+
+The current season is the one running today, or the next to start when none is running. Finished seasons are never current. `!schedule` checks use new round dates right away. Run `/cf sync target:matches` to rewrite the pinned intro in existing match rooms. `ROUND_WINDOWS` still works as a fallback for rounds the season does not list.
+
+The first time this version starts with no saved seasons, it copies the Season 7 Group Stage dates above into the data store, so nothing changes until staff edit them. Season 7 playoff rounds have no dates until staff add them. Every season change is written to the audit log.
 
 Reschedule rules:
 
@@ -193,6 +216,30 @@ Set `LIVE_NOW_CHANNEL_ID` to a channel (for example `#live-now`) that should onl
 After a cast's match finishes on FACEIT (or staff run `/cf streams action:complete`), the caster is DMed the post-cast stats form with the form's required **Request ID** question pre-filled from `POST_CAST_FORM_PREFILL_URL`. The next time that caster tries to open the stream request form, the bot checks whether their most recent finished cast has a response: it asks the Apps Script (`postCastForms` action), which reads the form's response tab (`Season 7` in the "CF Streams & Streamers" spreadsheet) and matches on the Request ID column. No response means the request form does not open; the caster gets the pre-filled link and is told to try again afterwards. A found response is remembered on the request, so the lookup happens at most once per cast.
 
 Only the most recent finished cast is checked, casts that finished before `POST_CAST_FORM_GATE_SINCE` are exempt, and `POST_CAST_FORM_GATE=false` turns the block off. If the sheet lookup fails or the sheet is in log-only mode the caster is let through and the staff request card shows a "could not verify" note instead. Staff can clear a caster who filled the form without the request ID with `/cf streams action:"mark post-cast form received" request_id:<id>`; approved request cards show the form as received, outstanding, or marked received by staff.
+
+### My casts (`/request mine`)
+
+`/request mine` shows a caster their own casts. Only they see the reply, and it works in any channel.
+
+- **Upcoming** approved casts, soonest first, with the match time, a Matchroom link, and whether the connection details were sent (or failed because their DMs were closed).
+- **Past casts**, the 10 most recent, each marked ✅ form received, ☑️ marked received by staff, ❌ form missing, or ▫️ no form needed (finished before the form DM existed). Each missing form gets a button that opens the form with the request ID already filled in.
+
+The reply starts with the caster's stats for the season running today (all time between seasons): casts finished, and the share of post-cast forms received. Only casts that got the form DM count toward that rate, and forms staff marked received count as in. A **Share my stats** button posts a public card in that channel with the season, cast count, form rate and the matches covered. It never shows upcoming games, connection status or links, and only the caster can press it.
+
+Before it answers, the bot checks the form sheet for any missing forms in the list (the same `postCastForms` lookup the form gate uses), so a form sent since the last check shows as received. If the sheet cannot be reached, the reply says so. FACEIT-canceled matches are not listed, and a cast whose match time passed more than six hours ago counts as past even if FACEIT never reported a result.
+
+### Missing post-cast forms (`/cf streams action:missing_forms`)
+
+Staff get a private list of every cast still missing its post-cast form, grouped by caster with the most missing first. Each cast shows the match, its date, the request ID and when the caster was last nudged. Only casts whose form DM went out on or after `POST_CAST_FORM_GATE_SINCE` are listed. Before answering, the bot checks the form sheet for every listed cast and records forms it finds, so the list matches the sheet. If the sheet cannot be reached, the reply says so.
+
+Each caster gets a **Nudge** button. It checks the sheet again for that caster, then DMs them one message listing every missing form, each with its own pre-filled link. Staff can nudge the same caster once an hour. A staff nudge also counts as the automatic 48-hour nudge, so the caster is not DMed twice. Every nudge is written to the audit log with whether the DM was delivered. For a form that came in without its request ID, use `/cf streams action:form_received`.
+
+### Caster reminders
+
+- **30 minutes before game time** every approved caster gets a DM with the match time, Matchroom link, whether the connection details were sent, any co-casters, and the **Going live** button when the live board is on. It goes once per scheduled time, so a reschedule sends a fresh one. Casters approved inside those 30 minutes are skipped because they just got the approval DM. If the bot was down at the 30-minute mark, it still sends the reminder as long as the match has not started.
+- **48 hours after the post-cast form DM**, if the form is still missing, the caster gets one more DM with the pre-filled form link. The bot asks the form sheet first. A form found there is recorded and no nudge goes out. If the sheet cannot be reached, nobody is nudged and the check is retried an hour later. Casts whose form DM went out before `POST_CAST_FORM_GATE_SINCE` are never nudged.
+
+Both reminders are recorded on the request and in the audit log, including whether the DM was delivered.
 
 ### Casters pulling out
 

@@ -190,10 +190,28 @@ export const commands = [
           { name: 'cancel request', value: 'cancel' },
           { name: 'revoke approval', value: 'revoke' },
           { name: 'mark match completed', value: 'complete' },
-          { name: 'mark post-cast form received', value: 'form_received' }
+          { name: 'mark post-cast form received', value: 'form_received' },
+          { name: 'list missing post-cast forms', value: 'missing_forms' }
         ))
         .addStringOption((option) => option.setName('request_id').setDescription('Streamer request ID').setRequired(false))
         .addStringOption((option) => option.setName('reason').setDescription('Reason for cancel/revoke/completion').setRequired(false))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('season')
+        .setDescription('Set up seasons and their round dates')
+        .addStringOption((option) => option.setName('action').setDescription('Season action').setRequired(true).addChoices(
+          { name: 'list seasons', value: 'list' },
+          { name: 'start a new season', value: 'start' },
+          { name: 'edit round dates', value: 'rounds' },
+          { name: 'rename or change dates', value: 'edit' },
+          { name: 'end season', value: 'end' },
+          { name: 'delete season', value: 'delete' }
+        ))
+        .addStringOption((option) => option.setName('season').setDescription('Season to change (defaults to the current one)').setRequired(false).setAutocomplete(true))
+        .addStringOption((option) => option.setName('name').setDescription('Season name, e.g. Season 8').setRequired(false).setMaxLength(60))
+        .addStringOption((option) => option.setName('start').setDescription('Start date, e.g. 1/10/2027').setRequired(false))
+        .addStringOption((option) => option.setName('end').setDescription('End date, e.g. 3/15/2027').setRequired(false))
     )
     .addSubcommand((subcommand) =>
       subcommand
@@ -206,6 +224,7 @@ export const commands = [
     .setName('request')
     .setDescription('Request permission to stream a CROSSFIRE match')
     .addSubcommand((subcommand) => subcommand.setName('stream').setDescription('Open the stream request form'))
+    .addSubcommand((subcommand) => subcommand.setName('mine').setDescription('See your casts, IP status and which post-cast forms are missing'))
     .addSubcommand((subcommand) => subcommand.setName('cancel').setDescription('Cancel a pending request or withdraw from a cast you were approved for')
       .addStringOption((option) => option.setName('request_id').setDescription('Pick one of your active requests').setRequired(true).setAutocomplete(true))),
   new SlashCommandBuilder()

@@ -33,7 +33,8 @@ function normalizeDb(db) {
     sclDemos: db.sclDemos || {},
     sclMessages: db.sclMessages || {},
     mainStreamCoverage: db.mainStreamCoverage || {},
-    matchConnections: db.matchConnections || {}
+    matchConnections: db.matchConnections || {},
+    seasons: Array.isArray(db.seasons) ? db.seasons : []
   };
 }
 
@@ -643,4 +644,30 @@ export async function saveMatchConnection(matchId, connection) {
 
 export async function getMatchConnection(matchId) {
   return (await snapshot()).matchConnections[matchId] || null;
+}
+
+// Seasons and their round windows (`/cf season`). See src/season.js for the rules.
+export async function listSeasons() {
+  return (await snapshot()).seasons;
+}
+
+// `plan` gets a copy of the seasons and returns { seasons, ... } to save, or { error } to save nothing.
+export async function updateSeasons(plan) {
+  return mutateDb((db) => {
+    const result = plan(db.seasons.map((season) => ({ ...season })));
+    if (result && !result.error && Array.isArray(result.seasons)) db.seasons = result.seasons;
+    return result;
+  });
+}
+
+// Runs once per data file: copies the old hard-coded season in when no season was ever saved.
+export async function seedSeasonsOnce(seed) {
+  return mutateDb((db) => {
+    if (db.seasons.length || db.seasonsSeededAt) return null;
+    const now = new Date().toISOString();
+    const season = { ...seed, rounds: seed.rounds.map((round) => ({ ...round })), createdBy: null, createdAt: now, updatedAt: now };
+    db.seasons = [season];
+    db.seasonsSeededAt = now;
+    return season;
+  });
 }
