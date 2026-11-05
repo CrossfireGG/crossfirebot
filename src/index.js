@@ -73,7 +73,11 @@ import {
   updateStreamRequest,
   listSeasons,
   seedSeasonsOnce,
-  updateSeasons
+  updateSeasons,
+  listMainStreamCoverageMatchIds,
+  getOpenMatchesDigest,
+  claimOpenMatchesDigest,
+  saveOpenMatchesDigest
 } from './store.js';
 import {
   LEGACY_SEASON_SEED,
@@ -152,7 +156,10 @@ import {
   buildCasterFormsView,
   selectFormCasts,
   buildStreamListView,
-  isPostCastFormOverdue
+  isPostCastFormOverdue,
+  selectOpenMatches,
+  buildOpenMatchesView,
+  openMatchesDigestDue
 } from './streamRequest.js';
 import { parseScheduleClock } from './scheduleInput.js';
 import { createWebsitePublisher } from './websitePublisher.js';
@@ -355,7 +362,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
       const streamStaffCommand = interaction.commandName === 'cf'
-        && ['streams', 'forms'].includes(interaction.options.getSubcommand(false));
+        && ['streams', 'forms', 'upcoming'].includes(interaction.options.getSubcommand(false));
       const allowed = streamStaffCommand ? canManageStreamRequests(interaction.member) : canUseBotAdminCommand(interaction.member);
       if (!allowed) {
         await interaction.reply({ content: 'Only admins/match staff can use this bot command.', ephemeral: true });
@@ -368,6 +375,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isButton() && interaction.customId.startsWith('stream_request_open:')) {
       await showStreamRequestModal(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('upcoming_post:')) {
+      await handleUpcomingPostButton(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('open_request:')) {
+      await handleOpenMatchRequestButton(interaction);
       return;
     }
     if (interaction.isButton() && interaction.customId.startsWith('stream_request_cancel:')) {
@@ -563,6 +578,11 @@ async function handleAdminCommand(interaction) {
       await showForms(interaction);
       return;
     }
+
+    if (subcommand === 'upcoming') {
+      await handlePostUpcomingMatches(interaction);
+      return;
+    }
   }
 
   if (interaction.commandName === 'matches') {
@@ -677,6 +697,7 @@ async function handleCrossfireCommand(interaction) {
       '`/crossfire rounds` - round windows and defaults.',
       '`/crossfire veto` - veto status for this linked match room.',
       `\`/request stream\` - request permission to stream (${streamPlatformLabel()} links accepted).`,
+      '`/request open` - every confirmed upcoming match by date and time, tonight highlighted, with a button to request each one.',
       '`/request mine` - your casts, IP status, and any post-cast forms still missing.',
       config.streamGuidelinesUrl ? `Streaming guidelines: ${config.streamGuidelinesUrl}` : null,
       config.rulesUrl ? `Rules: ${config.rulesUrl}` : 'Rules link is not configured; ask Tournament Operations for the current rules.'
@@ -1066,6 +1087,7 @@ async function handleCommandHelp(interaction) {
       '`/cf streams action:list|inspect|cancel` - see, inspect or cancel caster requests (cancel by `request_id:`, `match:` or `caster:`).',
       '`/cf auditlog match_id:<optional>` - inspect scheduling and operations decisions.',
       '`/cf forms` - who owes post-cast forms. Pick a caster to see their casts, nudge them or mark a form received, or press Nudge all.',
+      '`/cf upcoming` - post the Upcoming Matches list in the community casters channel now, with or without pinging Community Casters.',
       '`/cf season action:list|start|rounds|edit|end|delete` - set season dates and each round\'s scheduling window.',
       '',
       '**Match Room Commands**',
@@ -1081,7 +1103,7 @@ async function handleCommandHelp(interaction) {
       '`!request mainstream FACEIT_LINK` - staff mark a match for the official stream and post its IP in #request-ip.',
       '',
       '**Public Slash Commands**',
-      '`/request stream` - submit a stream request; `/request cancel` cancels your pending request.',
+      '`/request stream` - submit a stream request; `/request open` lists every confirmed upcoming match; `/request cancel` cancels your pending request.',
       '`/crossfire upcoming|team|rounds|veto|help` - authorized match and event information.'
     ].join('\n'),
     ephemeral: true
@@ -3104,7 +3126,163 @@ async function handleStreamRequestCommand(interaction) {
     await interaction.reply({ content: streamCommunityChannelHint(), ephemeral: true });
     return;
   }
+  if (subcommand === 'open') {
+    await handleOpenMatches(interaction);
+    return;
+  }
   await showStreamRequestModal(interaction);
+}
+
+// `/request open`: upcoming matches casters can request (co-casting included), each with a button
+// that opens the request form with its FACEIT link filled in. Only the caster sees it.
+async function handleOpenMatches(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const open = await loadOpenMatches({ viewerId: interaction.user.id });
+  await interaction.editReply({ ...buildOpenMatchesPayload(open, { content: '**Upcoming Matches**' }), allowedMentions: { parse: [] } });
+}
+
+async function loadOpenMatches({ viewerId = null, now = Date.now() } = {}) {
+  const [matches, schedules, requests, mainStreamMatchIds] = await Promise.all([
+    listStoredMatches(),
+    listSchedules(),
+    listStreamRequests(),
+    listMainStreamCoverageMatchIds()
+  ]);
+  return selectOpenMatches({ matches, schedules, requests, mainStreamMatchIds }, { now, viewerId });
+}
+
+function buildOpenMatchesPayload(open, { content = '**Upcoming Matches**' } = {}) {
+  const view = buildOpenMatchesView(open);
+  const buttons = view.buttons.map((entry) => new ButtonBuilder()
+    .setCustomId(`open_request:${entry.matchId}`)
+    .setLabel(entry.matchup.slice(0, 80))
+    .setEmoji(entry.tonight ? '🔥' : '🎙️')
+    .setStyle(entry.approved || entry.pending ? ButtonStyle.Secondary : ButtonStyle.Primary)
+    .setDisabled(Boolean(entry.mine)));
+  const rows = [];
+  for (let index = 0; index < buttons.length; index += 5) rows.push(new ActionRowBuilder().addComponents(buttons.slice(index, index + 5)));
+  const embeds = view.embeds.map((data) => {
+    const embed = new EmbedBuilder().setDescription(data.description).setColor(data.color);
+    if (data.title) embed.setTitle(data.title);
+    if (data.footer) embed.setFooter({ text: data.footer });
+    return embed;
+  });
+  return { content, embeds, components: rows };
+}
+
+// Posts the open matches list in the community caster channel once a day at OPEN_MATCHES_POST_TIME
+// (Eastern), pinging COMMUNITY_CASTER_ROLE_ID. Nothing is posted (and nobody pinged) on a day with
+// no upcoming matches.
+async function postOpenMatchesDigest(now = Date.now()) {
+  if (!config.openMatchesChannelId) return;
+  const last = await getOpenMatchesDigest();
+  const dateKey = openMatchesDigestDue(now, { time: config.openMatchesPostTime, lastDateKey: last?.dateKey || null });
+  if (!dateKey || !(await claimOpenMatchesDigest(dateKey))) return;
+  const open = await loadOpenMatches({ now });
+  if (!open.length) {
+    await saveOpenMatchesDigest({ skipped: 'no_matches', messageId: null, count: 0 });
+    await appendAuditLog({ type: 'open_matches_digest_skipped', dateKey, reason: 'no_matches' });
+    return;
+  }
+  const channel = await client.channels.fetch(config.openMatchesChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) {
+    console.warn(`[Stream] daily open matches post skipped: channel ${config.openMatchesChannelId} is not reachable.`);
+    await saveOpenMatchesDigest({ skipped: 'channel_unreachable', messageId: null, count: open.length });
+    return;
+  }
+  const roleId = config.communityCasterRoleId;
+  const message = await sendUpcomingMatchesPost(channel, open, { ping: true });
+  await saveOpenMatchesDigest({ messageId: message?.id || null, channelId: channel.id, count: open.length, postedAt: message ? new Date().toISOString() : null });
+  await appendAuditLog({ type: 'open_matches_digest_posted', dateKey, channelId: channel.id, messageId: message?.id || null, count: open.length, pinged: Boolean(roleId && message) });
+}
+
+// Sends the Upcoming Matches post, optionally pinging the Community Caster role. Returns the
+// message, or null if Discord refused it.
+async function sendUpcomingMatchesPost(channel, open, { ping = true } = {}) {
+  const roleId = ping ? config.communityCasterRoleId : null;
+  return channel.send({
+    ...buildOpenMatchesPayload(open, { content: `${roleId ? `<@&${roleId}> ` : ''}**Upcoming Matches**` }),
+    allowedMentions: { parse: [], roles: roleId ? [roleId] : [] }
+  }).catch((error) => {
+    console.error('Upcoming Matches post failed:', error);
+    return null;
+  });
+}
+
+// `/cf upcoming`: staff post the Upcoming Matches list right away. The reply (only staff see it)
+// has two buttons: post and ping Community Casters, or post without a ping. It does not replace the
+// 5 PM daily post.
+function upcomingPostChannelId(interaction) {
+  return config.openMatchesChannelId || interaction.channelId;
+}
+
+async function handlePostUpcomingMatches(interaction) {
+  const open = await loadOpenMatches();
+  const channelId = upcomingPostChannelId(interaction);
+  if (!open.length) {
+    await interaction.reply({ content: 'There are no confirmed upcoming matches, so there is nothing to post.', ephemeral: true });
+    return;
+  }
+  const buttons = [];
+  if (config.communityCasterRoleId) {
+    buttons.push(new ButtonBuilder().setCustomId('upcoming_post:ping').setLabel('Post & ping Community Casters').setEmoji('📣').setStyle(ButtonStyle.Primary));
+  }
+  buttons.push(new ButtonBuilder().setCustomId('upcoming_post:quiet').setLabel('Post without ping').setEmoji('📋').setStyle(ButtonStyle.Secondary));
+  await interaction.reply({
+    content: `Post the Upcoming Matches list (${open.length} match${open.length === 1 ? '' : 'es'}) in <#${channelId}>?`,
+    components: [new ActionRowBuilder().addComponents(buttons)],
+    ephemeral: true
+  });
+}
+
+async function handleUpcomingPostButton(interaction) {
+  if (!canManageStreamRequests(interaction.member)) {
+    await interaction.reply({ content: 'Only admins/stream staff can post the Upcoming Matches list.', ephemeral: true });
+    return;
+  }
+  await interaction.deferUpdate();
+  const ping = interaction.customId === 'upcoming_post:ping';
+  const channelId = upcomingPostChannelId(interaction);
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) {
+    await interaction.editReply({ content: `I can't post in <#${channelId}>.`, components: [] });
+    return;
+  }
+  const open = await loadOpenMatches();
+  if (!open.length) {
+    await interaction.editReply({ content: 'There are no confirmed upcoming matches anymore, so nothing was posted.', components: [] });
+    return;
+  }
+  const message = await sendUpcomingMatchesPost(channel, open, { ping });
+  const pinged = Boolean(ping && config.communityCasterRoleId && message);
+  await appendAuditLog({ type: 'open_matches_posted_by_staff', actorId: interaction.user.id, channelId: channel.id, messageId: message?.id || null, count: open.length, pinged });
+  await interaction.editReply({
+    content: message
+      ? `Posted Upcoming Matches (${open.length}) in <#${channel.id}>${pinged ? ` and pinged <@&${config.communityCasterRoleId}>` : ' without a ping'}: ${message.url}`
+      : `Could not post in <#${channel.id}>. Check the bot can send messages and embeds there.`,
+    components: [],
+    allowedMentions: { parse: [] }
+  });
+}
+
+// A match button on `/request open`: the normal request form with that match's FACEIT link.
+async function handleOpenMatchRequestButton(interaction) {
+  if (!streamRequestChannelAllowed(interaction.channelId)) {
+    await interaction.reply({ content: streamCommunityChannelHint(), ephemeral: true });
+    return;
+  }
+  const matchId = interaction.customId.slice('open_request:'.length);
+  // The daily post stays in the channel, so the match may have started or moved to the main stream.
+  if (!(await loadOpenMatches()).some((entry) => entry.matchId === matchId && !entry.mainStream)) {
+    await interaction.reply({
+      content: 'That match is no longer open to request: it has started, been canceled or rescheduled without a time, or moved to the main stream. Use `/request open` for the current list.',
+      ephemeral: true
+    });
+    return;
+  }
+  const stored = await getStoredMatch(matchId);
+  const faceitUrl = stored?.match?.faceitUrl || `https://www.faceit.com/en/cs2/room/${matchId}`;
+  await showStreamRequestModal(interaction, { faceitUrl });
 }
 
 function streamPlatformLabel() {
@@ -3116,8 +3294,8 @@ function streamPlatformLabel() {
 // created so staff see them on the card. Keyed by requester; lost on restart, which is fine.
 const postCastGateNotes = new Map();
 
-async function showStreamRequestModal(interaction) {
-  const parts = interaction.customId?.split(':') || [];
+async function showStreamRequestModal(interaction, { faceitUrl = null } = {}) {
+  const parts = faceitUrl ? [] : interaction.customId?.split(':') || [];
   const boundRequester = parts[1] || interaction.user.id;
   if (boundRequester !== interaction.user.id) {
     await interaction.reply({ content: 'Use your own Request to Stream button.', ephemeral: true });
@@ -3131,12 +3309,12 @@ async function showStreamRequestModal(interaction) {
   }
   if (gate.note) postCastGateNotes.set(interaction.user.id, gate.note);
   else postCastGateNotes.delete(interaction.user.id);
-  const stored = interaction.channel?.id ? await getStoredMatchForChannel(interaction.channel) : null;
+  const stored = !faceitUrl && interaction.channel?.id ? await getStoredMatchForChannel(interaction.channel) : null;
   const modal = new ModalBuilder()
     .setCustomId(makeStreamRequestModalId(interaction.user.id, interaction.channelId))
     .setTitle('Request to Stream');
   const fields = [
-    ['faceit_url', 'FACEIT matchroom link', stored?.match?.faceitUrl || '', TextInputStyle.Short],
+    ['faceit_url', 'FACEIT matchroom link', faceitUrl || stored?.match?.faceitUrl || '', TextInputStyle.Short],
     ['stream_url', `${streamPlatformLabel()} channel URL`.slice(0, 45), '', TextInputStyle.Short],
     ['social_url', 'Your X / Twitter profile URL', '', TextInputStyle.Short]
   ];
@@ -6657,6 +6835,7 @@ async function runStreamOperationsTick(now = Date.now()) {
   await sendPreCastReminders(now).catch((error) => console.error('Pre-cast reminders failed:', error));
   await sendPostCastNudges(now).catch((error) => console.error('Post-cast form nudges failed:', error));
   await sendOverduePostCastForms(now).catch((error) => console.error('Overdue post-cast forms failed:', error));
+  await postOpenMatchesDigest(now).catch((error) => console.error('Daily open matches post failed:', error));
   const active = (await listStreamRequests()).filter((request) =>
     request.faceitLinkValid && request.matchId && !request.terminalNotifiedAt && STREAM_ACTIVE_STATUSES.includes(request.status)
   );

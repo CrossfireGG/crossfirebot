@@ -1,4 +1,4 @@
-import { easternDateKey, seasonContains } from './season.js';
+import { SEASON_TIME_ZONE, easternDateKey, seasonContains } from './season.js';
 
 // Request lifecycle. "Active" requests block duplicate submissions and are
 // monitored against FACEIT. `approving` and `publish_failed` are approved by
@@ -632,6 +632,145 @@ export function buildMyCastsView(requests, { requesterId, now = Date.now(), form
   if (missingForms.length) lines.push('', 'Use the buttons below to fill in each missing form. Your request ID is already filled in.');
   if (formCheckFailed) lines.push('', '⚠️ I could not reach the form sheet just now, so a form you sent recently may still show ❌.');
   return { description: lines.join('\n'), missingForms, upcomingCount: upcoming.length, pastCount: past.length };
+}
+
+// ---------- open matches (`/request open`) ----------
+
+export const OPEN_MATCHES_LIMIT = 25;
+// A request in one of these means that caster is approved for the match.
+const OPEN_MATCH_APPROVED_STATUSES = ['approving', 'approved', 'publish_failed'];
+
+// Every confirmed upcoming match (approved time in the future, not finished or canceled), in date
+// and time order. Each carries its coverage: main stream, how many casters are approved, how many
+// requests are waiting for review, and whether the viewer already has one.
+export function selectOpenMatches({ matches = [], schedules = [], requests = [], mainStreamMatchIds = [] } = {}, { now = Date.now(), viewerId = null } = {}) {
+  const scheduleById = new Map((schedules || []).map((schedule) => [schedule.matchId, schedule]));
+  const mainStream = new Set(mainStreamMatchIds || []);
+  const requestsByMatch = new Map();
+  for (const request of requests || []) {
+    if (!request?.matchId) continue;
+    if (!requestsByMatch.has(request.matchId)) requestsByMatch.set(request.matchId, { approved: 0, pending: 0, mine: null });
+    const counts = requestsByMatch.get(request.matchId);
+    const approved = OPEN_MATCH_APPROVED_STATUSES.includes(request.status);
+    if (approved) counts.approved += 1;
+    if (request.status === 'pending') counts.pending += 1;
+    if (viewerId && request.requesterId === viewerId && (approved || request.status === 'pending')) {
+      counts.mine = approved ? 'approved' : counts.mine || 'pending';
+    }
+  }
+  const open = [];
+  for (const stored of matches || []) {
+    const match = stored?.match;
+    if (!match?.id) continue;
+    if (/(finished|done|completed|cancel)/i.test(String(match.status || ''))) continue;
+    const schedule = scheduleById.get(match.id);
+    if (!schedule?.adminApproved) continue;
+    const startMs = Date.parse(schedule.scheduledAtIso || schedule.scheduledAt || '');
+    if (!Number.isFinite(startMs) || startMs <= now) continue;
+    const counts = requestsByMatch.get(match.id) || { approved: 0, pending: 0, mine: null };
+    open.push({
+      matchId: match.id,
+      matchup: match.teamA && match.teamB ? `${match.teamA} vs ${match.teamB}` : match.id,
+      round: match.round || null,
+      faceitUrl: match.faceitUrl || null,
+      startIso: new Date(startMs).toISOString(),
+      mainStream: mainStream.has(match.id),
+      approved: counts.approved,
+      pending: counts.pending,
+      mine: counts.mine
+    });
+  }
+  return open.sort((a, b) => Date.parse(a.startIso) - Date.parse(b.startIso));
+}
+
+// The daily open matches post is due once per Eastern date, from `time` (HH:MM, Eastern) until
+// `windowMinutes` later. If the bot was down for the whole window, that day's post is skipped
+// rather than going out late. Returns the Eastern date key to claim, or null.
+export function openMatchesDigestDue(now = Date.now(), { time = '17:00', lastDateKey = null, windowMinutes = 120 } = {}) {
+  const [hour, minute] = String(time).split(':').map(Number);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: SEASON_TIME_ZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  }).formatToParts(new Date(now)).map((part) => [part.type, part.value]));
+  const minutes = Number(parts.hour) * 60 + Number(parts.minute);
+  const target = hour * 60 + minute;
+  if (minutes < target || minutes >= target + windowMinutes) return null;
+  const dateKey = easternDateKey(new Date(now));
+  return dateKey === lastDateKey ? null : dateKey;
+}
+
+const UPCOMING_EMBED_BUDGET = 5400;
+const UPCOMING_EMBED_MAX = 4000;
+const TONIGHT_COLOR = 0xe67e22;
+const UPCOMING_COLOR = 0x9146ff;
+
+function easternDayHeading(iso) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: SEASON_TIME_ZONE, weekday: 'long', month: 'long', day: 'numeric' }).format(new Date(iso));
+}
+
+function upcomingMatchTags(entry) {
+  const otherPending = entry.pending - (entry.mine === 'pending' ? 1 : 0);
+  const otherApproved = entry.approved - (entry.mine === 'approved' ? 1 : 0);
+  return [
+    entry.mainStream ? '📺 main stream' : null,
+    entry.mine === 'approved' ? '✅ you are casting this' : null,
+    entry.mine === 'pending' ? '⏳ you requested this' : null,
+    otherApproved > 0 ? `🎙️ ${otherApproved} caster${otherApproved === 1 ? '' : 's'}` : null,
+    otherPending > 0 ? `⏳ ${otherPending} pending` : null,
+    !entry.mainStream && !entry.mine && !entry.approved && !entry.pending ? '❗ needs a caster' : null
+  ].filter(Boolean);
+}
+
+function upcomingMatchLine(entry) {
+  return [discordTimestamp(entry.startIso, 't'), `**${entry.matchup}**`, ...upcomingMatchTags(entry), entry.faceitUrl ? `[Matchroom](${entry.faceitUrl})` : null]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+// The Upcoming Matches list (`/request open` and the daily post): tonight's matches (today, Eastern)
+// in their own highlighted embed, then the rest grouped under a heading per day, all in date and time
+// order. Times render in each viewer's local time. `buttons` are the matches casters can request
+// (everything shown except main stream ones), at most `maxButtons`.
+export function buildOpenMatchesView(entries, { now = Date.now(), maxButtons = OPEN_MATCHES_LIMIT, budget = UPCOMING_EMBED_BUDGET } = {}) {
+  if (!entries?.length) {
+    return {
+      embeds: [{ description: 'No confirmed upcoming matches right now. Check back later.', color: UPCOMING_COLOR }],
+      buttons: []
+    };
+  }
+  const todayKey = easternDateKey(new Date(now));
+  const tonightLines = [];
+  const laterLines = [];
+  const shown = [];
+  let used = 0;
+  let currentDay = null;
+  for (const entry of entries) {
+    const dayKey = easternDateKey(new Date(entry.startIso));
+    const tonight = dayKey === todayKey;
+    const lines = tonight ? tonightLines : laterLines;
+    const add = [];
+    if (!tonight && dayKey !== currentDay) add.push(`${laterLines.length ? '\n' : ''}**${easternDayHeading(entry.startIso)}**`);
+    add.push(upcomingMatchLine(entry));
+    const size = add.join('\n').length + 1;
+    const embedSize = lines.join('\n').length + size;
+    if (used + size > budget || embedSize > UPCOMING_EMBED_MAX) break;
+    lines.push(...add);
+    if (!tonight) currentDay = dayKey;
+    used += size;
+    shown.push({ ...entry, tonight });
+  }
+  const hidden = entries.length - shown.length;
+  if (hidden) (laterLines.length ? laterLines : tonightLines).push(`\n…and ${hidden} more after these.`);
+  const footer = 'Press a match below to request it. The FACEIT link is filled in for you. More than one caster can cover a match. Times are in your local time.';
+  const embeds = [];
+  if (tonightLines.length) {
+    embeds.push({ title: `🔥 Tonight · ${easternDayHeading(new Date(now).toISOString())}`, description: tonightLines.join('\n'), color: TONIGHT_COLOR });
+  }
+  if (laterLines.length) {
+    embeds.push({ title: '📅 Coming up', description: laterLines.join('\n'), color: UPCOMING_COLOR });
+  }
+  embeds[embeds.length - 1].footer = footer;
+  return { embeds, buttons: shown.filter((entry) => !entry.mainStream).slice(0, maxButtons) };
 }
 
 // ---------- personal stats ----------

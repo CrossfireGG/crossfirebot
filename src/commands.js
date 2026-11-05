@@ -215,6 +215,11 @@ export const commands = [
     )
     .addSubcommand((subcommand) =>
       subcommand
+        .setName('upcoming')
+        .setDescription('Post the Upcoming Matches list in the community casters channel now')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
         .setName('auditlog')
         .setDescription('Show recent scheduling and operations audit events')
         .addStringOption((option) => option.setName('match_id').setDescription('Optional FACEIT match ID').setRequired(false))
@@ -224,6 +229,7 @@ export const commands = [
     .setName('request')
     .setDescription('Request permission to stream a CROSSFIRE match')
     .addSubcommand((subcommand) => subcommand.setName('stream').setDescription('Open the stream request form'))
+    .addSubcommand((subcommand) => subcommand.setName('open').setDescription('See every confirmed upcoming match and request one to cast'))
     .addSubcommand((subcommand) => subcommand.setName('mine').setDescription('See your casts, IP status and which post-cast forms are missing'))
     .addSubcommand((subcommand) => subcommand.setName('cancel').setDescription('Cancel a pending request or withdraw from a cast you were approved for')
       .addStringOption((option) => option.setName('request_id').setDescription('Pick one of your active requests').setRequired(true).setAutocomplete(true))),

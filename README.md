@@ -215,7 +215,19 @@ Set `LIVE_NOW_CHANNEL_ID` to a channel (for example `#live-now`) that should onl
 
 After a cast's match finishes on FACEIT, the caster is DMed the post-cast stats form with the form's required **Request ID** question pre-filled from `POST_CAST_FORM_PREFILL_URL`. The next time that caster tries to open the stream request form, the bot checks whether their most recent finished cast has a response: it asks the Apps Script (`postCastForms` action), which reads the form's response tab (`Season 7` in the "CF Streams & Streamers" spreadsheet) and matches on the Request ID column. No response means the request form does not open; the caster gets the pre-filled link and is told to try again afterwards. A found response is remembered on the request, so the lookup happens at most once per cast. If FACEIT never reports a result (or the link could not be tracked), an approved cast still gets the form 12 hours after its match time; casts before `POST_CAST_FORM_GATE_SINCE` are left alone.
 
-Only the most recent finished cast is checked, casts that finished before `POST_CAST_FORM_GATE_SINCE` are exempt, and `POST_CAST_FORM_GATE=false` turns the block off. If the sheet lookup fails or the sheet is in log-only mode the caster is let through and the staff request card shows a "could not verify" note instead. Staff can clear a caster who filled the form without the request ID with `/cf streams action:"mark post-cast form received" request_id:<id>`; approved request cards show the form as received, outstanding, or marked received by staff.
+Only the most recent finished cast is checked, casts that finished before `POST_CAST_FORM_GATE_SINCE` are exempt, and `POST_CAST_FORM_GATE=false` turns the block off. If the sheet lookup fails or the sheet is in log-only mode the caster is let through and the staff request card shows a "could not verify" note instead. Staff can clear a caster who filled the form without the request ID from `/cf forms` (pick the caster, then **Mark a form received**); approved request cards show the form as received, outstanding, or marked received by staff.
+
+### Upcoming Matches (`/request open` and the daily post)
+
+`/request open` shows every confirmed upcoming match in date and time order. Only the caster sees the reply, and it follows the same channel rule as `/request stream`. A match is listed when it has an approved match time in the future and is not finished or canceled.
+
+- **🔥 Tonight** (highlighted, orange): today's matches (Eastern date).
+- **📅 Coming up**: everything after today, under a heading per day (for example **Friday, November 6**).
+- Each line shows the time (in the viewer's local time), matchup, coverage and Matchroom link. Coverage tags: **❗ needs a caster**, **🎙️ N casters** approved, **⏳ N pending** review, **📺 main stream**. A match the caster already requested or is approved for says so.
+- One button per match casters can request (up to 25, soonest first; main stream matches get none). It opens the normal request form with the FACEIT link filled in, and the post-cast form block still applies. Blue buttons are matches nobody is on yet; grey ones would be a co-cast. Tonight's buttons have a 🔥.
+- Very long lists are cut to fit one message and say how many more there are.
+
+**Daily post.** Every day at `OPEN_MATCHES_POST_TIME` (default 17:00 Eastern) the bot posts the same list, headed **Upcoming Matches**, in `OPEN_MATCHES_CHANNEL_ID` (default: the community casters channel) and pings `COMMUNITY_CASTER_ROLE_ID` (default: the Community Caster role). Anyone can press a match button on it to open their own request form. It posts once per day, even across restarts; if the bot is down from 5 PM until 7 PM Eastern, that day is skipped instead of posting late. On a day with no confirmed upcoming matches nothing is posted and nobody is pinged. Buttons on an older post check the match is still open first. Staff can post it any time with `/cf upcoming`: the reply (only they see it) has **Post & ping Community Casters** and **Post without ping** buttons. It posts in the same channel and does not replace the 5 PM post. The bot needs permission to mention the role (or the role must be set to mentionable).
 
 ### My casts (`/request mine`)
 
@@ -326,6 +338,7 @@ Staff management (admins and the stream staff role):
 | `/cf streams action:list` | Every active request: waiting for review, approved, and approved casts the website did not accept (each with a **Retry** button). |
 | `/cf streams action:inspect request_id:` | Everything about one request. |
 | `/cf streams action:cancel` | Cancels pending or approved requests by `request_id:`, `match:` (FACEIT link) or `caster:`, with an optional `reason:` sent to each caster. |
+| `/cf upcoming` | Post the Upcoming Matches list now, with a choice of **Post & ping Community Casters** or **Post without ping**. |
 | `/cf forms` | Who owes post-cast forms. Pick a caster to see their casts, **Nudge** them or **Mark a form received**; **Nudge all** nudges everyone who owes. |
 | `!sendip FACEIT_LINK MESSAGE` | DMs connection details to every approved caster now. Without a message it reposts the IP prompt. |
 | `!request mainstream FACEIT_LINK` | Marks a match for the official stream and posts its IP in #request-ip. |

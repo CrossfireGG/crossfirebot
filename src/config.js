@@ -215,6 +215,14 @@ export function getConfig() {
     requestIpChannelId: process.env.REQUEST_IP_CHANNEL_ID || null,
     // Optional: when set, `/request stream` only works in these channels.
     streamCommunityChannelIds: parseSnowflakeList(process.env.STREAM_COMMUNITY_CHANNEL_IDS || ''),
+    // Upcoming Matches post (daily and /cf upcoming). Defaults to the community casters channel.
+    openMatchesChannelId: process.env.OPEN_MATCHES_CHANNEL_ID || '1444895003691319336',
+    // Role pinged by the daily post (the Community Caster role).
+    communityCasterRoleId: process.env.COMMUNITY_CASTER_ROLE_ID || '1565414651376705607',
+    // Eastern time of the daily post, 24-hour HH:MM.
+    openMatchesPostTime: /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(process.env.OPEN_MATCHES_POST_TIME || '').trim())
+      ? String(process.env.OPEN_MATCHES_POST_TIME).trim()
+      : '17:00',
     // Optional: restrict accepted stream platforms (twitch, youtube, kick). Empty = all.
     streamAllowedPlatforms: parseCsvValue(process.env.STREAM_ALLOWED_PLATFORMS || '').map((value) => value.toLowerCase()),
     // Website integration for approved streams. Empty endpoint = log-only mode.

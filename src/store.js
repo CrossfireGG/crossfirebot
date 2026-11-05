@@ -633,6 +633,31 @@ export async function getMainStreamCoverage(matchId) {
   return (await snapshot()).mainStreamCoverage[matchId] || null;
 }
 
+export async function listMainStreamCoverageMatchIds() {
+  return Object.keys((await snapshot()).mainStreamCoverage || {});
+}
+
+// The daily open matches post: claimed once per Eastern date, so restarts or overlapping ticks
+// never post twice.
+export async function getOpenMatchesDigest() {
+  return (await snapshot()).openMatchesDigest || null;
+}
+
+export async function claimOpenMatchesDigest(dateKey) {
+  return mutateDb((db) => {
+    if (db.openMatchesDigest?.dateKey === dateKey) return false;
+    db.openMatchesDigest = { dateKey, claimedAt: new Date().toISOString() };
+    return true;
+  });
+}
+
+export async function saveOpenMatchesDigest(patch) {
+  return mutateDb((db) => {
+    db.openMatchesDigest = { ...(db.openMatchesDigest || {}), ...patch };
+    return db.openMatchesDigest;
+  });
+}
+
 // Last connection details staff entered for a match (CSTV connect / server IP),
 // so a later `!request mainstream` can post them without asking staff again.
 export async function saveMatchConnection(matchId, connection) {
