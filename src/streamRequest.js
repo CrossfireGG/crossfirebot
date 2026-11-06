@@ -418,27 +418,20 @@ export const PRODUCTION_CREW_FIELDS = [
 
 const POST_ROLE_LINES = [['producer', 'Prod'], ['observer', 'Obs'], ['admin', 'Admin'], ['social', 'Social']];
 
-function easternScheduleParts(iso) {
-  const date = new Date(iso);
-  if (!Number.isFinite(date.getTime())) return null;
-  return {
-    day: new Intl.DateTimeFormat('en-US', { timeZone: SEASON_TIME_ZONE, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(date),
-    time: new Intl.DateTimeFormat('en-US', { timeZone: SEASON_TIME_ZONE, hour: 'numeric', minute: '2-digit', hour12: true }).format(date)
-  };
-}
-
 // The schedule channel post, in the format staff already use:
 //   Thursday, November 5, 2026 / 9:30 PM / Team A    VS    Team B / matchroom /
 //   Casters: @a & @b / Prod / Obs / Admin / Social / Streams.
-// Roles nobody was picked for are left out. Times are Eastern.
+// Roles nobody was picked for are left out. The date and time are Discord timestamps, so each
+// reader sees them in their own time zone.
 export function buildMainStreamSchedulePost({ teamA = null, teamB = null, matchup = null, faceitUrl = null, scheduleIso = null, crew = {}, streamUrl = null } = {}) {
   const teams = teamA && teamB ? [teamA, teamB] : splitMatchupTeams(matchup || '');
-  const when = scheduleIso ? easternScheduleParts(scheduleIso) : null;
+  const day = discordTimestamp(scheduleIso, 'D');
+  const time = discordTimestamp(scheduleIso, 't');
   const mention = (id) => `<@${id}>`;
   const casters = (crew.casters || []).filter(Boolean);
   const roleLines = POST_ROLE_LINES.filter(([key]) => crew[key]).map(([key, label]) => `${label}: ${mention(crew[key])}`);
   const blocks = [
-    when ? [when.day, when.time] : ['Date and time TBD'],
+    day && time ? [day, time] : ['Date and time TBD'],
     [teams.length === 2 ? `${teams[0]}    VS    ${teams[1]}` : (matchup || 'Main stream match')],
     faceitUrl ? [faceitUrl] : [],
     casters.length ? [`${casters.length === 1 ? 'Caster' : 'Casters'}: ${casters.map(mention).join(' & ')}`] : [],

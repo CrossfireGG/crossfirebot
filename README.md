@@ -351,7 +351,7 @@ Obs: @Observer
 Streams: https://twitch.tv/playcrossfire
 ```
 
-The date and time are the approved match time in Eastern time ("Date and time TBD" if there is none). Roles left empty are left out. `Streams` is the stream picked in the dropdown. Press the button again (it then reads **Edit production crew**) to change the crew: the form opens with the current picks and the existing post is edited, not reposted. Audit event: `main_stream_crew_set`.
+The date and time are the approved match time as Discord timestamps, so everyone sees them in their own time zone ("Date and time TBD" if there is none). Roles left empty are left out. `Streams` is the stream picked in the dropdown. Press the button again (it then reads **Edit production crew**) to change the crew: the form opens with the current picks and the existing post is edited, not reposted. Audit event: `main_stream_crew_set`.
 
 Staff management (admins and the stream staff role):
 

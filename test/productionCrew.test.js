@@ -13,7 +13,7 @@ test('the crew form asks for Casters (1-2) and Producer as required, the rest op
   ]);
 });
 
-test('the schedule post matches the format staff already use', () => {
+test('the schedule post matches the format staff already use, with local-time timestamps', () => {
   const post = buildMainStreamSchedulePost({
     teamA: 'Celestial Esports',
     teamB: 'FUELED BY HATE',
@@ -24,8 +24,8 @@ test('the schedule post matches the format staff already use', () => {
     streamUrl: 'https://twitch.tv/playcrossfire'
   });
   assert.equal(post, [
-    'Thursday, November 5, 2026',
-    '9:30 PM',
+    '<t:1793932200:D>',
+    '<t:1793932200:t>',
     '',
     'Celestial Esports    VS    FUELED BY HATE',
     '',
