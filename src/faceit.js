@@ -37,6 +37,11 @@ export class FaceitClient {
     return normalizeMatch(raw, source || raw.source || { type: 'match', id: matchId, name: '' });
   }
 
+  // Per-map stats of a finished match (map names and final round scores). Raw FACEIT payload.
+  async getMatchStats(matchId) {
+    return this.request(`/matches/${encodeURIComponent(matchId)}/stats`);
+  }
+
   async getMatchesForSource(source) {
     const sourcePath = source.type === 'championship'
       ? `/championships/${source.id}/matches`

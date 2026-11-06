@@ -215,6 +215,20 @@ export const commands = [
     )
     .addSubcommand((subcommand) =>
       subcommand
+        .setName('mainstream')
+        .setDescription('Put a match on the main stream, change its stream or crew, or take it off')
+        .addStringOption((option) => option.setName('match').setDescription('FACEIT matchroom link (leave empty inside the match channel)').setRequired(false))
+        .addStringOption((option) => option.setName('stream').setDescription('Which CROSSFIRE stream (default: the first one)').setRequired(false).setAutocomplete(true))
+        .addUserOption((option) => option.setName('caster1').setDescription('Caster 1 (needed to post the crew)').setRequired(false))
+        .addUserOption((option) => option.setName('producer').setDescription('Producer (needed to post the crew)').setRequired(false))
+        .addUserOption((option) => option.setName('caster2').setDescription('Caster 2').setRequired(false))
+        .addUserOption((option) => option.setName('observer').setDescription('Observer').setRequired(false))
+        .addUserOption((option) => option.setName('admin').setDescription('Admin').setRequired(false))
+        .addUserOption((option) => option.setName('social').setDescription('Social Media').setRequired(false))
+        .addBooleanOption((option) => option.setName('remove').setDescription('Take this match off the main stream').setRequired(false))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
         .setName('upcoming')
         .setDescription('Post the Upcoming Matches list in the community casters channel now')
     )

@@ -4,19 +4,29 @@
  * Writes confirmed match schedules into the "Game Schedules" tab of the
  * "CF Game and Staff Schedule" spreadsheet:
  *
- *   A Date | B TIME | C TEAM 1 | D VS | E TEAM 2 | F FACEIT LINK | G ROUND | H GROUP:
- *   I Stream Link/s | J Stats Collected? | K–N staff checkboxes
+ *   A Date | B TIME | C TEAM 1 | D VS | E TEAM 2 | F MATCH (FACEIT link) | G ROUND | H GROUP:
+ *   I STREAM | J Stats Collected? | K–N staff checkboxes
  *   O Sort Key (hidden; ISO timestamp used to keep the tab sorted by date and time)
  *
  * Two actions, picked by `action` in the POST body:
  *   "schedule" (default)  fills columns A–H and O for a match. One row per match: a
- *                         reschedule updates the row whose FACEIT LINK matches.
- *   "streamLink"          appends an approved caster's stream URL to the "Stream Link/s"
- *                         cell of the row whose FACEIT LINK matches. The column is found by
+ *                         reschedule updates the row whose FACEIT LINK matches. The FACEIT
+ *                         LINK cell shows the word "Link", hyperlinked to the match page.
+ *   "streamLink"          appends an approved caster's stream to the STREAM cell of
+ *                         the row whose FACEIT LINK matches, one per line, shown as the channel
+ *                         name hyperlinked to the stream. The column is found by
  *                         its header text, so it may be moved. Casters can only request
  *                         confirmed matches, so a missing row is reported as an error.
  *   "removeStreamLink"    takes one stream URL back out of that cell (caster withdrew or
  *                         staff revoked). Other links in the cell are kept.
+ *                         Both stream link actions take an optional `row.highlight`:
+ *                         "main" colours the row (A–N) as a main stream game, "community" as a
+ *                         community cast, "none" clears the colour. The bot works out which.
+ *   "matchResult"         writes the finished match's result (e.g. "Team won 13-7 (Mirage)")
+ *                         into the "Result" column of the row whose FACEIT LINK matches. The
+ *                         column is found by header and created after the last column if missing.
+ *   "statsCollected"      ticks the "Stats Collected?" cell of that row (a checkbox if the
+ *                         cell has one, otherwise ✅) once a caster's post-cast form is in.
  *   "postCastForms"       looks up which stream request IDs have a response in the
  *                         post-cast stats form's response sheet (read-only). The bot uses
  *                         this to block casters who skipped the form for their last cast.
@@ -44,17 +54,27 @@ const POST_CAST_SHEET_NAME = 'Season 7';
 const POST_CAST_REQUEST_ID_HEADER = 'Request ID';
 
 const HEADERS = [
-  '', 'TIME', 'TEAM 1', '', 'TEAM 2', 'FACEIT LINK', 'ROUND', 'GROUP:',
-  'Stream Link/s', 'Stats Collected?', '', '', '', '',
+  '', 'TIME', 'TEAM 1', '', 'TEAM 2', 'MATCH', 'ROUND', 'GROUP:',
+  'STREAM', 'Stats Collected?', '', '', '', '',
   'Sort Key'
 ];
 const BOT_COLUMNS = 8; // A–H
 const DATE_COLUMN = 1; // A
 const TIME_COLUMN = 2; // B
 const FACEIT_LINK_COLUMN = 6; // F
-const STREAM_LINK_HEADER = 'Stream Link/s';
+// Column F shows the word "Link", hyperlinked to the FACEIT match page.
+const FACEIT_LINK_LABEL = 'Link';
+// The stream column's header. 'STREAM' is current; 'Stream Link/s' is the older name.
+const STREAM_LINK_HEADERS = ['STREAM', 'Stream Link/s'];
 const DEFAULT_STREAM_LINK_COLUMN = 9; // I, used only if the header cannot be found
 const SORT_KEY_COLUMN = 15; // O
+const HIGHLIGHT_COLUMNS = 14; // A–N
+const RESULT_HEADER = 'Result';
+const STATS_COLLECTED_HEADER = 'Stats Collected?';
+const DEFAULT_STATS_COLLECTED_COLUMN = 10; // J, used only if the header cannot be found
+// Row colours (Google Sheets palette): CROSSFIRE main stream games cornflower blue, community
+// casts orange.
+const HIGHLIGHT_COLORS = { main: '#4a86e8', community: '#ff9900', none: null };
 
 // Opening the /exec URL in a browser should show "ok". Handy for checking the deployment.
 function doGet() {
@@ -75,6 +95,8 @@ function doPost(e) {
     if (action === 'schedule') return writeSchedule(sheet, body.row || {});
     if (action === 'streamLink') return writeStreamLink(sheet, body.row || {});
     if (action === 'removeStreamLink') return removeStreamLink(sheet, body.row || {});
+    if (action === 'matchResult') return writeMatchResult(sheet, body.row || {});
+    if (action === 'statsCollected') return markStatsCollected(sheet, body.row || {});
     return reply(400, { ok: false, error: 'unknown action: ' + action });
   } catch (error) {
     return reply(500, { ok: false, error: String(error) });
@@ -99,6 +121,7 @@ function writeSchedule(sheet, row) {
   const existingRow = row.faceitLink ? findRowByFaceitLink(sheet, row.faceitLink) : 0;
   const targetRow = existingRow || sheet.getLastRow() + 1;
   sheet.getRange(targetRow, 1, 1, BOT_COLUMNS).setValues([values]);
+  setFaceitLinkCell(sheet, targetRow, row.faceitLink);
   sheet.getRange(targetRow, SORT_KEY_COLUMN).setValue(sortKey);
 
   sortByDate(sheet);
@@ -106,7 +129,7 @@ function writeSchedule(sheet, row) {
   return reply(200, { ok: true, row: finalRow, updated: Boolean(existingRow) });
 }
 
-// Appends an approved stream URL to the match's "Stream Link/s" cell, one link per line.
+// Appends an approved stream URL to the match's STREAM cell, one link per line.
 function writeStreamLink(sheet, row) {
   const streamUrl = String(row.streamUrl || '').trim();
   if (!streamUrl) return reply(400, { ok: false, error: 'streamUrl is required' });
@@ -118,17 +141,15 @@ function writeStreamLink(sheet, row) {
   }
 
   const cell = sheet.getRange(targetRow, findStreamLinkColumn(sheet));
-  const existing = String(cell.getValue() || '').trim();
-  const links = existing ? existing.split(/\r?\n/).map((link) => link.trim()).filter(Boolean) : [];
-  const alreadyThere = links.some((link) => link.toLowerCase() === streamUrl.toLowerCase());
-  if (!alreadyThere) {
-    links.push(streamUrl);
-    cell.setValue(links.join('\n'));
-  }
-  return reply(200, { ok: true, row: targetRow, duplicate: alreadyThere, links: links.length });
+  const entries = readStreamLinks(cell);
+  const alreadyThere = entries.some((entry) => sameStreamUrl(entry.url, streamUrl));
+  if (!alreadyThere) entries.push({ label: '', url: streamUrl });
+  writeStreamLinks(cell, entries);
+  applyHighlight(sheet, targetRow, row.highlight);
+  return reply(200, { ok: true, row: targetRow, duplicate: alreadyThere, links: entries.length });
 }
 
-// Removes one stream URL from the match's "Stream Link/s" cell, keeping any others.
+// Removes one stream URL from the match's STREAM cell, keeping any others.
 // A missing row is not an error here: there is nothing left to remove.
 function removeStreamLink(sheet, row) {
   const streamUrl = String(row.streamUrl || '').trim();
@@ -139,12 +160,121 @@ function removeStreamLink(sheet, row) {
   if (!targetRow) return reply(200, { ok: true, row: 0, removed: false, links: 0 });
 
   const cell = sheet.getRange(targetRow, findStreamLinkColumn(sheet));
-  const existing = String(cell.getValue() || '').trim();
-  const links = existing ? existing.split(/\r?\n/).map((link) => link.trim()).filter(Boolean) : [];
-  const kept = links.filter((link) => link.toLowerCase() !== streamUrl.toLowerCase());
-  const removed = kept.length !== links.length;
-  if (removed) cell.setValue(kept.join('\n'));
+  const entries = readStreamLinks(cell);
+  const kept = entries.filter((entry) => !sameStreamUrl(entry.url, streamUrl));
+  const removed = kept.length !== entries.length;
+  if (removed) writeStreamLinks(cell, kept);
+  applyHighlight(sheet, targetRow, row.highlight);
   return reply(200, { ok: true, row: targetRow, removed: removed, links: kept.length });
+}
+
+// --- STREAM cell: one line per stream, showing the channel name hyperlinked to it. ---
+
+// Reads the cell back as [{ label, url }]: lines with a hyperlink, plain URLs (older rows) and
+// any notes staff typed (url null, kept as they are).
+function readStreamLinks(cell) {
+  const rich = cell.getRichTextValue();
+  const text = rich ? rich.getText() : String(cell.getValue() || '');
+  const runs = rich ? rich.getRuns() : [];
+  const entries = [];
+  let offset = 0;
+  text.split(/\r?\n/).forEach((line) => {
+    const start = offset;
+    const end = offset + line.length;
+    offset = end + 1;
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    const run = runs.find((part) => part.getLinkUrl() && part.getStartIndex() < end && part.getEndIndex() > start);
+    let url = run ? run.getLinkUrl() : null;
+    if (!url && /^https?:\/\//i.test(trimmed)) url = trimmed;
+    if (!url && /^(www\.)?(twitch\.tv|youtube\.com|kick\.com)\//i.test(trimmed)) url = 'https://' + trimmed;
+    entries.push({ label: trimmed, url: url });
+  });
+  return entries;
+}
+
+// Writes the entries back, one per line: links as the channel name, hyperlinked; notes as typed.
+function writeStreamLinks(cell, entries) {
+  if (!entries.length) {
+    cell.clearContent();
+    return;
+  }
+  const labels = entries.map((entry) => (entry.url ? streamChannelLabel(entry.url) : entry.label));
+  const builder = SpreadsheetApp.newRichTextValue().setText(labels.join('\n'));
+  let offset = 0;
+  entries.forEach((entry, i) => {
+    if (entry.url && labels[i].length) builder.setLinkUrl(offset, offset + labels[i].length, entry.url);
+    offset += labels[i].length + 1;
+  });
+  cell.setRichTextValue(builder.build());
+}
+
+// "https://twitch.tv/playcrossfire" -> "playcrossfire"; YouTube "@handle" -> "handle".
+function streamChannelLabel(url) {
+  const match = String(url || '').match(/^https?:\/\/[^\/]+\/(?:c\/|channel\/|user\/)?@?([^\/?#]+)/i);
+  return match ? decodeURIComponent(match[1]) : String(url || '');
+}
+
+function sameStreamUrl(a, b) {
+  const key = (value) => String(value || '').trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\/+$/, '');
+  return Boolean(a) && Boolean(b) && key(a) === key(b);
+}
+
+// Colours the match row: main stream, community cast, or clears it ("none"). No highlight sent
+// (an older bot) leaves the row alone.
+function applyHighlight(sheet, targetRow, highlight) {
+  if (!highlight || !(highlight in HIGHLIGHT_COLORS)) return;
+  sheet.getRange(targetRow, 1, 1, HIGHLIGHT_COLUMNS).setBackground(HIGHLIGHT_COLORS[highlight]);
+}
+
+// Writes the result text into the "Result" column (created after the last column if missing).
+function writeMatchResult(sheet, row) {
+  const result = String(row.result || '').trim();
+  if (!result) return reply(400, { ok: false, error: 'result is required' });
+  if (!row.faceitLink) return reply(400, { ok: false, error: 'faceitLink is required to find the match row' });
+  const targetRow = findRowByFaceitLink(sheet, row.faceitLink);
+  if (!targetRow) return reply(404, { ok: false, error: 'no row on the ' + SHEET_NAME + ' tab has FACEIT link ' + row.faceitLink });
+  sheet.getRange(targetRow, findOrCreateColumn(sheet, RESULT_HEADER)).setValue(result);
+  return reply(200, { ok: true, row: targetRow });
+}
+
+// Ticks "Stats Collected?": checks the checkbox if the cell has one, otherwise writes ✅.
+function markStatsCollected(sheet, row) {
+  if (!row.faceitLink) return reply(400, { ok: false, error: 'faceitLink is required to find the match row' });
+  const targetRow = findRowByFaceitLink(sheet, row.faceitLink);
+  if (!targetRow) return reply(404, { ok: false, error: 'no row on the ' + SHEET_NAME + ' tab has FACEIT link ' + row.faceitLink });
+  const column = findColumnByHeader(sheet, STATS_COLLECTED_HEADER) || DEFAULT_STATS_COLLECTED_COLUMN;
+  const cell = sheet.getRange(targetRow, column);
+  const rule = cell.getDataValidation();
+  const isCheckbox = rule && rule.getCriteriaType() === SpreadsheetApp.DataValidationCriteria.CHECKBOX;
+  if (isCheckbox) {
+    if (cell.isChecked()) return reply(200, { ok: true, row: targetRow, already: true });
+    cell.check();
+  } else {
+    if (String(cell.getValue() || '').trim()) return reply(200, { ok: true, row: targetRow, already: true });
+    cell.setValue('✅');
+  }
+  return reply(200, { ok: true, row: targetRow, already: false });
+}
+
+function findColumnByHeader(sheet, header) {
+  const lastColumn = sheet.getLastColumn();
+  if (lastColumn < 1) return 0;
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const wanted = String(header).trim().toLowerCase();
+  for (let i = 0; i < headers.length; i++) {
+    if (String(headers[i]).trim().toLowerCase() === wanted) return i + 1;
+  }
+  return 0;
+}
+
+function findOrCreateColumn(sheet, header) {
+  const found = findColumnByHeader(sheet, header);
+  if (found) return found;
+  const column = Math.max(sheet.getLastColumn(), SORT_KEY_COLUMN) + 1;
+  if (sheet.getMaxColumns() < column) sheet.insertColumnsAfter(sheet.getMaxColumns(), column - sheet.getMaxColumns());
+  sheet.getRange(1, column).setValue(header).setFontWeight('bold');
+  return column;
 }
 
 // Which of the given request IDs have a post-cast form response. Read-only.
@@ -182,29 +312,71 @@ function lookupPostCastForms(requestIds) {
   return reply(200, { ok: true, found: found });
 }
 
-// Looks the column up by header so staff can move it; falls back to column I.
+// Looks the column up by header ("STREAM" or the older "Stream Link/s") so staff can move it;
+// falls back to column I.
 function findStreamLinkColumn(sheet) {
   const lastColumn = Math.max(sheet.getLastColumn(), DEFAULT_STREAM_LINK_COLUMN);
   const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
-  const wanted = STREAM_LINK_HEADER.toLowerCase();
+  const wanted = STREAM_LINK_HEADERS.map((header) => header.toLowerCase());
   for (let i = 0; i < headers.length; i++) {
-    if (String(headers[i]).trim().toLowerCase() === wanted) return i + 1;
+    if (wanted.indexOf(String(headers[i]).trim().toLowerCase()) >= 0) return i + 1;
   }
   return DEFAULT_STREAM_LINK_COLUMN;
 }
 
 // Rows match on the FACEIT room ID when both links contain one, so a link typed by hand
-// with a different language prefix or trailing slash still finds the bot's row.
+// with a different language prefix or trailing slash still finds the bot's row. The cell may
+// hold the URL itself, the word "Link" hyperlinked to it, or a =HYPERLINK("url", ...) formula.
 function findRowByFaceitLink(sheet, faceitLink) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return 0;
-  const links = sheet.getRange(2, FACEIT_LINK_COLUMN, lastRow - 1, 1).getValues();
   const wanted = faceitLinkKey(faceitLink);
   if (!wanted) return 0;
-  for (let i = 0; i < links.length; i++) {
-    if (faceitLinkKey(links[i][0]) === wanted) return i + 2;
+  const range = sheet.getRange(2, FACEIT_LINK_COLUMN, lastRow - 1, 1);
+  const values = range.getValues();
+  const rich = range.getRichTextValues();
+  const formulas = range.getFormulas();
+  for (let i = 0; i < values.length; i++) {
+    if (faceitLinkKey(faceitLinkInCell(values[i][0], rich[i][0], formulas[i][0])) === wanted) return i + 2;
   }
   return 0;
+}
+
+function faceitLinkInCell(value, richText, formula) {
+  const linked = richText && richText.getLinkUrl();
+  if (linked) return linked;
+  const fromFormula = String(formula || '').match(/HYPERLINK\(\s*"([^"]+)"/i);
+  if (fromFormula) return fromFormula[1];
+  return value;
+}
+
+// Shows the FACEIT room as the word "Link", hyperlinked to the match page.
+function setFaceitLinkCell(sheet, targetRow, url) {
+  const link = String(url || '').trim();
+  if (!link) return;
+  sheet.getRange(targetRow, FACEIT_LINK_COLUMN).setRichTextValue(
+    SpreadsheetApp.newRichTextValue().setText(FACEIT_LINK_LABEL).setLinkUrl(link).build()
+  );
+}
+
+// Run once by hand (select it in the editor and press Run) to tidy rows already on the sheet:
+// FACEIT URLs in column F become the word "Link", and stream URLs in the STREAM column become the
+// channel name, each hyperlinked to the same page. Safe to run again.
+function convertLinksToLabels() {
+  const sheet = getOrCreateSheet();
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const values = sheet.getRange(2, FACEIT_LINK_COLUMN, lastRow - 1, 1).getValues();
+  values.forEach((cells, i) => {
+    const text = String(cells[0] || '').trim();
+    if (/^https?:\/\//i.test(text)) setFaceitLinkCell(sheet, i + 2, text);
+  });
+  const streamColumn = findStreamLinkColumn(sheet);
+  for (let rowIndex = 2; rowIndex <= lastRow; rowIndex++) {
+    const cell = sheet.getRange(rowIndex, streamColumn);
+    const entries = readStreamLinks(cell);
+    if (entries.some((entry) => entry.url)) writeStreamLinks(cell, entries);
+  }
 }
 
 function faceitLinkKey(value) {

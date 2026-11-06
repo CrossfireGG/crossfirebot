@@ -199,9 +199,9 @@ Reschedule rules:
 
 ### Google Sheet schedule log
 
-Every confirmed schedule is written to the `Game Schedules` tab of the "CF Game and Staff Schedule" spreadsheet: Date, TIME, TEAM 1, VS, TEAM 2, FACEIT LINK, ROUND, GROUP in columns A to H, then the staff columns (Stream Link/s, Stats Collected? and checkboxes). The bot fills the first eight columns and never touches the staff columns except `Stream Link/s`. One row per match, matched on the FACEIT room ID in the FACEIT LINK column: a reschedule updates the existing row. After every write the tab is sorted by date and time using a hidden `Sort Key` column (O); rows added by hand are given a key from their Date and Time cells so they sort too. Rows are written when staff approve a schedule or reschedule in the staff channel, and when Tournament Ops sets a time directly with `!schedule`.
+Every confirmed schedule is written to the `Game Schedules` tab of the "CF Game and Staff Schedule" spreadsheet: Date, TIME, TEAM 1, VS, TEAM 2, MATCH (the FACEIT link), ROUND, GROUP in columns A to H, then the staff columns (STREAM, Stats Collected? and checkboxes). The bot fills the first eight columns; of the staff columns it only writes `STREAM`, `Stats Collected?` and a `Result` column. One row per match, matched on the FACEIT room ID behind the MATCH column: a reschedule updates the existing row. After every write the tab is sorted by date and time using a hidden `Sort Key` column (O); rows added by hand are given a key from their Date and Time cells so they sort too. Rows are written when staff approve a schedule or reschedule in the staff channel, and when Tournament Ops sets a time directly with `!schedule`.
 
-When a community caster's stream request is approved (and the website publish succeeds), the bot appends the caster's stream URL to the `Stream Link/s` cell of that match's row, one link per line, skipping links already there. The column is found by its header text, so it can be moved. Casters can only request confirmed matches, so the row is expected to exist; if it does not, or the request's FACEIT link could not be parsed, the sheet is left alone and the approver is told to add the link by hand. When a caster withdraws or staff revoke an approval, that one link is removed from the cell again and any other links there are kept.
+When a community caster's stream request is approved (and the website publish succeeds), the bot appends the caster's stream to the `STREAM` cell of that match's row, one per line, skipping links already there. The column is found by its header text (`STREAM`, or the older `Stream Link/s`), so it can be moved. Stream links must be channel pages: the bot turns away search, directory, category and single-video links when the request is made, saves them in one clean form (`https://twitch.tv/<channel>`, `https://kick.com/<channel>`, `https://www.youtube.com/@<handle>`), and re-checks older pending requests when staff press Approve. Casters can only request confirmed matches, so the row is expected to exist; if it does not, or the request's FACEIT link could not be parsed, the sheet is left alone and the approver is told to add the link by hand. When a caster withdraws or staff revoke an approval, that one link is removed from the cell again and any other links there are kept.
 
 ### Telling the teams they are being covered
 
@@ -327,13 +327,27 @@ Every caster approved for the match gets their own DM, one per caster. That incl
 
 When `REQUEST_IP_CHANNEL_ID` is set, that channel is the one place for match IPs. The **Caster Connection Needed** and **Main Stream Connection Needed** prompts are posted there instead of `STREAM_REQUEST_CHANNEL_ID`, and every CSTV connect or IP staff enter for any match (prompt or `!sendip`) is posted there in a copyable line, tagged with who entered it, whether the main stream is covering the match, and how many approved casters it was DMed to. Entering new details for a match posts them again. The official Twitch link is never posted. Audit event: `request_ip_posted` (the value itself is never logged). Because the prompt buttons check the Tournament Ops role in `STREAM_STAFF_GUILD_ID`, the channel should live in that server; admins can press them anywhere.
 
-### Main stream IP (`!request mainstream`)
+### Main stream (`/cf mainstream`)
 
-When the official CROSSFIRE broadcast covers a match, staff run `!request mainstream FACEIT_MATCHROOM_LINK` (or just `!request mainstream` inside the match channel; `main stream`, `main-stream` and `main` also work). The bot cannot read server IPs from FACEIT, so it forwards what staff enter: if the CSTV connect or IP has already been entered for that match (connection prompt or `!sendip`), it is posted to `REQUEST_IP_CHANNEL_ID` straight away; otherwise it is posted there the moment it is entered. A match with no approved community casters gets a **Main Stream Connection Needed** prompt in #request-ip immediately, using the same Submit CSTV Connect modal. Entering new details later posts them again. The official Twitch link delivery type is never posted there. Keep `#request-ip` private to the production crew; the post contains the connect command. Audit events: `main_stream_requested` and `request_ip_posted` (the connection value is never logged).
+When the official CROSSFIRE broadcast covers a match, stream staff run `/cf mainstream match:<FACEIT link>` (or leave out `match:` inside the match channel). Typing the old `!request mainstream` gets a pointer to the slash command.
+
+| Option | What it does |
+|---|---|
+| `match` | FACEIT matchroom link. Optional inside the match channel. |
+| `stream` | Which CROSSFIRE stream (autocomplete from `MAIN_STREAM_URLS`; default the first). |
+| `caster1`, `producer` | Needed before the crew is posted in the Schedule channel. |
+| `caster2`, `observer`, `admin`, `social` | Optional crew. |
+| `remove` | `True` takes the match off the main stream. |
+
+Running it again for a match that is already on the main stream updates it: only the options given change, so `/cf mainstream match:<link> producer:@someone` swaps just the producer, and `stream:` moves it to another channel. The reply (only staff see it) also has the stream dropdown and the **Add/Edit production crew** button.
+
+`remove:True` undoes everything for that match: the teams' notice is changed to "🚫 No longer on the main stream" (saying whether community casters still have it) with a short follow-up, the Schedule post is marked **CANCELLED** and the crew is pinged, a cancellation note goes in #request-ip, the stream link comes off the Google Sheet and the row turns orange (community casters left) or is cleared, and the match shows normally again in Upcoming Matches. Audit event: `main_stream_removed`.
+
+For the IP: the bot cannot read server IPs from FACEIT, so it forwards what staff enter: if the CSTV connect or IP has already been entered for that match (connection prompt or `!sendip`), it is posted to `REQUEST_IP_CHANNEL_ID` straight away; otherwise it is posted there the moment it is entered. A match with no approved community casters gets a **Main Stream Connection Needed** prompt in #request-ip immediately, using the same Submit CSTV Connect modal. Entering new details later posts them again. The official Twitch link delivery type is never posted there. Keep `#request-ip` private to the production crew; the post contains the connect command. Audit events: `main_stream_requested` and `request_ip_posted` (the connection value is never logged).
 
 It also tells the two teams in their match channel, once per match: a red "📺 This match will be on the main stream!" embed saying the match **will be casted live by** the official stream (the picked stream's channel name), with the approved match time, a Watch link and the FACEIT Matchroom. Running the command again does not repost it. If no match channel is found, the staff reply says so. Audit event: `main_stream_coverage_posted`.
 
-**Production crew.** The `!request mainstream` reply has a **Which stream?** dropdown and an **Add production crew** button (stream staff only). The dropdown lists `MAIN_STREAM_URLS` (default `playcrossfire`, `playcrossfirecs`, `playcrossfirecs2`; the first is preselected). Changing it later updates the schedule post and the teams' notice if they are already up. The button opens a form with user pickers: **Casters** (one or two: Caster 1 and Caster 2, required), **Producer** (required), **Observer**, **Admin** and **Social Media**. Submitting it posts the match in `PRODUCTION_SCHEDULE_CHANNEL_ID` (default: the Schedule channel) in the usual format, pinging the crew:
+**Production crew.** Set the crew with the command options above, or with the reply's buttons. The reply has a **Which stream?** dropdown and an **Add production crew** button (stream staff only). The dropdown lists `MAIN_STREAM_URLS` (default `playcrossfire`, `playcrossfirecs`, `playcrossfirecs2`; the first is preselected). Changing it later updates the schedule post and the teams' notice if they are already up. The button opens a form with user pickers: **Casters** (one or two: Caster 1 and Caster 2, required), **Producer** (required), **Observer**, **Admin** and **Social Media**. Once Caster 1 and Producer are set, the match is posted in `PRODUCTION_SCHEDULE_CHANNEL_ID` (default: the Schedule channel) in the usual format, pinging the crew:
 
 ```
 Thursday, November 5, 2026
@@ -351,7 +365,17 @@ Obs: @Observer
 Streams: https://twitch.tv/playcrossfire
 ```
 
-The date and time are the approved match time as Discord timestamps, so everyone sees them in their own time zone ("Date and time TBD" if there is none). Roles left empty are left out. `Streams` is the stream picked in the dropdown. Press the button again (it then reads **Edit production crew**) to change the crew: the form opens with the current picks and the existing post is edited, not reposted. Audit event: `main_stream_crew_set`.
+The date and time are the approved match time as Discord timestamps, so everyone sees them in their own time zone ("Date and time TBD" if there is none). Roles left empty are left out. `Streams` is the stream picked in the dropdown. Press the button again (it then reads **Edit production crew**) to change the crew: the form opens with the current picks and the existing post is edited, not reposted. When the connection details are posted in #request-ip for a main stream match, the post pings the crew. If the IP was posted before the crew was set, saving the crew sends a short ping in #request-ip linking the IP post; on later edits only newly added people are pinged. Audit event: `main_stream_crew_set`.
+
+**Google Sheet.** `/cf mainstream` adds the picked stream's Twitch link to the match's `STREAM` cell (picking a different stream in the dropdown swaps it). The bot also tells the sheet how to colour the match row (columns A–N): cornflower blue for a CROSSFIRE main stream game, orange for a community cast, and the colour is cleared when the last caster drops off. Main stream wins when a match has both. Row colours need the updated `docs/schedule-log-apps-script.gs` deployed (Deploy > Manage deployments > Edit > New version); an older script still adds the links but leaves the colours alone.
+
+**Results and Stats Collected.** Every 10 minutes the bot also:
+- writes the result of finished matches into a **Result** column (found by header, created after the last column if missing), e.g. `Celestial Esports won 13-7 (Mirage)` or `Celestial Esports won 2-1 (Mirage 13-7, Inferno 10-13, Nuke 13-11)`. It checks scheduled matches from 45 minutes after their start time, going back 14 days, a few at a time. Canceled matches get no result.
+- ticks **Stats Collected?** on the match row once a caster's post-cast form for that match is in (or staff marked it received). A checkbox cell gets checked; otherwise ✅ is written. Only casts since `POST_CAST_FORM_GATE_SINCE` count.
+
+The MATCH column (FACEIT link) shows the word **Link**, hyperlinked to the match page (rows are still found by the link behind it), and each stream in `STREAM` shows as its channel name (e.g. `playcrossfire`), hyperlinked to the stream, one per line. Notes staff type in that cell are kept. To convert rows already on the sheet, run `convertLinksToLabels` once from the Apps Script editor.
+
+Each is written once per match. Both need the updated Apps Script; with an older script the bot retries every 6 hours. Audit events: `sheet_result_written`, `sheet_stats_collected`.
 
 Staff management (admins and the stream staff role):
 
@@ -363,7 +387,7 @@ Staff management (admins and the stream staff role):
 | `/cf upcoming` | Post the Upcoming Matches list now, with a choice of **Post & ping Community Casters** or **Post without ping**. |
 | `/cf forms` | Who owes post-cast forms. Pick a caster to see their casts, **Nudge** them or **Mark a form received**; **Nudge all** nudges everyone who owes. |
 | `!sendip FACEIT_LINK MESSAGE` | DMs connection details to every approved caster now. Without a message it reposts the IP prompt. |
-| `!request mainstream FACEIT_LINK` | Marks a match for the official stream and posts its IP in #request-ip. |
+| `/cf mainstream match:<link>` | Puts a match on the official stream (teams told, sheet updated, IP to #request-ip); `stream:` and crew options set or change it; `remove:True` takes it off. |
 
 The retired `!cancelreq` and `!resendip` reply with a pointer to their replacements. Embeds use Discord timestamps so each viewer sees the match time in their own time zone.
 

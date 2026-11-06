@@ -211,7 +211,7 @@ export function getConfig() {
     streamRequestChannelId: process.env.STREAM_REQUEST_CHANNEL_ID || null,
     // Optional: "live now" board channel. Empty = the Going live / End broadcast buttons are not offered.
     liveNowChannelId: process.env.LIVE_NOW_CHANNEL_ID || null,
-    // Optional: where `!request mainstream` posts connection details for the official broadcast.
+    // Optional: where `/cf mainstream` posts connection details for the official broadcast.
     requestIpChannelId: process.env.REQUEST_IP_CHANNEL_ID || null,
     // Optional: the official CROSSFIRE stream link, shown to teams when the main stream covers them.
     // The official stream channels staff pick from for a main stream match. The first is the default.

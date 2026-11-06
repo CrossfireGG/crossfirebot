@@ -5,9 +5,13 @@
 const DEFAULT_TIMEOUT_MS = 45_000;
 const SCHEDULE_SHEET_TIME_ZONE = 'America/New_York';
 
-// Matches the existing sheet style, e.g. "Monday, November 2, 2026".
+// Short weekday, e.g. "Mon, November 2, 2026" (Mon, Tues, Wed, Thurs, Fri, Sat, Sun).
+const SHORT_WEEKDAYS = { Monday: 'Mon', Tuesday: 'Tues', Wednesday: 'Wed', Thursday: 'Thurs', Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun' };
+
 function formatDateInZone(date, timeZone) {
-  return new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(date);
+  const weekday = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'long' }).format(date);
+  const rest = new Intl.DateTimeFormat('en-US', { timeZone, month: 'long', day: 'numeric', year: 'numeric' }).format(date);
+  return `${SHORT_WEEKDAYS[weekday] || weekday}, ${rest}`;
 }
 
 function formatTimeInZone(date, timeZone) {
@@ -56,7 +60,7 @@ export function buildScheduleSheetRow({ stored, proposal, details = {}, approved
 
 // Everything the sheet needs to put an approved caster's link on the match's row.
 // The FACEIT link is how the script finds the row; the rest is context for logging.
-export function buildStreamLinkSheetRow(request, { approvedBy = null } = {}) {
+export function buildStreamLinkSheetRow(request, { approvedBy = null, highlight = null } = {}) {
   const [team1 = '', team2 = ''] = String(request?.matchup || '').split(/\s+vs\.?\s+/i).map((team) => team.trim());
   return {
     faceitLink: request?.faceitUrl || '',
@@ -69,6 +73,29 @@ export function buildStreamLinkSheetRow(request, { approvedBy = null } = {}) {
     requesterId: request?.requesterId || '',
     requesterTag: request?.requesterTag || '',
     approvedBy: approvedBy || request?.reviewedBy || '',
+    highlight: highlight || '',
+    loggedAt: new Date().toISOString()
+  };
+}
+
+// The main stream's Twitch link for the match's row. `highlight` tells the sheet how to colour the
+// row: 'main' (main stream), 'community' (community cast) or 'none' (clear it).
+export function buildMainStreamSheetRow(coverage, { streamUrl, highlight = 'main', actorId = null } = {}) {
+  const [team1 = '', team2 = ''] = coverage?.teamA && coverage?.teamB
+    ? [coverage.teamA, coverage.teamB]
+    : String(coverage?.matchup || '').split(/\s+vs\.?\s+/i).map((team) => team.trim());
+  return {
+    faceitLink: coverage?.faceitUrl || '',
+    streamUrl: streamUrl || '',
+    streamPlatform: 'twitch',
+    team1,
+    team2,
+    matchId: coverage?.matchId || '',
+    requestId: 'main-stream',
+    requesterId: '',
+    requesterTag: 'CROSSFIRE main stream',
+    approvedBy: actorId || '',
+    highlight,
     loggedAt: new Date().toISOString()
   };
 }
@@ -87,6 +114,16 @@ export class LogOnlyScheduleSheet {
 
   async addStreamLink(row) {
     this.log.info?.(`Schedule sheet (log-only): stream link ${row.streamUrl} for ${row.team1} vs ${row.team2} (${row.faceitLink})`);
+    return { ok: true, skipped: true, error: null };
+  }
+
+  async writeMatchResult(row) {
+    this.log.info?.(`Schedule sheet (log-only): result "${row.result}" for ${row.faceitLink}`);
+    return { ok: true, skipped: true, error: null };
+  }
+
+  async markStatsCollected(row) {
+    this.log.info?.(`Schedule sheet (log-only): stats collected for ${row.faceitLink}`);
     return { ok: true, skipped: true, error: null };
   }
 
@@ -120,18 +157,32 @@ export class AppsScriptScheduleSheet {
     return { ...result, row: body.row ?? null, updated: Boolean(body.updated) };
   }
 
-  // Appends an approved stream URL to the match's "Stream Link/s" cell.
+  // Appends an approved stream URL to the match's STREAM cell.
   async addStreamLink(row) {
     const { body, ...result } = await this.post('streamLink', row);
     if (!result.ok) return result;
     return { ...result, row: body.row ?? null, duplicate: Boolean(body.duplicate) };
   }
 
-  // Takes one stream URL back out of the match's "Stream Link/s" cell.
+  // Takes one stream URL back out of the match's STREAM cell.
   async removeStreamLink(row) {
     const { body, ...result } = await this.post('removeStreamLink', row);
     if (!result.ok) return result;
     return { ...result, row: body.row ?? null, removed: Boolean(body.removed) };
+  }
+
+  // Writes the final result into the match row's "Result" column (created if missing).
+  async writeMatchResult(row) {
+    const { body, ...result } = await this.post('matchResult', row);
+    if (!result.ok) return result;
+    return { ...result, row: body.row ?? null };
+  }
+
+  // Ticks the match row's "Stats Collected?" box.
+  async markStatsCollected(row) {
+    const { body, ...result } = await this.post('statsCollected', row);
+    if (!result.ok) return result;
+    return { ...result, row: body.row ?? null, already: Boolean(body.already) };
   }
 
   // Which of these request IDs have a post-cast form response: { found: { id: { submittedAt } } }.

@@ -32,6 +32,16 @@ export const STREAM_HOSTS = {
 export const SOCIAL_HOSTS = ['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com'];
 const SOCIAL_RESERVED_PATHS = new Set(['home', 'explore', 'i', 'search', 'settings', 'messages', 'notifications', 'login', 'signup']);
 
+const CHANNEL_EXAMPLES = {
+  twitch: 'https://twitch.tv/yourchannel',
+  youtube: 'https://youtube.com/@yourchannel',
+  kick: 'https://kick.com/yourchannel'
+};
+
+// Only channel pages are accepted, cleaned up to one form per platform:
+//   https://twitch.tv/<channel>, https://kick.com/<channel>,
+//   https://www.youtube.com/@<handle> (or /channel/<id>, /c/<name>, /user/<name>).
+// Search, directory, category and single-video links are turned away with an example.
 export function validateStreamUrl(raw, allowedPlatforms = null) {
   const url = normalizeHttpUrl(raw);
   if (!url) return { valid: false, error: 'Stream link is not a valid URL.' };
@@ -40,11 +50,32 @@ export function validateStreamUrl(raw, allowedPlatforms = null) {
   if (!platform || !allowed.includes(platform)) {
     return { valid: false, error: `Stream link must be a ${formatPlatformList(allowed)} channel URL.` };
   }
-  const pathname = url.pathname.replace(/\/+$/, '');
-  if (!pathname.replace(/^\//, '') && !url.searchParams.has('v')) {
-    return { valid: false, error: 'Stream link must point to your channel, not just the site homepage.' };
+  const segments = url.pathname.split('/').filter(Boolean).map((part) => {
+    try {
+      return decodeURIComponent(part);
+    } catch {
+      return part;
+    }
+  });
+  if (!segments.length) {
+    return { valid: false, error: `Stream link must point to your channel, not just the site homepage. Example: ${CHANNEL_EXAMPLES[platform]}` };
   }
-  return { valid: true, value: url.toString(), platform };
+  const notChannel = { valid: false, error: `Stream link must be your channel page, not a search, directory or video link. Example: ${CHANNEL_EXAMPLES[platform]}` };
+  if (platform === 'youtube') {
+    if (url.hostname === 'youtu.be') return notChannel;
+    const [first, second] = segments;
+    if (first.startsWith('@') && /^@[A-Za-z0-9._-]{2,100}$/.test(first)) {
+      return { valid: true, value: `https://www.youtube.com/${first}`, platform };
+    }
+    if (['channel', 'c', 'user'].includes(first.toLowerCase()) && second && /^[A-Za-z0-9._-]{2,100}$/.test(second)) {
+      return { valid: true, value: `https://www.youtube.com/${first.toLowerCase()}/${second}`, platform };
+    }
+    return notChannel;
+  }
+  const name = segments[0];
+  if (STREAM_NON_CHANNEL_PATHS.has(name.toLowerCase()) || !/^[A-Za-z0-9_]{2,25}$/.test(name)) return notChannel;
+  const base = platform === 'twitch' ? 'https://twitch.tv' : 'https://kick.com';
+  return { valid: true, value: `${base}/${name.toLowerCase()}`, platform };
 }
 
 export function validateSocialUrl(raw) {
@@ -360,7 +391,9 @@ function isAllowedHost(url, hosts) {
 const STREAM_NON_CHANNEL_PATHS = new Set([
   'search', 'directory', 'videos', 'settings', 'p', 'downloads', 'jobs', 'turbo',
   'subscriptions', 'inventory', 'wallet', 'friends', 'messages', 'moderator', 'u',
-  'watch', 'results', 'feed', 'shorts', 'live', 'categories', 'following', 'browse'
+  'watch', 'results', 'feed', 'shorts', 'live', 'categories', 'following', 'browse',
+  'popout', 'embed', 'clip', 'clips', 'collections', 'prime', 'drops', 'store', 'login',
+  'signup', 'team', 'teams', 'category', 'video', 'help', 'privacy', 'terms'
 ]);
 
 export function streamChannelName(streamUrl) {
@@ -384,7 +417,7 @@ export function streamChannelName(streamUrl) {
   return /^[A-Za-z0-9_-]{2,25}$/.test(name) ? name : null;
 }
 
-// "You're on the main stream" notice for the two teams' match channel (`!request mainstream`).
+// "You're on the main stream" notice for the two teams' match channel (`/cf mainstream`).
 // Same shape as buildCoverageNotice. Names the official stream by its channel name when
 // MAIN_STREAM_URL is set.
 export const MAIN_STREAM_COVERAGE_COLOR = 0xe74c3c;
@@ -406,7 +439,7 @@ export function buildMainStreamCoverageNotice({ matchup, faceitUrl = null, sched
 
 // ---------- main stream production schedule post ----------
 
-// The crew form after `!request mainstream`. Casters takes one or two people (Caster 1 and the
+// The crew form on the `/cf mainstream` reply. Casters takes one or two people (Caster 1 and the
 // optional Caster 2); Casters and Producer are required.
 export const PRODUCTION_CREW_FIELDS = [
   { key: 'casters', label: 'Casters', description: 'Caster 1, plus Caster 2 if there is one', required: true, max: 2 },
@@ -444,6 +477,37 @@ export function buildMainStreamSchedulePost({ teamA = null, teamB = null, matchu
 // Everyone named in the crew, so the post pings exactly them.
 export function crewUserIds(crew = {}) {
   return [...new Set([...(crew.casters || []), ...POST_ROLE_LINES.map(([key]) => crew[key])].filter(Boolean))];
+}
+
+// The teams' notice once a match is taken off the main stream.
+export function buildMainStreamCancelledNotice({ matchup, communityCasters = 0 } = {}) {
+  const label = String(matchup || 'This match').trim();
+  return {
+    color: 0x7f8c8d,
+    title: '🚫 No longer on the main stream',
+    description: `**${label}** will no longer be casted live by the official CROSSFIRE stream.`,
+    fields: [{
+      name: 'Coverage',
+      value: communityCasters > 0 ? `${communityCasters} community caster(s) are still covering this match.` : 'No stream is covering this match right now.',
+      inline: false
+    }],
+    footer: 'CROSSFIRE main stream'
+  };
+}
+
+// Applies /cf mainstream crew options onto the saved crew: only the roles given change.
+export function mergeCrewOptions(crew = {}, options = {}) {
+  const casters = [...(crew.casters || [])];
+  if (options.caster1) casters[0] = options.caster1;
+  if (options.caster2) casters[1] = options.caster2;
+  const merged = {
+    casters: [...new Set(casters.filter(Boolean))].slice(0, 2),
+    producer: options.producer || crew.producer || null,
+    observer: options.observer || crew.observer || null,
+    admin: options.admin || crew.admin || null,
+    social: options.social || crew.social || null
+  };
+  return merged;
 }
 
 // "You're being covered" notice for the two teams' match channel. Plain data so the
@@ -545,7 +609,7 @@ export function parseMainStreamCommand(content) {
 
 // Plain-text post for #request-ip so whoever needs it can copy the command.
 // Every IP staff enter is posted; main-stream matches are flagged as such.
-export function buildRequestIpMessage({ matchup, faceitUrl, value, enteredBy = null, mainStream = false, casterCount = 0, delivered = 0 }) {
+export function buildRequestIpMessage({ matchup, faceitUrl, value, enteredBy = null, mainStream = false, casterCount = 0, delivered = 0, crewIds = [] }) {
   const text = String(value || '').trim();
   const detail = /\n/.test(text) ? text : `\`${text.replace(/`/g, '')}\``;
   const label = String(matchup || 'FACEIT match').trim();
@@ -557,8 +621,16 @@ export function buildRequestIpMessage({ matchup, faceitUrl, value, enteredBy = n
     mainStream ? `📺 **MAIN STREAM: ${label}**` : `🔌 **IP: ${label}**`,
     detail,
     faceitUrl ? `FACEIT: <${faceitUrl}>` : null,
-    [enteredBy ? `Entered by <@${enteredBy}>` : null, sentTo || null].filter(Boolean).join(' · ') || null
+    [enteredBy ? `Entered by <@${enteredBy}>` : null, sentTo || null].filter(Boolean).join(' · ') || null,
+    crewIds.length ? `Crew: ${crewIds.map((id) => `<@${id}>`).join(' ')}` : null
   ].filter(Boolean).join('\n');
+}
+
+// The #request-ip ping when the crew is set (or changed) after the IP was already posted. Only
+// people not pinged for this match before are named.
+export function buildCrewIpPing({ matchup, ipMessageUrl = null, crewIds = [] }) {
+  if (!crewIds.length) return null;
+  return `🎬 ${crewIds.map((id) => `<@${id}>`).join(' ')}: you're on the crew for **${String(matchup || 'this match').trim()}**. The connection details are ${ipMessageUrl ? `here: ${ipMessageUrl}` : 'above'}.`;
 }
 
 // --- Connection details (CSTV connect / IP) -------------------------------------
@@ -766,8 +838,14 @@ const UPCOMING_EMBED_MAX = 4000;
 const TONIGHT_COLOR = 0xe67e22;
 const UPCOMING_COLOR = 0x9146ff;
 
+const SHORT_WEEKDAYS = { Monday: 'Mon', Tuesday: 'Tues', Wednesday: 'Wed', Thursday: 'Thurs', Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun' };
+
+// e.g. "Thurs, November 5"
 function easternDayHeading(iso) {
-  return new Intl.DateTimeFormat('en-US', { timeZone: SEASON_TIME_ZONE, weekday: 'long', month: 'long', day: 'numeric' }).format(new Date(iso));
+  const date = new Date(iso);
+  const weekday = new Intl.DateTimeFormat('en-US', { timeZone: SEASON_TIME_ZONE, weekday: 'long' }).format(date);
+  const rest = new Intl.DateTimeFormat('en-US', { timeZone: SEASON_TIME_ZONE, month: 'long', day: 'numeric' }).format(date);
+  return `${SHORT_WEEKDAYS[weekday] || weekday}, ${rest}`;
 }
 
 function upcomingMatchTags(entry) {

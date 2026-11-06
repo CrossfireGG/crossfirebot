@@ -77,6 +77,9 @@ import {
   seedSeasonsOnce,
   updateSeasons,
   listMainStreamCoverageMatchIds,
+  deleteMainStreamCoverage,
+  getSheetSync,
+  updateSheetSync,
   getOpenMatchesDigest,
   claimOpenMatchesDigest,
   saveOpenMatchesDigest
@@ -111,6 +114,10 @@ import {
   buildCoverageNotice,
   buildMainStreamCoverageNotice,
   buildMainStreamSchedulePost,
+  buildMainStreamCancelledNotice,
+  mergeCrewOptions,
+  validateStreamUrl,
+  buildCrewIpPing,
   crewUserIds,
   PRODUCTION_CREW_FIELDS,
   buildConnectionDm,
@@ -169,8 +176,9 @@ import {
   UPCOMING_POST_FOOTER
 } from './streamRequest.js';
 import { parseScheduleClock } from './scheduleInput.js';
+import { buildMatchResult } from './matchResult.js';
 import { createWebsitePublisher } from './websitePublisher.js';
-import { buildScheduleSheetRow, buildStreamLinkSheetRow, createScheduleSheet } from './scheduleSheet.js';
+import { buildMainStreamSheetRow, buildScheduleSheetRow, buildStreamLinkSheetRow, createScheduleSheet } from './scheduleSheet.js';
 import { isAuthorizedStaffMember, parseForceDirective } from './operationsPolicy.js';
 
 const config = getConfig();
@@ -356,7 +364,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
       if (interaction.commandName === 'request') await handleStreamRequestAutocomplete(interaction);
-      if (interaction.commandName === 'cf') await handleSeasonAutocomplete(interaction);
+      if (interaction.commandName === 'cf' && interaction.options.getSubcommand(false) === 'mainstream') await handleMainStreamAutocomplete(interaction);
+      else if (interaction.commandName === 'cf') await handleSeasonAutocomplete(interaction);
       return;
     }
     if (interaction.isChatInputCommand()) {
@@ -369,7 +378,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
       const streamStaffCommand = interaction.commandName === 'cf'
-        && ['streams', 'forms', 'upcoming'].includes(interaction.options.getSubcommand(false));
+        && ['streams', 'forms', 'upcoming', 'mainstream'].includes(interaction.options.getSubcommand(false));
       const allowed = streamStaffCommand ? canManageStreamRequests(interaction.member) : canUseBotAdminCommand(interaction.member);
       if (!allowed) {
         await interaction.reply({ content: 'Only admins/match staff can use this bot command.', ephemeral: true });
@@ -600,6 +609,11 @@ async function handleAdminCommand(interaction) {
 
     if (subcommand === 'upcoming') {
       await handlePostUpcomingMatches(interaction);
+      return;
+    }
+
+    if (subcommand === 'mainstream') {
+      await handleMainStreamCommand(interaction);
       return;
     }
   }
@@ -1119,7 +1133,7 @@ async function handleCommandHelp(interaction) {
       '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.',
       '`/request stream` - open the community stream request form (`!request` now points casters here).',
       '`!sendip FACEIT_LINK MESSAGE` - staff immediately DM connection details to approved casters. Without a message it reposts the IP prompt.',
-      '`!request mainstream FACEIT_LINK` - staff mark a match for the official stream and post its IP in #request-ip.',
+      '`/cf mainstream match:<link> stream:<channel> caster1:@ producer:@ …` - staff put a match on the official stream, set its crew, or `remove:True` to take it off.',
       '',
       '**Public Slash Commands**',
       '`/request stream` - submit a stream request; `/request open` lists every confirmed upcoming match; `/request cancel` cancels your pending request.',
@@ -1166,7 +1180,9 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (/^!request\b/i.test(content)) {
       const mainStream = parseMainStreamCommand(content);
-      if (mainStream) await handleMainStreamRequest(message, mainStream.rest);
+      if (mainStream) {
+        await message.reply('Main stream moved to `/cf mainstream match:<FACEIT link>`. Pick the `stream:` and crew (`caster1:`, `producer:` …) right in the command; `remove:True` takes a match off the main stream.');
+      }
       else await handleTextStreamRequest(message);
     }
 
@@ -4210,6 +4226,16 @@ async function handleStreamReview(interaction) {
       dateTime: latestScheduleIso ? formatEasternDateTimeInput(latestScheduleIso) : 'Not scheduled on FACEIT yet'
     }, ['pending']);
   }
+  // Requests sent before stream links were checked may hold a search or directory link.
+  // Block those, and save the cleaned-up channel link for the rest.
+  const streamCheck = validateStreamUrl(existing.streamUrl, config.streamAllowedPlatforms);
+  if (!streamCheck.valid) {
+    await interaction.editReply(`This request's stream link isn't a channel page (<${existing.streamUrl}>). Nothing was approved. Deny it and ask <@${existing.requesterId}> to request again with their channel link.\n${streamCheck.error}`);
+    return;
+  }
+  if (streamCheck.value !== existing.streamUrl) {
+    await updateStreamRequest(requestId, { streamUrl: streamCheck.value, streamPlatform: streamCheck.platform }, ['pending']);
+  }
   // Atomic pending -> approving. A second staff member clicking at the same time loses the race.
   const claimed = await claimStreamApproval(requestId, interaction.user.id);
   if (!claimed) {
@@ -4390,7 +4416,7 @@ async function postMainStreamCoverageNotice(coverage, { stored = null } = {}) {
 }
 
 // --- Main stream production schedule post ---------------------------------------
-// After `!request mainstream`, staff press "Add production crew" and pick the crew in a form
+// After `/cf mainstream`, staff can also press "Add production crew" and pick the crew in a form
 // (Casters and Producer required). The bot then posts the match in the schedule channel in the
 // usual format, pinging the crew. Pressing the button again edits that post instead of reposting.
 
@@ -4403,7 +4429,7 @@ function mainStreamUrlFor(coverage) {
   return coverage?.streamUrl || config.mainStreamUrls[0] || null;
 }
 
-// The controls on the `!request mainstream` reply: which official stream it is on, and the crew form.
+// The controls on the `/cf mainstream` reply: which official stream it is on, and the crew form.
 function mainStreamControls(coverage) {
   const rows = [];
   const selected = mainStreamUrlFor(coverage);
@@ -4438,7 +4464,7 @@ async function handleCrewStreamSelect(interaction) {
   const matchId = interaction.customId.slice('crew_stream:'.length);
   const streamUrl = interaction.values?.[0];
   if (!(await getMainStreamCoverage(matchId)) || !config.mainStreamUrls.includes(streamUrl)) {
-    await interaction.reply({ content: 'That match is not on the main stream anymore. Run `!request mainstream` again.', ephemeral: true });
+    await interaction.reply({ content: 'That match is not on the main stream anymore. Run `/cf mainstream` again.', ephemeral: true });
     return;
   }
   const coverage = await saveMainStreamCoverage(matchId, { streamUrl });
@@ -4449,10 +4475,14 @@ async function handleCrewStreamSelect(interaction) {
     if (result.ok) updated.push('the schedule post');
   }
   if (await refreshMainStreamCoverageNotice(coverage)) updated.push('the teams’ notice');
+  const sheetLine = await syncMainStreamSheetLink(coverage, interaction.user.id);
+  if (sheetLine && !sheetLine.startsWith('⚠️')) updated.push('the Google Sheet');
   await appendAuditLog({ type: 'main_stream_stream_set', actorId: interaction.user.id, matchId, streamUrl }).catch(() => null);
-  if (updated.length) {
-    await interaction.followUp({ content: `📺 Switched to ${streamUrl} and updated ${updated.join(' and ')}.`, ephemeral: true });
-  }
+  const lines = [
+    updated.length ? `📺 Switched to ${streamUrl} and updated ${updated.join(', ')}.` : null,
+    sheetLine && sheetLine.startsWith('⚠️') ? sheetLine : null
+  ].filter(Boolean);
+  if (lines.length) await interaction.followUp({ content: lines.join('\n'), ephemeral: true });
 }
 
 // Re-renders the teams' main stream notice (e.g. after the stream changes). Returns true if edited.
@@ -4478,7 +4508,7 @@ async function handleCrewOpenButton(interaction) {
   const matchId = interaction.customId.slice('crew_open:'.length);
   const coverage = await getMainStreamCoverage(matchId);
   if (!coverage) {
-    await interaction.reply({ content: 'That match is not on the main stream anymore. Run `!request mainstream` again.', ephemeral: true });
+    await interaction.reply({ content: 'That match is not on the main stream anymore. Run `/cf mainstream` again.', ephemeral: true });
     return;
   }
   const crew = coverage.crew || {};
@@ -4521,13 +4551,33 @@ async function handleCrewSubmit(interaction) {
   }
   let coverage = await getMainStreamCoverage(matchId);
   if (!coverage) {
-    await interaction.editReply('That match is not on the main stream anymore. Run `!request mainstream` again.');
+    await interaction.editReply('That match is not on the main stream anymore. Run `/cf mainstream` again.');
     return;
   }
   coverage = await saveMainStreamCoverage(matchId, { crew, crewSetBy: interaction.user.id, crewSetAt: new Date().toISOString() });
   const result = await publishMainStreamSchedulePost(coverage);
+  const ipLine = await pingCrewAboutPostedIp(coverage);
   await appendAuditLog({ type: 'main_stream_crew_set', actorId: interaction.user.id, matchId, crew, posted: result.ok }).catch(() => null);
-  await interaction.editReply({ content: result.line, allowedMentions: { parse: [] } });
+  await interaction.editReply({ content: [result.line, ipLine].filter(Boolean).join('\n'), allowedMentions: { parse: [] } });
+}
+
+// When the IP is already in #request-ip and the crew is set (or changed) afterwards, ping the crew
+// members who have not been pinged for this match yet, linking the IP post.
+async function pingCrewAboutPostedIp(coverage) {
+  if (!coverage?.ipMessageId || !config.requestIpChannelId) return null;
+  const already = new Set(coverage.ipPingedUserIds || []);
+  const crewIds = crewUserIds(coverage.crew).filter((id) => !already.has(id));
+  if (!crewIds.length) return null;
+  const channel = await client.channels.fetch(coverage.ipChannelId || config.requestIpChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return null;
+  const ipMessageUrl = `https://discord.com/channels/${channel.guildId}/${channel.id}/${coverage.ipMessageId}`;
+  const sent = await channel.send({
+    content: buildCrewIpPing({ matchup: coverage.matchup, ipMessageUrl, crewIds }),
+    allowedMentions: { parse: [], users: crewIds }
+  }).catch(() => null);
+  if (!sent) return `⚠️ Could not ping the crew in <#${channel.id}>.`;
+  await saveMainStreamCoverage(coverage.matchId, { ipPingedUserIds: [...already, ...crewIds] });
+  return `🔌 Pinged the crew in <#${channel.id}> about the connection details.`;
 }
 
 // Posts the schedule message, or edits the one already posted for this match.
@@ -4552,10 +4602,20 @@ async function publishMainStreamSchedulePost(coverage) {
       : null;
     if (existing) {
       await existing.edit({ content, allowedMentions: { parse: [] } });
-      return { ok: true, line: `✏️ Updated the schedule post in <#${channel.id}>: ${existing.url}` };
+      // Editing a message never notifies anyone, so people added since the last ping get a short ping.
+      const pinged = new Set(coverage.schedulePingedUserIds || crewUserIds(coverage.crew));
+      const added = crewUserIds(coverage.crew).filter((id) => !pinged.has(id));
+      if (added.length) {
+        await channel.send({
+          content: `🎬 ${added.map((id) => `<@${id}>`).join(' ')}: you're on the crew for **${coverage.matchup}**: ${existing.url}`,
+          allowedMentions: { parse: [], users: added }
+        }).catch(() => null);
+      }
+      await saveMainStreamCoverage(coverage.matchId, { schedulePingedUserIds: [...pinged, ...added] });
+      return { ok: true, line: `✏️ Updated the schedule post in <#${channel.id}>${added.length ? ' and pinged the new crew' : ''}: ${existing.url}` };
     }
     const message = await channel.send({ content, allowedMentions: pings });
-    await saveMainStreamCoverage(coverage.matchId, { scheduleChannelId: channel.id, scheduleMessageId: message.id });
+    await saveMainStreamCoverage(coverage.matchId, { scheduleChannelId: channel.id, scheduleMessageId: message.id, schedulePingedUserIds: crewUserIds(coverage.crew) });
     return { ok: true, line: `📅 Posted the match in <#${channel.id}> and pinged the crew: ${message.url}` };
   } catch (error) {
     console.error(`Main stream schedule post failed for ${coverage.matchId}:`, error);
@@ -5058,75 +5118,211 @@ async function disableStreamDeliveryPrompts(requests) {
 }
 
 // --- Main stream (official broadcast) ------------------------------------------
-// `!request mainstream FACEIT_LINK` (or inside a match channel, no link) marks a match
+// `/cf mainstream match:<link>` (or inside a match channel, no link) marks a match
 // as covered by the official broadcast. The bot cannot read the server IP from FACEIT,
 // so it forwards whatever staff enter through the usual connection prompt or !sendip:
 // already entered -> posted to REQUEST_IP_CHANNEL_ID now; not yet -> posted the moment
 // it is entered.
 
-async function handleMainStreamRequest(message, rest) {
-  if (!canManageStreamRequests(message.member)) {
-    await message.reply('Only authorized staff can request connection details for the main stream.');
-    return;
-  }
-  if (!config.requestIpChannelId) {
-    await message.reply('Main stream IP posting is off: `REQUEST_IP_CHANNEL_ID` is not set.');
-    return;
-  }
-  const parsed = parseFaceitMatchRoomLink(rest);
-  const channelMatch = parsed ? null : await getStoredMatchByChannel(message.channel.id);
-  const matchId = parsed?.matchId || channelMatch?.match?.id || null;
-  if (!matchId) {
-    await message.reply('Use `!request mainstream FACEIT_MATCHROOM_LINK`, or run `!request mainstream` inside the match channel.');
-    return;
-  }
-  const stored = channelMatch || await getStoredMatch(matchId);
+// Puts a match on the main stream: teams' notice, sheet link and colour, and the IP in #request-ip
+// (now if entered, or as soon as it is). Returns the saved coverage and lines for the staff reply.
+async function startMainStreamCoverage({ matchId, faceitUrl: givenUrl = null, stored = null, actorId }) {
   const match = stored?.match || await faceit.getMatch(matchId).catch(() => null);
   const matchup = match?.teamA && match?.teamB ? `${match.teamA} vs ${match.teamB}` : 'FACEIT match';
-  const faceitUrl = parsed?.url || match?.faceitUrl || `https://www.faceit.com/en/cs2/room/${matchId}`;
-
+  const faceitUrl = givenUrl || match?.faceitUrl || `https://www.faceit.com/en/cs2/room/${matchId}`;
   const coverage = await saveMainStreamCoverage(matchId, {
     matchup,
     teamA: match?.teamA || null,
     teamB: match?.teamB || null,
     faceitUrl,
-    requestedBy: message.author.id,
+    requestedBy: actorId,
     requestedAt: new Date().toISOString()
   });
-  await appendAuditLog({ type: 'main_stream_requested', actorId: message.author.id, matchId });
-  const teamsLine = await postMainStreamCoverageNotice(coverage, { stored });
-  const controls = mainStreamControls(coverage);
-
+  await appendAuditLog({ type: 'main_stream_requested', actorId, matchId });
+  const lines = [];
   const connection = await getMatchConnection(matchId);
   if (connection?.value) {
     const posted = await postConnectionToRequestIp(matchId);
-    await message.reply({
-      content: [
-        posted
-          ? `📺 Posted the connection details for **${matchup}** in <#${config.requestIpChannelId}>.`
-          : `⚠️ Could not post in <#${config.requestIpChannelId}>. Check that I can view and send messages there.`,
-        teamsLine
-      ].join('\n'),
-      components: controls
-    });
-    return;
-  }
-
-  const casterCount = (await listStreamRequests({ matchId, status: 'approved' })).length;
-  const prompted = casterCount ? false : await sendMainStreamDeliveryPrompt(coverage);
-  await message.reply({ components: controls, content: [
-    `📺 Main stream is covering **${matchup}**. No IP has been entered for it yet.`,
-    casterCount
+    lines.push(posted
+      ? `📺 **${matchup}** is on the main stream. Posted the connection details in <#${config.requestIpChannelId}>.`
+      : `📺 **${matchup}** is on the main stream. ⚠️ Could not post in <#${config.requestIpChannelId}>; check that I can view and send messages there.`);
+  } else {
+    const casterCount = (await listStreamRequests({ matchId, status: 'approved' })).length;
+    const prompted = casterCount ? false : await sendMainStreamDeliveryPrompt(coverage);
+    lines.push(`📺 **${matchup}** is on the main stream. No IP has been entered for it yet.`);
+    lines.push(casterCount
       ? 'Staff get the usual connection prompt at match time for the approved casters.'
       : prompted
         ? `Staff were asked for it in <#${ipChannelId()}>.`
-        : 'Staff can enter it with `!sendip FACEIT_MATCHROOM_LINK connect IP:PORT`.',
-    `It will be posted in <#${config.requestIpChannelId}> as soon as it is entered.`,
-    teamsLine
-  ].join('\n') });
+        : 'Staff can enter it with `!sendip FACEIT_MATCHROOM_LINK connect IP:PORT`.');
+    lines.push(`It will be posted in <#${config.requestIpChannelId}> as soon as it is entered.`);
+  }
+  lines.push(await postMainStreamCoverageNotice(coverage, { stored }));
+  return { coverage, lines };
 }
 
-// Staff prompt for a match with no community casters, reusing the delivery modal.
+// `/cf mainstream`: start main stream coverage, or update the stream and crew of a match that is
+// already on it (only the crew roles given change), or take it off with remove:True.
+async function handleMainStreamCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const link = interaction.options.getString('match');
+  const parsed = link ? parseFaceitMatchRoomLink(link) : null;
+  if (link && !parsed) {
+    await interaction.editReply('That is not a FACEIT matchroom link. Paste the full room link, or run the command inside the match channel without `match:`.');
+    return;
+  }
+  const channelMatch = parsed ? null : await getStoredMatchByChannel(interaction.channelId);
+  const matchId = parsed?.matchId || channelMatch?.match?.id || null;
+  if (!matchId) {
+    await interaction.editReply('Give `match:` (the FACEIT matchroom link), or run the command inside the match channel.');
+    return;
+  }
+  const actorId = interaction.user.id;
+  let coverage = await getMainStreamCoverage(matchId);
+
+  if (interaction.options.getBoolean('remove')) {
+    if (!coverage) {
+      await interaction.editReply('That match is not on the main stream.');
+      return;
+    }
+    const lines = await removeMainStreamCoverage(coverage, actorId);
+    await interaction.editReply({ content: lines.filter(Boolean).join('\n'), allowedMentions: { parse: [] } });
+    return;
+  }
+
+  const lines = [];
+  if (!coverage) {
+    if (!config.requestIpChannelId) {
+      await interaction.editReply('Main stream IP posting is off: `REQUEST_IP_CHANNEL_ID` is not set.');
+      return;
+    }
+    const started = await startMainStreamCoverage({
+      matchId, faceitUrl: parsed?.url || null, stored: channelMatch || await getStoredMatch(matchId), actorId
+    });
+    coverage = started.coverage;
+    lines.push(...started.lines);
+  } else {
+    lines.push(`📺 **${coverage.matchup}** is already on the main stream.`);
+  }
+
+  // Stream
+  const streamOption = interaction.options.getString('stream');
+  let streamChanged = false;
+  if (streamOption) {
+    if (!config.mainStreamUrls.includes(streamOption)) {
+      lines.push(`⚠️ \`${streamOption}\` is not one of the CROSSFIRE streams, so the stream was not changed. Pick one from the list.`);
+    } else if (streamOption !== mainStreamUrlFor(coverage)) {
+      coverage = await saveMainStreamCoverage(matchId, { streamUrl: streamOption });
+      streamChanged = true;
+      lines.push(`📺 Stream: ${streamOption}`);
+    }
+  }
+  const sheetLine = await syncMainStreamSheetLink(coverage, actorId);
+  if (sheetLine) lines.push(sheetLine);
+  if (streamChanged) await refreshMainStreamCoverageNotice(coverage);
+
+  // Crew: only the roles given change.
+  const crewOptions = {
+    caster1: interaction.options.getUser('caster1')?.id || null,
+    caster2: interaction.options.getUser('caster2')?.id || null,
+    producer: interaction.options.getUser('producer')?.id || null,
+    observer: interaction.options.getUser('observer')?.id || null,
+    admin: interaction.options.getUser('admin')?.id || null,
+    social: interaction.options.getUser('social')?.id || null
+  };
+  const crewGiven = Object.values(crewOptions).some(Boolean);
+  if (crewGiven) {
+    const crew = mergeCrewOptions(coverage.crew || {}, crewOptions);
+    coverage = await saveMainStreamCoverage(matchId, { crew, crewSetBy: actorId, crewSetAt: new Date().toISOString() });
+    await appendAuditLog({ type: 'main_stream_crew_set', actorId, matchId, crew }).catch(() => null);
+  }
+  const crewReady = Boolean(coverage.crew?.casters?.length && coverage.crew?.producer);
+  if (crewReady && (crewGiven || (streamChanged && coverage.scheduleMessageId))) {
+    const result = await publishMainStreamSchedulePost(coverage);
+    lines.push(result.line);
+    coverage = await getMainStreamCoverage(matchId) || coverage;
+    const ipLine = await pingCrewAboutPostedIp(coverage);
+    if (ipLine) lines.push(ipLine);
+  } else if (crewGiven) {
+    lines.push('🎬 Crew saved. Add `caster1:` and `producer:` to post it in the Schedule channel.');
+  } else if (!coverage.scheduleMessageId) {
+    lines.push('🎬 No crew yet: run this again with `caster1:` and `producer:` (plus any others), or use the button below.');
+  }
+
+  await interaction.editReply({
+    content: lines.filter(Boolean).join('\n').slice(0, 2000),
+    components: mainStreamControls(coverage),
+    allowedMentions: { parse: [] }
+  });
+}
+
+// Takes a match off the main stream and undoes what was posted for it. Returns staff reply lines.
+async function removeMainStreamCoverage(coverage, actorId) {
+  const lines = [`🗑️ **${coverage.matchup}** is off the main stream.`];
+  const matchId = coverage.matchId;
+  await deleteMainStreamCoverage(matchId);
+  await appendAuditLog({ type: 'main_stream_removed', actorId, matchId }).catch(() => null);
+  const communityCasters = (await listStreamRequests({ matchId })).filter((request) => STREAM_CONNECTION_STATUSES.includes(request.status)).length;
+  const crewIds = crewUserIds(coverage.crew || {});
+
+  // Teams' notice
+  if (coverage.noticeMessageId && coverage.noticeChannelId) {
+    const channel = await client.channels.fetch(coverage.noticeChannelId).catch(() => null);
+    const message = channel?.isTextBased?.() ? await channel.messages.fetch(coverage.noticeMessageId).catch(() => null) : null;
+    if (message) {
+      await message.edit({ embeds: [coverageEmbed(buildMainStreamCancelledNotice({ matchup: coverage.matchup, communityCasters }))] }).catch(() => null);
+      await channel.send({ content: `📺 **${coverage.matchup}** is no longer on the main stream.`, allowedMentions: { parse: [] } }).catch(() => null);
+      lines.push(`Told the teams in <#${channel.id}>.`);
+    }
+  }
+
+  // Schedule channel post
+  if (coverage.scheduleMessageId && coverage.scheduleChannelId) {
+    const channel = await client.channels.fetch(coverage.scheduleChannelId).catch(() => null);
+    const message = channel?.isTextBased?.() ? await channel.messages.fetch(coverage.scheduleMessageId).catch(() => null) : null;
+    if (message) {
+      const original = message.content.replace(/^❌ \*\*CANCELLED: no longer on the main stream\*\*\n\n/, '');
+      await message.edit({ content: `❌ **CANCELLED: no longer on the main stream**\n\n${original}`.slice(0, 2000), allowedMentions: { parse: [] } }).catch(() => null);
+      if (crewIds.length) {
+        await channel.send({
+          content: `❌ ${crewIds.map((id) => `<@${id}>`).join(' ')}: **${coverage.matchup}** is no longer on the main stream. ${message.url}`,
+          allowedMentions: { parse: [], users: crewIds }
+        }).catch(() => null);
+      }
+      lines.push(`Marked the Schedule post cancelled${crewIds.length ? ' and pinged the crew' : ''}.`);
+    }
+  }
+
+  // #request-ip
+  if (coverage.ipMessageId && config.requestIpChannelId) {
+    const channel = await client.channels.fetch(coverage.ipChannelId || config.requestIpChannelId).catch(() => null);
+    if (channel?.isTextBased?.()) {
+      await channel.send({ content: `📺 **MAIN STREAM CANCELLED: ${coverage.matchup}**. Ignore the connection details posted for it.`, allowedMentions: { parse: [] } }).catch(() => null);
+    }
+  }
+
+  // Google Sheet: take the main stream link off and recolour the row.
+  if (coverage.sheetStreamUrl && parseFaceitMatchRoomLink(coverage.faceitUrl)) {
+    const highlight = communityCasters ? 'community' : 'none';
+    const result = await scheduleSheet.removeStreamLink(buildMainStreamSheetRow(coverage, { streamUrl: coverage.sheetStreamUrl, highlight, actorId })).catch((error) => ({ ok: false, error: error?.message || String(error) }));
+    lines.push(result.ok ? `📄 Took ${coverage.sheetStreamUrl} off the Google Sheet row.` : `⚠️ The Google Sheet still has ${coverage.sheetStreamUrl}: ${result.error}`);
+  }
+  return lines;
+}
+
+async function handleMainStreamAutocomplete(interaction) {
+  if (!canManageStreamRequests(interaction.member)) {
+    await interaction.respond([]).catch(() => null);
+    return;
+  }
+  const focused = String(interaction.options.getFocused() || '').toLowerCase();
+  await interaction.respond(config.mainStreamUrls
+    .filter((url) => !focused || url.toLowerCase().includes(focused))
+    .slice(0, 25)
+    .map((url) => ({ name: (streamChannelName(url) || url).slice(0, 100), value: url })))
+    .catch(() => null);
+}
+
 async function sendMainStreamDeliveryPrompt(coverage) {
   const channel = ipChannelId()
     ? await client.channels.fetch(ipChannelId()).catch(() => null)
@@ -5154,7 +5350,7 @@ function ipChannelId() {
 }
 
 // Posts the match's latest connection details to #request-ip. Used for every IP
-// staff enter (any match) and when `!request mainstream` finds one already entered.
+// staff enter (any match) and when `/cf mainstream` finds one already entered.
 async function postConnectionToRequestIp(matchId, { requests = [], delivered = 0, casterCount = 0 } = {}) {
   if (!config.requestIpChannelId) return false;
   const connection = await getMatchConnection(matchId);
@@ -5166,15 +5362,24 @@ async function postConnectionToRequestIp(matchId, { requests = [], delivered = 0
   const faceitUrl = coverage?.faceitUrl || requests[0]?.faceitUrl || stored?.match?.faceitUrl || `https://www.faceit.com/en/cs2/room/${matchId}`;
   const channel = await client.channels.fetch(config.requestIpChannelId).catch(() => null);
   if (!channel?.isTextBased?.()) return false;
+  // Main stream: ping the production crew so they see the connection details.
+  const crewIds = coverage?.crew ? crewUserIds(coverage.crew) : [];
   const message = await channel.send({
     content: buildRequestIpMessage({
       matchup, faceitUrl, value: connection.value, enteredBy: connection.sentBy,
-      mainStream: Boolean(coverage), casterCount, delivered
+      mainStream: Boolean(coverage), casterCount, delivered, crewIds
     }),
-    allowedMentions: { parse: [] }
+    allowedMentions: { parse: [], users: crewIds }
   }).catch(() => null);
   if (!message) return false;
-  if (coverage) await saveMainStreamCoverage(matchId, { ipPostedAt: new Date().toISOString(), ipMessageId: message.id });
+  if (coverage) {
+    await saveMainStreamCoverage(matchId, {
+      ipPostedAt: new Date().toISOString(),
+      ipMessageId: message.id,
+      ipChannelId: channel.id,
+      ipPingedUserIds: [...new Set([...(coverage.ipPingedUserIds || []), ...crewIds])]
+    });
+  }
   // The connection value itself is never written to the audit log.
   await appendAuditLog({ type: 'request_ip_posted', matchId, messageId: message.id, mainStream: Boolean(coverage) }).catch(() => null);
   return true;
@@ -5233,7 +5438,7 @@ async function handleSendIp(message, content) {
   if (!result.requests.length) {
     await message.channel.send(result.requestIpPosted
       ? `No approved casters for that FACEIT matchroom.${postedLine}`
-      : 'No approved caster requests were found for that FACEIT matchroom. The details were saved and will post if `!request mainstream` is used for it.').catch(() => null);
+      : 'No approved caster requests were found for that FACEIT matchroom. The details were saved and will post if `/cf mainstream` is used for it.').catch(() => null);
     return;
   }
   await disableStreamDeliveryPrompts(result.requests);
@@ -6161,14 +6366,14 @@ async function logScheduleToSheet({ stored, proposal, approvedBy = null, accepte
   }
 }
 
-// Puts an approved caster's stream URL on the match's row in the Google Sheet ("Stream Link/s").
+// Puts an approved caster's stream URL on the match's row in the Google Sheet (STREAM column).
 // Never throws; returns a short warning for staff when the sheet could not be updated.
 async function logStreamLinkToSheet(request, approvedBy = null) {
   if (!request?.streamUrl) return null;
   if (!parseFaceitMatchRoomLink(request.faceitUrl)) {
     return 'The Google Sheet was not updated: this request has no valid FACEIT matchroom link to find the match row. Add the stream link to the Game Schedules tab by hand.';
   }
-  const row = buildStreamLinkSheetRow(request, { approvedBy });
+  const row = buildStreamLinkSheetRow(request, { approvedBy, highlight: await sheetHighlightFor(request.matchId, { adding: true }) });
   try {
     const result = await scheduleSheet.addStreamLink(row);
     if (result.ok) {
@@ -6200,10 +6405,139 @@ async function logStreamLinkToSheet(request, approvedBy = null) {
   }
 }
 
+// How the match's sheet row should be coloured: main stream beats community cast; with neither the
+// colour is cleared. `adding` is a cast being added right now (so at least community);
+// `excludeRequestId` is a cast being taken off right now.
+async function sheetHighlightFor(matchId, { adding = false, excludeRequestId = null } = {}) {
+  if (matchId && await getMainStreamCoverage(matchId)) return 'main';
+  if (adding || !matchId) return 'community';
+  const casters = (await listStreamRequests({ matchId })).filter((request) =>
+    request.id !== excludeRequestId && STREAM_CONNECTION_STATUSES.includes(request.status));
+  return casters.length ? 'community' : 'none';
+}
+
+// Puts the main stream's Twitch link on the match's row and colours it as a main stream game. When
+// the stream changes, the old link is taken off first. Returns a line for the staff reply.
+async function syncMainStreamSheetLink(coverage, actorId = null) {
+  const streamUrl = mainStreamUrlFor(coverage);
+  if (!streamUrl) return null;
+  if (!parseFaceitMatchRoomLink(coverage.faceitUrl)) return '⚠️ Google Sheet not updated: no valid FACEIT link to find the row.';
+  const previous = coverage.sheetStreamUrl || null;
+  try {
+    if (previous && previous !== streamUrl) {
+      await scheduleSheet.removeStreamLink(buildMainStreamSheetRow(coverage, { streamUrl: previous, actorId }));
+    }
+    const result = await scheduleSheet.addStreamLink(buildMainStreamSheetRow(coverage, { streamUrl, actorId }));
+    if (!result.ok) {
+      await appendAuditLog({ type: 'stream_link_sheet_failed', matchId: coverage.matchId, actorId, error: result.error, mainStream: true }).catch(() => null);
+      return `⚠️ Google Sheet not updated with ${streamUrl}: ${result.error}`;
+    }
+    await saveMainStreamCoverage(coverage.matchId, { sheetStreamUrl: streamUrl });
+    await appendAuditLog({ type: 'stream_link_sheet_logged', matchId: coverage.matchId, actorId, mainStream: true, skipped: Boolean(result.skipped) }).catch(() => null);
+    return result.skipped ? null : `📄 Added ${streamUrl} to the Google Sheet row (highlighted blue for main stream).`;
+  } catch (error) {
+    console.error('Main stream sheet link failed:', error);
+    return `⚠️ Google Sheet not updated: ${error?.message || error}`;
+  }
+}
+
+// --- Google Sheet: results and "Stats Collected?" -------------------------------
+// Every 10 minutes: write the winner and score of finished matches into the "Result" column, and
+// tick "Stats Collected?" for matches whose post-cast form is in. Each is written once per match
+// (tracked in sheetSync). Small batches keep FACEIT and Apps Script calls low.
+const SHEET_SYNC_EVERY_MS = 10 * 60 * 1000;
+const RESULT_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
+const RESULT_AFTER_START_MS = 45 * 60 * 1000;
+let lastSheetSyncAt = 0;
+
+function laterIso(now, minutes) {
+  return new Date(now + minutes * 60 * 1000).toISOString();
+}
+
+function sheetSyncDue(entry, now) {
+  return !entry?.doneAt && !(entry?.nextCheckAt && Date.parse(entry.nextCheckAt) > now);
+}
+
+async function syncSheetResultsAndStats(now = Date.now()) {
+  if (scheduleSheet.mode === 'log-only' || now - lastSheetSyncAt < SHEET_SYNC_EVERY_MS) return;
+  lastSheetSyncAt = now;
+  const sync = await getSheetSync();
+  await syncSheetResults(sync, now);
+  await syncSheetStatsCollected(sync, now);
+}
+
+async function syncSheetResults(sync, now) {
+  const due = (await listSchedules()).filter((schedule) => {
+    if (!schedule.adminApproved || !schedule.matchId) return false;
+    const startMs = Date.parse(schedule.scheduledAtIso || schedule.scheduledAt || '');
+    if (!Number.isFinite(startMs) || startMs > now - RESULT_AFTER_START_MS || startMs < now - RESULT_LOOKBACK_MS) return false;
+    return sheetSyncDue(sync[`result:${schedule.matchId}`], now);
+  }).slice(0, 5);
+  for (const schedule of due) {
+    const key = `result:${schedule.matchId}`;
+    const match = await faceit.getMatch(schedule.matchId).catch(() => null);
+    const status = String(match?.status || '').toLowerCase();
+    if (!match) {
+      await updateSheetSync(key, { nextCheckAt: laterIso(now, 30) });
+      continue;
+    }
+    if (/cancel/.test(status)) {
+      await updateSheetSync(key, { doneAt: new Date(now).toISOString(), skipped: 'canceled' });
+      continue;
+    }
+    if (!/finished/.test(status)) {
+      await updateSheetSync(key, { nextCheckAt: laterIso(now, 15) });
+      continue;
+    }
+    const stats = await faceit.getMatchStats(schedule.matchId).catch(() => null);
+    const result = buildMatchResult(match, stats);
+    if (!result) {
+      await updateSheetSync(key, { nextCheckAt: laterIso(now, 60), note: 'no winner yet' });
+      continue;
+    }
+    const stored = await getStoredMatch(schedule.matchId);
+    const faceitLink = match.faceitUrl || stored?.match?.faceitUrl || `https://www.faceit.com/en/cs2/room/${schedule.matchId}`;
+    const written = await scheduleSheet.writeMatchResult({
+      faceitLink, matchId: schedule.matchId, result: result.text, winner: result.winner,
+      teamAScore: result.teamAScore, teamBScore: result.teamBScore
+    });
+    if (written.ok) {
+      await updateSheetSync(key, { doneAt: new Date(now).toISOString(), text: result.text });
+      await appendAuditLog({ type: 'sheet_result_written', matchId: schedule.matchId, result: result.text }).catch(() => null);
+    } else {
+      await updateSheetSync(key, { nextCheckAt: laterIso(now, 6 * 60), error: written.error });
+      console.warn(`[Sheet] result for ${schedule.matchId} not written: ${written.error}`);
+    }
+  }
+}
+
+async function syncSheetStatsCollected(sync, now) {
+  const sinceMs = Date.parse(config.postCastFormGateSince || '') || 0;
+  const byMatch = new Map();
+  for (const request of await listStreamRequests()) {
+    if (!request.matchId || !request.faceitUrl || byMatch.has(request.matchId)) continue;
+    if (!['received', 'waived'].includes(postCastFormState(request))) continue;
+    if ((Date.parse(request.postCastReminderSentAt || '') || 0) < sinceMs) continue;
+    if (!sheetSyncDue(sync[`stats:${request.matchId}`], now)) continue;
+    byMatch.set(request.matchId, request);
+  }
+  for (const request of [...byMatch.values()].slice(0, 10)) {
+    const key = `stats:${request.matchId}`;
+    const written = await scheduleSheet.markStatsCollected({ faceitLink: request.faceitUrl, matchId: request.matchId, requestId: request.id });
+    if (written.ok) {
+      await updateSheetSync(key, { doneAt: new Date(now).toISOString(), requestId: request.id });
+      await appendAuditLog({ type: 'sheet_stats_collected', matchId: request.matchId, requestId: request.id }).catch(() => null);
+    } else {
+      await updateSheetSync(key, { nextCheckAt: laterIso(now, 6 * 60), error: written.error });
+      console.warn(`[Sheet] Stats Collected for ${request.matchId} not ticked: ${written.error}`);
+    }
+  }
+}
+
 // Takes a withdrawn or revoked caster's link back off the match's row. Never throws.
 async function removeStreamLinkFromSheet(request, actorId = null) {
   if (!request?.streamUrl || !parseFaceitMatchRoomLink(request.faceitUrl)) return null;
-  const row = buildStreamLinkSheetRow(request, { approvedBy: actorId });
+  const row = buildStreamLinkSheetRow(request, { approvedBy: actorId, highlight: await sheetHighlightFor(request.matchId, { excludeRequestId: request.id }) });
   try {
     const result = await scheduleSheet.removeStreamLink(row);
     if (result.ok) {
@@ -7066,6 +7400,7 @@ async function runStreamOperationsTick(now = Date.now()) {
   await sendPostCastNudges(now).catch((error) => console.error('Post-cast form nudges failed:', error));
   await sendOverduePostCastForms(now).catch((error) => console.error('Overdue post-cast forms failed:', error));
   await postOpenMatchesDigest(now).catch((error) => console.error('Daily open matches post failed:', error));
+  await syncSheetResultsAndStats(now).catch((error) => console.error('Sheet results/stats sync failed:', error));
   const active = (await listStreamRequests()).filter((request) =>
     request.faceitLinkValid && request.matchId && !request.terminalNotifiedAt && STREAM_ACTIVE_STATUSES.includes(request.status)
   );

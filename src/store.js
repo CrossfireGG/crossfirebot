@@ -34,7 +34,8 @@ function normalizeDb(db) {
     sclMessages: db.sclMessages || {},
     mainStreamCoverage: db.mainStreamCoverage || {},
     matchConnections: db.matchConnections || {},
-    seasons: Array.isArray(db.seasons) ? db.seasons : []
+    seasons: Array.isArray(db.seasons) ? db.seasons : [],
+    sheetSync: db.sheetSync || {}
   };
 }
 
@@ -616,7 +617,7 @@ function sclDemoKey(matchId, mapNumber, viewerUrl) {
   return `${matchId}:${mapNumber}:${viewerUrl}`;
 }
 
-// Matches the official CROSSFIRE broadcast is covering (`!request mainstream`).
+// Matches the official CROSSFIRE broadcast is covering (`/cf mainstream`).
 export async function saveMainStreamCoverage(matchId, patch) {
   return mutateDb((db) => {
     db.mainStreamCoverage[matchId] = {
@@ -626,6 +627,15 @@ export async function saveMainStreamCoverage(matchId, patch) {
       updatedAt: new Date().toISOString()
     };
     return db.mainStreamCoverage[matchId];
+  });
+}
+
+// Takes a match off the main stream (the whole record goes; putting it back starts fresh).
+export async function deleteMainStreamCoverage(matchId) {
+  return mutateDb((db) => {
+    const existing = db.mainStreamCoverage[matchId] || null;
+    delete db.mainStreamCoverage[matchId];
+    return existing;
   });
 }
 
@@ -659,7 +669,7 @@ export async function saveOpenMatchesDigest(patch) {
 }
 
 // Last connection details staff entered for a match (CSTV connect / server IP),
-// so a later `!request mainstream` can post them without asking staff again.
+// so a later `/cf mainstream` can post them without asking staff again.
 export async function saveMatchConnection(matchId, connection) {
   return mutateDb((db) => {
     db.matchConnections[matchId] = { ...connection, matchId };
@@ -694,5 +704,18 @@ export async function seedSeasonsOnce(seed) {
     db.seasons = [season];
     db.seasonsSeededAt = now;
     return season;
+  });
+}
+
+// What the bot has already written to the Google Sheet per match (results, stats ticks), so each
+// is written once. Keys look like "result:<matchId>" and "stats:<matchId>".
+export async function getSheetSync() {
+  return (await snapshot()).sheetSync || {};
+}
+
+export async function updateSheetSync(key, patch) {
+  return mutateDb((db) => {
+    db.sheetSync[key] = { ...(db.sheetSync[key] || {}), ...patch, updatedAt: new Date().toISOString() };
+    return db.sheetSync[key];
   });
 }

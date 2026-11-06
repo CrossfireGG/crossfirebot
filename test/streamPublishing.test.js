@@ -86,8 +86,10 @@ test('withdrawal reasons are trimmed, defaulted and capped', () => {
 
 test('stream links accept Twitch, YouTube and Kick channels and record the platform', () => {
   assert.deepEqual(validateStreamUrl('https://twitch.tv/example'), { valid: true, value: 'https://twitch.tv/example', platform: 'twitch' });
+  assert.equal(validateStreamUrl('https://www.twitch.tv/Example/videos?filter=all').value, 'https://twitch.tv/example');
+  assert.equal(validateStreamUrl('https://www.youtube.com/@Example/live').value, 'https://www.youtube.com/@Example');
   assert.equal(validateStreamUrl('www.youtube.com/@example').platform, 'youtube');
-  assert.equal(validateStreamUrl('https://youtube.com/watch?v=abc123').valid, true);
+  assert.match(validateStreamUrl('https://youtube.com/watch?v=abc123').error, /channel page/);
   assert.equal(validateStreamUrl('https://kick.com/example').platform, 'kick');
   assert.equal(validateStreamUrl('twitch.tv/example').value, 'https://twitch.tv/example');
 });
@@ -95,6 +97,10 @@ test('stream links accept Twitch, YouTube and Kick channels and record the platf
 test('stream links reject other hosts, bare homepages, and disallowed platforms', () => {
   assert.equal(validateStreamUrl('https://example.com/live').valid, false);
   assert.match(validateStreamUrl('https://twitch.tv/').error, /homepage/);
+  assert.match(validateStreamUrl('https://www.twitch.tv/search?term=OmenEsportsCS2').error, /not a search, directory or video link\. Example: https:\/\/twitch\.tv\/yourchannel/);
+  assert.equal(validateStreamUrl('https://www.twitch.tv/directory/category/counter-strike').valid, false);
+  assert.equal(validateStreamUrl('https://kick.com/categories/counter-strike-2').valid, false);
+  assert.equal(validateStreamUrl('https://youtu.be/abc123').valid, false);
   assert.match(validateStreamUrl('https://kick.com/example', ['twitch']).error, /twitch\.tv/);
   assert.equal(validateStreamUrl('not a url').valid, false);
 });

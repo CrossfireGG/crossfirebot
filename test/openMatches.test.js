@@ -78,7 +78,7 @@ test('tonight gets its own highlighted section; later matches are grouped by day
   // NOW is 1 PM Eastern on Thursday, November 5. 01:00 UTC on the 6th is 8 PM Eastern on the 5th.
   const view = buildOpenMatchesView(selectOpenMatches(data, { now: NOW, viewerId: '1' }), { now: NOW });
   const [tonight, later] = view.embeds;
-  assert.equal(tonight.title, '🔥 Tonight · Thursday, November 5');
+  assert.equal(tonight.title, '🔥 Tonight · Thurs, November 5');
   const lines = tonight.description.split('\n');
   assert.equal(lines.length, 5);
   assert.match(lines[0], /^<t:\d+:t> · \*\*soonA vs soonB\*\* · ❗ needs a caster · \[Matchroom\]\(https:\/\/www\.faceit\.com\/en\/cs2\/room\/soon\)$/);
@@ -86,7 +86,7 @@ test('tonight gets its own highlighted section; later matches are grouped by day
   assert.match(lines[2], /\*\*mainA vs mainB\*\* · 📺 main stream ·/);
   assert.match(lines[4], /\*\*mineA vs mineB\*\* · ⏳ you requested this · ⏳ 1 pending ·/);
   assert.equal(later.title, '📅 Coming up');
-  assert.match(later.description, /^\*\*Friday, November 6\*\*\n<t:\d+:t> · \*\*droppedA vs droppedB\*\* · ❗ needs a caster ·[^\n]*\n\n\*\*Saturday, November 7\*\*\n<t:\d+:t> · \*\*laterA vs laterB\*\*/);
+  assert.match(later.description, /^\*\*Fri, November 6\*\*\n<t:\d+:t> · \*\*droppedA vs droppedB\*\* · ❗ needs a caster ·[^\n]*\n\n\*\*Sat, November 7\*\*\n<t:\d+:t> · \*\*laterA vs laterB\*\*/);
   assert.ok(later.footer && !tonight.footer, 'the footer goes on the last embed');
   assert.notEqual(tonight.color, later.color);
   assert.deepEqual(view.buttons.map((entry) => [entry.matchId, entry.tonight]), [
@@ -98,7 +98,7 @@ test('tonight gets its own highlighted section; later matches are grouped by day
 
 test('tonight is the current Eastern day, long lists are cut to one message, and an empty list says so', () => {
   const tomorrowOnly = buildOpenMatchesView(selectOpenMatches(data, { now: Date.parse('2026-11-06T05:00:00Z') }), { now: Date.parse('2026-11-06T05:00:00Z') });
-  assert.deepEqual(tomorrowOnly.embeds.map((embed) => embed.title), ['🔥 Tonight · Friday, November 6', '📅 Coming up']);
+  assert.deepEqual(tomorrowOnly.embeds.map((embed) => embed.title), ['🔥 Tonight · Fri, November 6', '📅 Coming up']);
   const many = Array.from({ length: 80 }, (_, index) => ({
     matchId: `m${index}`, matchup: `Team ${index} vs Team ${index + 1}`, round: 'Round 2', faceitUrl: `https://www.faceit.com/en/cs2/room/1-${'x'.repeat(36)}`,
     startIso: new Date(Date.parse('2026-11-07T01:00:00Z') + index * 3600000).toISOString(), mainStream: false, approved: 0, pending: 0, mine: null
