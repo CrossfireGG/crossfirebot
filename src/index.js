@@ -77,6 +77,8 @@ import {
   seedSeasonsOnce,
   updateSeasons,
   listMainStreamCoverageMatchIds,
+  listMainStreamCoverage,
+  claimMainStreamDeliveryPrompt,
   deleteMainStreamCoverage,
   getSheetSync,
   updateSheetSync,
@@ -115,6 +117,10 @@ import {
   buildMainStreamCoverageNotice,
   buildMainStreamSchedulePost,
   buildMainStreamCancelledNotice,
+  buildCrewDm,
+  buildCrewRemovedDm,
+  removedCrewIds,
+  crewRolesFor,
   mergeCrewOptions,
   validateStreamUrl,
   buildCrewIpPing,
@@ -4554,11 +4560,13 @@ async function handleCrewSubmit(interaction) {
     await interaction.editReply('That match is not on the main stream anymore. Run `/cf mainstream` again.');
     return;
   }
+  const previousCrew = coverage.crew || {};
   coverage = await saveMainStreamCoverage(matchId, { crew, crewSetBy: interaction.user.id, crewSetAt: new Date().toISOString() });
   const result = await publishMainStreamSchedulePost(coverage);
-  const ipLine = await pingCrewAboutPostedIp(coverage);
+  const removedLine = await dmRemovedCrewMembers(matchId, previousCrew);
+  const ipLine = await pingCrewAboutPostedIp(await getMainStreamCoverage(matchId) || coverage);
   await appendAuditLog({ type: 'main_stream_crew_set', actorId: interaction.user.id, matchId, crew, posted: result.ok }).catch(() => null);
-  await interaction.editReply({ content: [result.line, ipLine].filter(Boolean).join('\n'), allowedMentions: { parse: [] } });
+  await interaction.editReply({ content: [result.line, removedLine, ipLine].filter(Boolean).join('\n'), allowedMentions: { parse: [] } });
 }
 
 // When the IP is already in #request-ip and the crew is set (or changed) afterwards, ping the crew
@@ -4580,18 +4588,81 @@ async function pingCrewAboutPostedIp(coverage) {
   return `🔌 Pinged the crew in <#${channel.id}> about the connection details.`;
 }
 
+// DMs crew members who have not been DMed for this match yet. Returns a line for the staff reply.
+async function dmNewCrewMembers(coverage, { postUrl = null, scheduleIso = null } = {}) {
+  const crewIds = crewUserIds(coverage.crew || {});
+  // Posts made before crew DMs existed fall back to who was pinged, so nobody gets a late DM.
+  const already = new Set(coverage.crewDmedUserIds || coverage.schedulePingedUserIds || []);
+  const toDm = crewIds.filter((id) => !already.has(id));
+  if (!toDm.length) return null;
+  const failed = [];
+  for (const userId of toDm) {
+    const user = await client.users.fetch(userId).catch(() => null);
+    const sent = Boolean(user && await user.send({
+      content: buildCrewDm({
+        matchup: coverage.matchup,
+        roles: crewRolesFor(coverage.crew, userId),
+        scheduleIso,
+        streamUrl: mainStreamUrlFor(coverage),
+        faceitUrl: coverage.faceitUrl,
+        postUrl
+      })
+    }).then(() => true).catch(() => false));
+    if (!sent) failed.push(userId);
+  }
+  await saveMainStreamCoverage(coverage.matchId, { crewDmedUserIds: [...already, ...toDm] });
+  await appendAuditLog({ type: 'main_stream_crew_dmed', matchId: coverage.matchId, userIds: toDm, failedUserIds: failed }).catch(() => null);
+  const sentCount = toDm.length - failed.length;
+  return [
+    sentCount ? `📨 DMed ${sentCount} crew member(s).` : null,
+    failed.length ? `⚠️ Could not DM ${failed.map((id) => `<@${id}>`).join(' ')} (DMs closed), so tell them another way.` : null
+  ].filter(Boolean).join(' ');
+}
+
+// DMs people taken off the crew, but only those who were told they were on it (DMed or pinged).
+// They are also forgotten as notified, so being added back sends a fresh DM.
+async function dmRemovedCrewMembers(matchId, previousCrew) {
+  const coverage = await getMainStreamCoverage(matchId);
+  if (!coverage) return null;
+  const notified = new Set(coverage.crewDmedUserIds || coverage.schedulePingedUserIds || []);
+  const removed = removedCrewIds(previousCrew || {}, coverage.crew || {}).filter((id) => notified.has(id));
+  if (!removed.length) return null;
+  const scheduleIso = await approvedScheduleIso(matchId);
+  const failed = [];
+  for (const userId of removed) {
+    const user = await client.users.fetch(userId).catch(() => null);
+    const sent = Boolean(user && await user.send({
+      content: buildCrewRemovedDm({ matchup: coverage.matchup, roles: crewRolesFor(previousCrew, userId), scheduleIso })
+    }).then(() => true).catch(() => false));
+    if (!sent) failed.push(userId);
+  }
+  const forget = (ids) => (ids || []).filter((id) => !removed.includes(id));
+  await saveMainStreamCoverage(matchId, {
+    crewDmedUserIds: forget(coverage.crewDmedUserIds || coverage.schedulePingedUserIds),
+    schedulePingedUserIds: forget(coverage.schedulePingedUserIds),
+    ipPingedUserIds: forget(coverage.ipPingedUserIds)
+  });
+  await appendAuditLog({ type: 'main_stream_crew_removed_dmed', matchId, userIds: removed, failedUserIds: failed }).catch(() => null);
+  const sentCount = removed.length - failed.length;
+  return [
+    sentCount ? `📨 Let ${sentCount} removed crew member(s) know by DM.` : null,
+    failed.length ? `⚠️ Could not DM ${failed.map((id) => `<@${id}>`).join(' ')} that they were taken off (DMs closed).` : null
+  ].filter(Boolean).join(' ');
+}
+
 // Posts the schedule message, or edits the one already posted for this match.
 async function publishMainStreamSchedulePost(coverage) {
   const channelId = config.productionScheduleChannelId;
   if (!channelId) return { ok: false, line: '⚠️ Crew saved, but no schedule channel is set (`PRODUCTION_SCHEDULE_CHANNEL_ID`).' };
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isTextBased?.()) return { ok: false, line: `⚠️ Crew saved, but I can't post in <#${channelId}>.` };
+  const scheduleIso = await approvedScheduleIso(coverage.matchId);
   const content = buildMainStreamSchedulePost({
     teamA: coverage.teamA,
     teamB: coverage.teamB,
     matchup: coverage.matchup,
     faceitUrl: coverage.faceitUrl,
-    scheduleIso: await approvedScheduleIso(coverage.matchId),
+    scheduleIso,
     crew: coverage.crew,
     streamUrl: mainStreamUrlFor(coverage)
   });
@@ -4611,12 +4682,14 @@ async function publishMainStreamSchedulePost(coverage) {
           allowedMentions: { parse: [], users: added }
         }).catch(() => null);
       }
-      await saveMainStreamCoverage(coverage.matchId, { schedulePingedUserIds: [...pinged, ...added] });
-      return { ok: true, line: `✏️ Updated the schedule post in <#${channel.id}>${added.length ? ' and pinged the new crew' : ''}: ${existing.url}` };
+      const updated = await saveMainStreamCoverage(coverage.matchId, { schedulePingedUserIds: [...pinged, ...added] });
+      const dmLine = await dmNewCrewMembers(updated, { postUrl: existing.url, scheduleIso });
+      return { ok: true, line: [`✏️ Updated the schedule post in <#${channel.id}>${added.length ? ' and pinged the new crew' : ''}: ${existing.url}`, dmLine].filter(Boolean).join('\n') };
     }
     const message = await channel.send({ content, allowedMentions: pings });
-    await saveMainStreamCoverage(coverage.matchId, { scheduleChannelId: channel.id, scheduleMessageId: message.id, schedulePingedUserIds: crewUserIds(coverage.crew) });
-    return { ok: true, line: `📅 Posted the match in <#${channel.id}> and pinged the crew: ${message.url}` };
+    const posted = await saveMainStreamCoverage(coverage.matchId, { scheduleChannelId: channel.id, scheduleMessageId: message.id, schedulePingedUserIds: crewUserIds(coverage.crew), crewDmedUserIds: coverage.crewDmedUserIds || [] });
+    const dmLine = await dmNewCrewMembers(posted, { postUrl: message.url, scheduleIso });
+    return { ok: true, line: [`📅 Posted the match in <#${channel.id}> and pinged the crew: ${message.url}`, dmLine].filter(Boolean).join('\n') };
   } catch (error) {
     console.error(`Main stream schedule post failed for ${coverage.matchId}:`, error);
     return { ok: false, line: `⚠️ Crew saved, but posting failed: ${error?.message || error}` };
@@ -5135,6 +5208,7 @@ async function startMainStreamCoverage({ matchId, faceitUrl: givenUrl = null, st
     teamA: match?.teamA || null,
     teamB: match?.teamB || null,
     faceitUrl,
+    faceitScheduledAtIso: getFaceitScheduledAtIso(match),
     requestedBy: actorId,
     requestedAt: new Date().toISOString()
   });
@@ -5148,13 +5222,10 @@ async function startMainStreamCoverage({ matchId, faceitUrl: givenUrl = null, st
       : `📺 **${matchup}** is on the main stream. ⚠️ Could not post in <#${config.requestIpChannelId}>; check that I can view and send messages there.`);
   } else {
     const casterCount = (await listStreamRequests({ matchId, status: 'approved' })).length;
-    const prompted = casterCount ? false : await sendMainStreamDeliveryPrompt(coverage);
     lines.push(`📺 **${matchup}** is on the main stream. No IP has been entered for it yet.`);
     lines.push(casterCount
       ? 'Staff get the usual connection prompt at match time for the approved casters.'
-      : prompted
-        ? `Staff were asked for it in <#${ipChannelId()}>.`
-        : 'Staff can enter it with `!sendip FACEIT_MATCHROOM_LINK connect IP:PORT`.');
+      : `Staff will be asked for it in <#${ipChannelId()}> at match time, like the caster prompt. To send it sooner: \`!sendip FACEIT_MATCHROOM_LINK connect IP:PORT\`.`);
     lines.push(`It will be posted in <#${config.requestIpChannelId}> as soon as it is entered.`);
   }
   lines.push(await postMainStreamCoverageNotice(coverage, { stored }));
@@ -5231,8 +5302,10 @@ async function handleMainStreamCommand(interaction) {
     social: interaction.options.getUser('social')?.id || null
   };
   const crewGiven = Object.values(crewOptions).some(Boolean);
+  let previousCrew = null;
   if (crewGiven) {
-    const crew = mergeCrewOptions(coverage.crew || {}, crewOptions);
+    previousCrew = coverage.crew || {};
+    const crew = mergeCrewOptions(previousCrew, crewOptions);
     coverage = await saveMainStreamCoverage(matchId, { crew, crewSetBy: actorId, crewSetAt: new Date().toISOString() });
     await appendAuditLog({ type: 'main_stream_crew_set', actorId, matchId, crew }).catch(() => null);
   }
@@ -5240,6 +5313,10 @@ async function handleMainStreamCommand(interaction) {
   if (crewReady && (crewGiven || (streamChanged && coverage.scheduleMessageId))) {
     const result = await publishMainStreamSchedulePost(coverage);
     lines.push(result.line);
+    if (previousCrew) {
+      const removedLine = await dmRemovedCrewMembers(matchId, previousCrew);
+      if (removedLine) lines.push(removedLine);
+    }
     coverage = await getMainStreamCoverage(matchId) || coverage;
     const ipLine = await pingCrewAboutPostedIp(coverage);
     if (ipLine) lines.push(ipLine);
@@ -5321,6 +5398,24 @@ async function handleMainStreamAutocomplete(interaction) {
     .slice(0, 25)
     .map((url) => ({ name: (streamChannelName(url) || url).slice(0, 100), value: url })))
     .catch(() => null);
+}
+
+// At match time (like the caster prompt), asks staff for the main stream's connection details,
+// once per match. Skipped when the details are already in, or when approved community casters
+// have the match (their prompt goes out instead and the details reach #request-ip from it).
+const MAIN_STREAM_PROMPT_WINDOW_MS = 12 * 60 * 60 * 1000;
+
+async function sendDueMainStreamPrompts(now = Date.now()) {
+  for (const coverage of await listMainStreamCoverage()) {
+    if (!coverage?.matchId || coverage.deliveryPromptSentAt) continue;
+    const startIso = await approvedScheduleIso(coverage.matchId) || coverage.faceitScheduledAtIso || null;
+    const startMs = Date.parse(startIso || '');
+    if (!Number.isFinite(startMs) || startMs > now || now - startMs > MAIN_STREAM_PROMPT_WINDOW_MS) continue;
+    if ((await getMatchConnection(coverage.matchId))?.value) continue;
+    if ((await listStreamRequests({ matchId: coverage.matchId, status: 'approved' })).length) continue;
+    const claimed = await claimMainStreamDeliveryPrompt(coverage.matchId);
+    if (claimed) await sendMainStreamDeliveryPrompt(claimed);
+  }
 }
 
 async function sendMainStreamDeliveryPrompt(coverage) {
@@ -7400,6 +7495,7 @@ async function runStreamOperationsTick(now = Date.now()) {
   await sendPostCastNudges(now).catch((error) => console.error('Post-cast form nudges failed:', error));
   await sendOverduePostCastForms(now).catch((error) => console.error('Overdue post-cast forms failed:', error));
   await postOpenMatchesDigest(now).catch((error) => console.error('Daily open matches post failed:', error));
+  await sendDueMainStreamPrompts(now).catch((error) => console.error('Main stream connection prompts failed:', error));
   await syncSheetResultsAndStats(now).catch((error) => console.error('Sheet results/stats sync failed:', error));
   const active = (await listStreamRequests()).filter((request) =>
     request.faceitLinkValid && request.matchId && !request.terminalNotifiedAt && STREAM_ACTIVE_STATUSES.includes(request.status)

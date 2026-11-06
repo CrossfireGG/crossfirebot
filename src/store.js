@@ -643,6 +643,20 @@ export async function getMainStreamCoverage(matchId) {
   return (await snapshot()).mainStreamCoverage[matchId] || null;
 }
 
+export async function listMainStreamCoverage() {
+  return Object.values((await snapshot()).mainStreamCoverage || {});
+}
+
+// Claims the match-time "Main Stream Connection Needed" prompt once per match.
+export async function claimMainStreamDeliveryPrompt(matchId) {
+  return mutateDb((db) => {
+    const coverage = db.mainStreamCoverage[matchId];
+    if (!coverage || coverage.deliveryPromptSentAt) return null;
+    coverage.deliveryPromptSentAt = new Date().toISOString();
+    return { ...coverage };
+  });
+}
+
 export async function listMainStreamCoverageMatchIds() {
   return Object.keys((await snapshot()).mainStreamCoverage || {});
 }

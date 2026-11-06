@@ -474,6 +474,52 @@ export function buildMainStreamSchedulePost({ teamA = null, teamB = null, matchu
   return blocks.map((block) => block.join('\n')).join('\n\n');
 }
 
+// The roles one person holds on a crew, e.g. ['Caster 1', 'Producer'].
+export function crewRolesFor(crew = {}, userId) {
+  const roles = [];
+  (crew.casters || []).forEach((id, index) => {
+    if (id === userId) roles.push(`Caster ${index + 1}`);
+  });
+  const labels = { producer: 'Producer', observer: 'Observer', admin: 'Admin', social: 'Social Media' };
+  for (const [key, label] of Object.entries(labels)) {
+    if (crew[key] === userId) roles.push(label);
+  }
+  return roles;
+}
+
+// The DM a crew member gets when they are put on a main stream match (or added later).
+export function buildCrewDm({ matchup, roles = [], scheduleIso = null, streamUrl = null, faceitUrl = null, postUrl = null } = {}) {
+  const when = discordTimestamp(scheduleIso, 'F');
+  return [
+    "🎬 You've been put on the production crew for a CROSSFIRE main stream match!",
+    '',
+    `**${String(matchup || 'Main stream match').trim()}**`,
+    `Role: **${roles.length ? roles.join(' & ') : 'Crew'}**`,
+    `When: ${when ? `${when} (${discordTimestamp(scheduleIso, 'R')})` : 'Time to be confirmed'}`,
+    streamUrl ? `Stream: <${streamUrl}>` : null,
+    faceitUrl ? `FACEIT: <${faceitUrl}>` : null,
+    postUrl ? `Schedule post: ${postUrl}` : null,
+    '',
+    'Connection details will be posted in #request-ip, where you will be pinged.'
+  ].filter((line) => line !== null).join('\n');
+}
+
+// The DM someone gets when they are taken off a main stream crew.
+export function buildCrewRemovedDm({ matchup, roles = [], scheduleIso = null } = {}) {
+  const when = discordTimestamp(scheduleIso, 'F');
+  return [
+    `🎬 You've been taken off the production crew for **${String(matchup || 'a main stream match').trim()}**${roles.length ? ` (you were ${roles.join(' & ')})` : ''}.`,
+    when ? `The match is ${when}. You don't need to be there for it.` : "You don't need to be there for it.",
+    'If you think this is a mistake, ask stream staff.'
+  ].join('\n');
+}
+
+// People on the previous crew who are not on the new one.
+export function removedCrewIds(previousCrew = {}, nextCrew = {}) {
+  const stillOn = new Set(crewUserIds(nextCrew));
+  return crewUserIds(previousCrew).filter((id) => !stillOn.has(id));
+}
+
 // Everyone named in the crew, so the post pings exactly them.
 export function crewUserIds(crew = {}) {
   return [...new Set([...(crew.casters || []), ...POST_ROLE_LINES.map(([key]) => crew[key])].filter(Boolean))];

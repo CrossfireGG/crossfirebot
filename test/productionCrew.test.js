@@ -101,3 +101,34 @@ test('crew options only change the roles given', async () => {
   assert.equal(notice.title, '🚫 No longer on the main stream');
   assert.match(notice.fields[0].value, /1 community caster/);
 });
+
+test('crew DMs name the person\'s role(s) and the match details', async () => {
+  const { buildCrewDm, crewRolesFor } = await import('../src/streamRequest.js');
+  const crew = { casters: ['11', '22'], producer: '33', observer: null, admin: '22', social: null };
+  assert.deepEqual(crewRolesFor(crew, '22'), ['Caster 2', 'Admin']);
+  assert.deepEqual(crewRolesFor(crew, '33'), ['Producer']);
+  const dm = buildCrewDm({
+    matchup: 'Celestial Esports vs FUELED BY HATE',
+    roles: ['Caster 2', 'Admin'],
+    scheduleIso: '2026-11-06T02:30:00Z',
+    streamUrl: 'https://twitch.tv/playcrossfire',
+    faceitUrl: 'https://www.faceit.com/en/cs2/room/1-abc',
+    postUrl: 'https://discord.com/channels/1/2/3'
+  });
+  assert.match(dm, /^🎬 You've been put on the production crew for a CROSSFIRE main stream match!/);
+  assert.match(dm, /\*\*Celestial Esports vs FUELED BY HATE\*\*\nRole: \*\*Caster 2 & Admin\*\*\nWhen: <t:\d+:F> \(<t:\d+:R>\)/);
+  assert.match(dm, /Stream: <https:\/\/twitch\.tv\/playcrossfire>/);
+  assert.match(dm, /Schedule post: https:\/\/discord\.com\/channels\/1\/2\/3/);
+  assert.match(buildCrewDm({ matchup: 'A vs B' }), /When: Time to be confirmed/);
+});
+
+test('people taken off the crew are found and told which role they had', async () => {
+  const { removedCrewIds, buildCrewRemovedDm } = await import('../src/streamRequest.js');
+  const before = { casters: ['11', '22'], producer: '33', observer: '44' };
+  const after = { casters: ['11', '55'], producer: '33', observer: null };
+  assert.deepEqual(removedCrewIds(before, after), ['22', '44']);
+  assert.deepEqual(removedCrewIds(before, { ...before, casters: ['22', '11'] }), [], 'swapping seats removes nobody');
+  const dm = buildCrewRemovedDm({ matchup: 'A vs B', roles: ['Caster 2'], scheduleIso: '2026-11-06T02:30:00Z' });
+  assert.match(dm, /^🎬 You've been taken off the production crew for \*\*A vs B\*\* \(you were Caster 2\)\.\nThe match is <t:\d+:F>\. You don't need to be there for it\./);
+  assert.match(buildCrewRemovedDm({ matchup: 'A vs B' }), /\nYou don't need to be there for it\./);
+});
