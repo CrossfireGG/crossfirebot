@@ -214,7 +214,10 @@ export function getConfig() {
     // Optional: where `!request mainstream` posts connection details for the official broadcast.
     requestIpChannelId: process.env.REQUEST_IP_CHANNEL_ID || null,
     // Optional: the official CROSSFIRE stream link, shown to teams when the main stream covers them.
-    mainStreamUrl: process.env.MAIN_STREAM_URL || null,
+    // The official stream channels staff pick from for a main stream match. The first is the default.
+    mainStreamUrls: parseCsvValue(process.env.MAIN_STREAM_URLS || 'https://twitch.tv/playcrossfire,https://twitch.tv/playcrossfirecs,https://twitch.tv/playcrossfirecs2'),
+    // Where the main stream production schedule post goes (the Schedule channel).
+    productionScheduleChannelId: process.env.PRODUCTION_SCHEDULE_CHANNEL_ID || '1473807016643264522',
     // Optional: when set, `/request stream` only works in these channels.
     streamCommunityChannelIds: parseSnowflakeList(process.env.STREAM_COMMUNITY_CHANNEL_IDS || ''),
     // Upcoming Matches post (daily and /cf upcoming). Defaults to the community casters channel.

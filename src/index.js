@@ -7,6 +7,7 @@ import {
   EmbedBuilder,
   Events,
   GatewayIntentBits,
+  LabelBuilder,
   ModalBuilder,
   Partials,
   PermissionFlagsBits,
@@ -14,7 +15,8 @@ import {
   Routes,
   StringSelectMenuBuilder,
   TextInputBuilder,
-  TextInputStyle
+  TextInputStyle,
+  UserSelectMenuBuilder
 } from 'discord.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -108,6 +110,9 @@ import {
   STREAM_STATUS_LABELS,
   buildCoverageNotice,
   buildMainStreamCoverageNotice,
+  buildMainStreamSchedulePost,
+  crewUserIds,
+  PRODUCTION_CREW_FIELDS,
   buildConnectionDm,
   requestRoomId,
   selectConnectionRecipients,
@@ -377,6 +382,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isButton() && interaction.customId.startsWith('stream_request_open:')) {
       await showStreamRequestModal(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId.startsWith('crew_open:')) {
+      await handleCrewOpenButton(interaction);
+      return;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('crew_stream:')) {
+      await handleCrewStreamSelect(interaction);
+      return;
+    }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('crew_submit:')) {
+      await handleCrewSubmit(interaction);
       return;
     }
     if (interaction.isButton() && interaction.customId.startsWith('upcoming_post:')) {
@@ -4361,7 +4378,7 @@ async function postMainStreamCoverageNotice(coverage, { stored = null } = {}) {
     if (!channel?.isTextBased?.()) return `⚠️ Teams not told: no match channel found for **${coverage.matchup}**.`;
     const schedule = await getSchedule(coverage.matchId).catch(() => null);
     const scheduleIso = schedule?.adminApproved ? (schedule.scheduledAtIso || schedule.scheduledAt || null) : null;
-    const notice = buildMainStreamCoverageNotice({ matchup: coverage.matchup, faceitUrl: coverage.faceitUrl, scheduleIso, streamUrl: config.mainStreamUrl });
+    const notice = buildMainStreamCoverageNotice({ matchup: coverage.matchup, faceitUrl: coverage.faceitUrl, scheduleIso, streamUrl: mainStreamUrlFor(coverage) });
     const message = await channel.send({ embeds: [coverageEmbed(notice)], allowedMentions: { parse: [] } });
     await saveMainStreamCoverage(coverage.matchId, { noticeChannelId: channel.id, noticeMessageId: message.id, noticePostedAt: new Date().toISOString() });
     await appendAuditLog({ type: 'main_stream_coverage_posted', matchId: coverage.matchId, channelId: channel.id, messageId: message.id }).catch(() => null);
@@ -4369,6 +4386,180 @@ async function postMainStreamCoverageNotice(coverage, { stored = null } = {}) {
   } catch (error) {
     console.error(`Main stream coverage notice failed for ${coverage?.matchId}:`, error);
     return `⚠️ Teams not told: ${error?.message || error}`;
+  }
+}
+
+// --- Main stream production schedule post ---------------------------------------
+// After `!request mainstream`, staff press "Add production crew" and pick the crew in a form
+// (Casters and Producer required). The bot then posts the match in the schedule channel in the
+// usual format, pinging the crew. Pressing the button again edits that post instead of reposting.
+
+async function approvedScheduleIso(matchId) {
+  const schedule = await getSchedule(matchId).catch(() => null);
+  return schedule?.adminApproved ? (schedule.scheduledAtIso || schedule.scheduledAt || null) : null;
+}
+
+function mainStreamUrlFor(coverage) {
+  return coverage?.streamUrl || config.mainStreamUrls[0] || null;
+}
+
+// The controls on the `!request mainstream` reply: which official stream it is on, and the crew form.
+function mainStreamControls(coverage) {
+  const rows = [];
+  const selected = mainStreamUrlFor(coverage);
+  if (config.mainStreamUrls.length) {
+    rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+      .setCustomId(`crew_stream:${coverage.matchId}`)
+      .setPlaceholder('Which stream?')
+      .addOptions(config.mainStreamUrls.slice(0, 25).map((url) => ({
+        label: (streamChannelName(url) || url).slice(0, 100),
+        description: url.slice(0, 100),
+        value: url,
+        emoji: '📺',
+        default: url === selected
+      })))));
+  }
+  const edit = Boolean(coverage.crew?.producer);
+  rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder()
+    .setCustomId(`crew_open:${coverage.matchId}`)
+    .setLabel(edit ? 'Edit production crew' : 'Add production crew')
+    .setEmoji('🎬')
+    .setStyle(edit ? ButtonStyle.Secondary : ButtonStyle.Primary)));
+  return rows;
+}
+
+// The stream dropdown: saves the pick and updates the schedule post and the teams' notice if they
+// are already up.
+async function handleCrewStreamSelect(interaction) {
+  if (!canManageStreamRequests(interaction.member)) {
+    await interaction.reply({ content: 'Only admins/stream staff can pick the stream.', ephemeral: true });
+    return;
+  }
+  const matchId = interaction.customId.slice('crew_stream:'.length);
+  const streamUrl = interaction.values?.[0];
+  if (!(await getMainStreamCoverage(matchId)) || !config.mainStreamUrls.includes(streamUrl)) {
+    await interaction.reply({ content: 'That match is not on the main stream anymore. Run `!request mainstream` again.', ephemeral: true });
+    return;
+  }
+  const coverage = await saveMainStreamCoverage(matchId, { streamUrl });
+  await interaction.update({ components: mainStreamControls(coverage) });
+  const updated = [];
+  if (coverage.scheduleMessageId) {
+    const result = await publishMainStreamSchedulePost(coverage);
+    if (result.ok) updated.push('the schedule post');
+  }
+  if (await refreshMainStreamCoverageNotice(coverage)) updated.push('the teams’ notice');
+  await appendAuditLog({ type: 'main_stream_stream_set', actorId: interaction.user.id, matchId, streamUrl }).catch(() => null);
+  if (updated.length) {
+    await interaction.followUp({ content: `📺 Switched to ${streamUrl} and updated ${updated.join(' and ')}.`, ephemeral: true });
+  }
+}
+
+// Re-renders the teams' main stream notice (e.g. after the stream changes). Returns true if edited.
+async function refreshMainStreamCoverageNotice(coverage) {
+  if (!coverage?.noticeMessageId || !coverage.noticeChannelId) return false;
+  const channel = await client.channels.fetch(coverage.noticeChannelId).catch(() => null);
+  const message = channel?.isTextBased?.() ? await channel.messages.fetch(coverage.noticeMessageId).catch(() => null) : null;
+  if (!message) return false;
+  const notice = buildMainStreamCoverageNotice({
+    matchup: coverage.matchup,
+    faceitUrl: coverage.faceitUrl,
+    scheduleIso: await approvedScheduleIso(coverage.matchId),
+    streamUrl: mainStreamUrlFor(coverage)
+  });
+  return Boolean(await message.edit({ embeds: [coverageEmbed(notice)] }).catch(() => null));
+}
+
+async function handleCrewOpenButton(interaction) {
+  if (!canManageStreamRequests(interaction.member)) {
+    await interaction.reply({ content: 'Only admins/stream staff can set the production crew.', ephemeral: true });
+    return;
+  }
+  const matchId = interaction.customId.slice('crew_open:'.length);
+  const coverage = await getMainStreamCoverage(matchId);
+  if (!coverage) {
+    await interaction.reply({ content: 'That match is not on the main stream anymore. Run `!request mainstream` again.', ephemeral: true });
+    return;
+  }
+  const crew = coverage.crew || {};
+  const modal = new ModalBuilder()
+    .setCustomId(`crew_submit:${matchId}`)
+    .setTitle(`Crew · ${coverage.matchup || 'Main stream'}`.slice(0, 45));
+  modal.addLabelComponents(...PRODUCTION_CREW_FIELDS.map((field) => {
+    const picker = new UserSelectMenuBuilder()
+      .setCustomId(field.key)
+      .setRequired(field.required)
+      .setMinValues(field.required ? 1 : 0)
+      .setMaxValues(field.max);
+    const defaults = (field.key === 'casters' ? crew.casters || [] : [crew[field.key]]).filter(Boolean);
+    if (defaults.length) picker.setDefaultUsers(...defaults);
+    const label = new LabelBuilder().setLabel(field.label).setUserSelectMenuComponent(picker);
+    if (field.description) label.setDescription(field.description);
+    return label;
+  }));
+  await interaction.showModal(modal);
+}
+
+async function handleCrewSubmit(interaction) {
+  if (!canManageStreamRequests(interaction.member)) {
+    await interaction.reply({ content: 'Only admins/stream staff can set the production crew.', ephemeral: true });
+    return;
+  }
+  const matchId = interaction.customId.slice('crew_submit:'.length);
+  await interaction.deferReply({ ephemeral: true });
+  const picked = (key) => [...(interaction.fields.getSelectedUsers(key)?.keys() || [])];
+  const crew = {
+    casters: picked('casters').slice(0, 2),
+    producer: picked('producer')[0] || null,
+    observer: picked('observer')[0] || null,
+    admin: picked('admin')[0] || null,
+    social: picked('social')[0] || null
+  };
+  if (!crew.casters.length || !crew.producer) {
+    await interaction.editReply('Casters and Producer are required. Nothing was posted.');
+    return;
+  }
+  let coverage = await getMainStreamCoverage(matchId);
+  if (!coverage) {
+    await interaction.editReply('That match is not on the main stream anymore. Run `!request mainstream` again.');
+    return;
+  }
+  coverage = await saveMainStreamCoverage(matchId, { crew, crewSetBy: interaction.user.id, crewSetAt: new Date().toISOString() });
+  const result = await publishMainStreamSchedulePost(coverage);
+  await appendAuditLog({ type: 'main_stream_crew_set', actorId: interaction.user.id, matchId, crew, posted: result.ok }).catch(() => null);
+  await interaction.editReply({ content: result.line, allowedMentions: { parse: [] } });
+}
+
+// Posts the schedule message, or edits the one already posted for this match.
+async function publishMainStreamSchedulePost(coverage) {
+  const channelId = config.productionScheduleChannelId;
+  if (!channelId) return { ok: false, line: '⚠️ Crew saved, but no schedule channel is set (`PRODUCTION_SCHEDULE_CHANNEL_ID`).' };
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return { ok: false, line: `⚠️ Crew saved, but I can't post in <#${channelId}>.` };
+  const content = buildMainStreamSchedulePost({
+    teamA: coverage.teamA,
+    teamB: coverage.teamB,
+    matchup: coverage.matchup,
+    faceitUrl: coverage.faceitUrl,
+    scheduleIso: await approvedScheduleIso(coverage.matchId),
+    crew: coverage.crew,
+    streamUrl: mainStreamUrlFor(coverage)
+  });
+  const pings = { parse: [], users: crewUserIds(coverage.crew) };
+  try {
+    const existing = coverage.scheduleMessageId && coverage.scheduleChannelId === channel.id
+      ? await channel.messages.fetch(coverage.scheduleMessageId).catch(() => null)
+      : null;
+    if (existing) {
+      await existing.edit({ content, allowedMentions: { parse: [] } });
+      return { ok: true, line: `✏️ Updated the schedule post in <#${channel.id}>: ${existing.url}` };
+    }
+    const message = await channel.send({ content, allowedMentions: pings });
+    await saveMainStreamCoverage(coverage.matchId, { scheduleChannelId: channel.id, scheduleMessageId: message.id });
+    return { ok: true, line: `📅 Posted the match in <#${channel.id}> and pinged the crew: ${message.url}` };
+  } catch (error) {
+    console.error(`Main stream schedule post failed for ${coverage.matchId}:`, error);
+    return { ok: false, line: `⚠️ Crew saved, but posting failed: ${error?.message || error}` };
   }
 }
 
@@ -4896,28 +5087,34 @@ async function handleMainStreamRequest(message, rest) {
 
   const coverage = await saveMainStreamCoverage(matchId, {
     matchup,
+    teamA: match?.teamA || null,
+    teamB: match?.teamB || null,
     faceitUrl,
     requestedBy: message.author.id,
     requestedAt: new Date().toISOString()
   });
   await appendAuditLog({ type: 'main_stream_requested', actorId: message.author.id, matchId });
   const teamsLine = await postMainStreamCoverageNotice(coverage, { stored });
+  const controls = mainStreamControls(coverage);
 
   const connection = await getMatchConnection(matchId);
   if (connection?.value) {
     const posted = await postConnectionToRequestIp(matchId);
-    await message.reply([
-      posted
-        ? `📺 Posted the connection details for **${matchup}** in <#${config.requestIpChannelId}>.`
-        : `⚠️ Could not post in <#${config.requestIpChannelId}>. Check that I can view and send messages there.`,
-      teamsLine
-    ].join('\n'));
+    await message.reply({
+      content: [
+        posted
+          ? `📺 Posted the connection details for **${matchup}** in <#${config.requestIpChannelId}>.`
+          : `⚠️ Could not post in <#${config.requestIpChannelId}>. Check that I can view and send messages there.`,
+        teamsLine
+      ].join('\n'),
+      components: controls
+    });
     return;
   }
 
   const casterCount = (await listStreamRequests({ matchId, status: 'approved' })).length;
   const prompted = casterCount ? false : await sendMainStreamDeliveryPrompt(coverage);
-  await message.reply([
+  await message.reply({ components: controls, content: [
     `📺 Main stream is covering **${matchup}**. No IP has been entered for it yet.`,
     casterCount
       ? 'Staff get the usual connection prompt at match time for the approved casters.'
@@ -4926,7 +5123,7 @@ async function handleMainStreamRequest(message, rest) {
         : 'Staff can enter it with `!sendip FACEIT_MATCHROOM_LINK connect IP:PORT`.',
     `It will be posted in <#${config.requestIpChannelId}> as soon as it is entered.`,
     teamsLine
-  ].join('\n'));
+  ].join('\n') });
 }
 
 // Staff prompt for a match with no community casters, reusing the delivery modal.

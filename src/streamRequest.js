@@ -404,6 +404,55 @@ export function buildMainStreamCoverageNotice({ matchup, faceitUrl = null, sched
   };
 }
 
+// ---------- main stream production schedule post ----------
+
+// The crew form after `!request mainstream`. Casters takes one or two people (Caster 1 and the
+// optional Caster 2); Casters and Producer are required.
+export const PRODUCTION_CREW_FIELDS = [
+  { key: 'casters', label: 'Casters', description: 'Caster 1, plus Caster 2 if there is one', required: true, max: 2 },
+  { key: 'producer', label: 'Producer', required: true, max: 1 },
+  { key: 'observer', label: 'Observer', required: false, max: 1 },
+  { key: 'admin', label: 'Admin', required: false, max: 1 },
+  { key: 'social', label: 'Social Media', required: false, max: 1 }
+];
+
+const POST_ROLE_LINES = [['producer', 'Prod'], ['observer', 'Obs'], ['admin', 'Admin'], ['social', 'Social']];
+
+function easternScheduleParts(iso) {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return null;
+  return {
+    day: new Intl.DateTimeFormat('en-US', { timeZone: SEASON_TIME_ZONE, weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).format(date),
+    time: new Intl.DateTimeFormat('en-US', { timeZone: SEASON_TIME_ZONE, hour: 'numeric', minute: '2-digit', hour12: true }).format(date)
+  };
+}
+
+// The schedule channel post, in the format staff already use:
+//   Thursday, November 5, 2026 / 9:30 PM / Team A    VS    Team B / matchroom /
+//   Casters: @a & @b / Prod / Obs / Admin / Social / Streams.
+// Roles nobody was picked for are left out. Times are Eastern.
+export function buildMainStreamSchedulePost({ teamA = null, teamB = null, matchup = null, faceitUrl = null, scheduleIso = null, crew = {}, streamUrl = null } = {}) {
+  const teams = teamA && teamB ? [teamA, teamB] : splitMatchupTeams(matchup || '');
+  const when = scheduleIso ? easternScheduleParts(scheduleIso) : null;
+  const mention = (id) => `<@${id}>`;
+  const casters = (crew.casters || []).filter(Boolean);
+  const roleLines = POST_ROLE_LINES.filter(([key]) => crew[key]).map(([key, label]) => `${label}: ${mention(crew[key])}`);
+  const blocks = [
+    when ? [when.day, when.time] : ['Date and time TBD'],
+    [teams.length === 2 ? `${teams[0]}    VS    ${teams[1]}` : (matchup || 'Main stream match')],
+    faceitUrl ? [faceitUrl] : [],
+    casters.length ? [`${casters.length === 1 ? 'Caster' : 'Casters'}: ${casters.map(mention).join(' & ')}`] : [],
+    roleLines,
+    streamUrl ? [`Streams: ${streamUrl}`] : []
+  ].filter((block) => block.length);
+  return blocks.map((block) => block.join('\n')).join('\n\n');
+}
+
+// Everyone named in the crew, so the post pings exactly them.
+export function crewUserIds(crew = {}) {
+  return [...new Set([...(crew.casters || []), ...POST_ROLE_LINES.map(([key]) => crew[key])].filter(Boolean))];
+}
+
 // "You're being covered" notice for the two teams' match channel. Plain data so the
 // Discord embed is a thin wrapper and the wording can be tested. The caster is named
 // by tag, never mentioned: the teams only need to know who, not be pinged.
