@@ -5358,15 +5358,19 @@ async function removeMainStreamCoverage(coverage, actorId) {
     const channel = await client.channels.fetch(coverage.scheduleChannelId).catch(() => null);
     const message = channel?.isTextBased?.() ? await channel.messages.fetch(coverage.scheduleMessageId).catch(() => null) : null;
     if (message) {
-      const original = message.content.replace(/^❌ \*\*CANCELLED: no longer on the main stream\*\*\n\n/, '');
-      await message.edit({ content: `❌ **CANCELLED: no longer on the main stream**\n\n${original}`.slice(0, 2000), allowedMentions: { parse: [] } }).catch(() => null);
+      // Delete the original post. If the bot can't (missing permission), mark it cancelled instead.
+      const deleted = await message.delete().then(() => true).catch(() => false);
+      if (!deleted) {
+        const original = message.content.replace(/^❌ \*\*CANCELLED: no longer on the main stream\*\*\n\n/, '');
+        await message.edit({ content: `❌ **CANCELLED: no longer on the main stream**\n\n${original}`.slice(0, 2000), allowedMentions: { parse: [] } }).catch(() => null);
+      }
       if (crewIds.length) {
         await channel.send({
-          content: `❌ ${crewIds.map((id) => `<@${id}>`).join(' ')}: **${coverage.matchup}** is no longer on the main stream. ${message.url}`,
+          content: `❌ ${crewIds.map((id) => `<@${id}>`).join(' ')}: **${coverage.matchup}** is no longer on the main stream.${deleted ? '' : ` ${message.url}`}`,
           allowedMentions: { parse: [], users: crewIds }
         }).catch(() => null);
       }
-      lines.push(`Marked the Schedule post cancelled${crewIds.length ? ' and pinged the crew' : ''}.`);
+      lines.push(`${deleted ? 'Deleted the Schedule post' : "Couldn't delete the Schedule post, so marked it cancelled"}${crewIds.length ? ' and pinged the crew' : ''}.`);
     }
   }
 
