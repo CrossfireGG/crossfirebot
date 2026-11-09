@@ -139,3 +139,28 @@ test('header dates and week helpers', () => {
   assert.equal(mondayOf('2026-11-15'), '2026-11-09');
   assert.equal(mondayOf('2026-11-09'), '2026-11-09');
 });
+
+test('a whole day: availability summary and day parsing', async () => {
+  const { dayAvailability, parseDayKey } = await import('../src/availability.js');
+  const person = { days: {
+    '2026-11-12': { s: 'free' },
+    '2026-11-13': { s: 'windows', w: [[h(20), h(22)], [h(21, 30), h(28)]], base: 'free' },
+    '2026-11-14': { s: 'windows', ls: h(20), base: 'free' },
+    '2026-11-15': { s: 'busyDuring', b: [[h(19), h(21)]], base: 'free' },
+    '2026-11-16': { s: 'busy', t: 'Austin LAN' }
+  } };
+  assert.deepEqual(dayAvailability(person, '2026-11-12'), { state: 'free', note: 'all day' });
+  assert.deepEqual(dayAvailability(person, '2026-11-13'), { state: 'partial', note: '8 PM–10 PM, after 9:30 PM' });
+  assert.deepEqual(dayAvailability(person, '2026-11-14'), { state: 'partial', note: 'latest start 8 PM' });
+  assert.deepEqual(dayAvailability(person, '2026-11-15'), { state: 'partial', note: 'busy 7 PM–9 PM' });
+  assert.deepEqual(dayAvailability(person, '2026-11-16'), { state: 'busy', note: 'Austin LAN' });
+  assert.deepEqual(dayAvailability(person, '2026-11-17'), { state: 'unknown', note: 'not filled in' });
+  assert.equal(parseDayKey('today', '2026-11-09'), '2026-11-09');
+  assert.equal(parseDayKey('', '2026-11-09'), '2026-11-09');
+  assert.equal(parseDayKey('tomorrow', '2026-11-09'), '2026-11-10');
+  assert.equal(parseDayKey('thursday', '2026-11-09'), '2026-11-12');
+  assert.equal(parseDayKey('monday', '2026-11-09'), '2026-11-09', 'the same weekday means today');
+  assert.equal(parseDayKey('11/12', '2026-11-09'), '2026-11-12');
+  assert.equal(parseDayKey('nov 12', '2026-11-09'), '2026-11-12');
+  assert.equal(parseDayKey('9pm', '2026-11-09'), null);
+});

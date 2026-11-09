@@ -233,7 +233,7 @@ export const commands = [
       subcommand
         .setName('whosfree')
         .setDescription('Who on the production/admin crew is free at a time (from the staff schedule sheet)')
-        .addStringOption((option) => option.setName('when').setDescription('e.g. Thurs 9:30pm, 11/12 9pm, today 9pm, or a FACEIT matchroom link').setRequired(true))
+        .addStringOption((option) => option.setName('when').setDescription('A day (today, Thurs, 11/12) or a time (Thurs 9:30pm) or a FACEIT link. Empty = today').setRequired(false))
         .addIntegerOption((option) => option.setName('length').setDescription('How long it runs (default from settings)').setRequired(false).addChoices(
           { name: 'BO1 (1.5 hours)', value: 90 },
           { name: 'BO3 (3 hours)', value: 180 },

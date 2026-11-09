@@ -430,6 +430,58 @@ export function availabilityAt(person, startMs, durationMinutes = 180) {
   return partial || { state: 'busy', note: cell.t || 'not free then' };
 }
 
+function formatRange([start, end]) {
+  if (end >= ALL_DAY[1]) return `after ${formatMinutes(start)}`;
+  if (start <= 0) return `until ${formatMinutes(end)}`;
+  return `${formatMinutes(start)}–${formatMinutes(end)}`;
+}
+
+// A person's whole day (for "who's free today" with no time):
+// -> { state: 'free' | 'partial' | 'maybe' | 'busy' | 'unknown', note }
+export function dayAvailability(person, dateKey) {
+  const cell = person?.days?.[dateKey];
+  if (!cell || cell.s === 'empty') return { state: 'unknown', note: 'not filled in' };
+  if (cell.s === 'free') return { state: 'free', note: 'all day' };
+  if (cell.s === 'maybe') return { state: 'maybe', note: cell.t || 'could work' };
+  if (cell.s === 'busy') return { state: 'busy', note: cell.t || "can't work" };
+  if (cell.s === 'busyDuring') return { state: cell.base === 'maybe' ? 'maybe' : 'partial', note: `busy ${(cell.b || []).map(formatRange).join(', ')}` };
+  const parts = (cell.w || []).map(formatRange);
+  if (cell.ls !== undefined && cell.ls !== null) parts.push(`latest start ${formatMinutes(cell.ls)}`);
+  return { state: cell.base === 'maybe' ? 'maybe' : 'partial', note: parts.join(', ') || cell.t || 'part of the day' };
+}
+
+const DAY_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const DAY_WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+// "today", "tomorrow", "Thurs", "11/12", "11/12/2026", "Nov 12" -> "2026-11-12" (null if not a day).
+// Expects text already cleaned by normalizeScheduleText (typos fixed).
+export function parseDayKey(text, todayKey) {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value || /^(today|tonight)$/.test(value)) return todayKey;
+  if (value === 'tomorrow') return addDaysToKey(todayKey, 1);
+  const [year] = todayKey.split('-').map(Number);
+  const numeric = value.match(/^(\d{1,2})[\/-](\d{1,2})(?:[\/-](\d{2,4}))?$/);
+  if (numeric) {
+    const month = Number(numeric[1]);
+    const day = Number(numeric[2]);
+    let fullYear = numeric[3] ? Number(numeric[3]) : year;
+    if (fullYear < 100) fullYear += 2000;
+    return month >= 1 && month <= 12 && day >= 1 && day <= 31 ? `${fullYear}-${pad(month)}-${pad(day)}` : null;
+  }
+  const named = value.match(/^([a-z]+)\.?\s+(\d{1,2})(?:,?\s*(\d{4}))?$/);
+  if (named && DAY_MONTHS.includes(named[1].slice(0, 3))) {
+    const month = DAY_MONTHS.indexOf(named[1].slice(0, 3)) + 1;
+    const day = Number(named[2]);
+    return day >= 1 && day <= 31 ? `${named[3] || year}-${pad(month)}-${pad(day)}` : null;
+  }
+  const weekday = value.match(/^(?:this\s+|next\s+)?([a-z]+)$/);
+  if (weekday && DAY_WEEKDAYS.includes(weekday[1].slice(0, 3))) {
+    const wanted = DAY_WEEKDAYS.indexOf(weekday[1].slice(0, 3));
+    return addDaysToKey(todayKey, (wanted - weekdayIndex(todayKey) + 7) % 7);
+  }
+  return null;
+}
+
 const STATE_ORDER = { free: 0, partial: 1, maybe: 2, unknown: 3, busy: 4 };
 
 // Everyone with this role, ranked: free first, then partly free, then maybe; fewer matches worked

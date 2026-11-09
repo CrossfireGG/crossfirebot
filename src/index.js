@@ -196,12 +196,15 @@ import {
   CREW_ROLE_LABELS,
   addDaysToKey,
   availabilityAt,
+  dayAvailability,
   easternParts,
   mondayOf,
   normalizeCrewName,
   parseAvailability,
+  parseDayKey,
   peopleMissingWeek,
   rankCrewForRole,
+  sheetSlotFor,
   weekdayIndex,
   weekKeys
 } from './availability.js';
@@ -8232,7 +8235,7 @@ async function handleWhosFreeCommand(interaction) {
     await interaction.editReply('Crew availability is turned off (`CREW_AVAILABILITY=off`).');
     return;
   }
-  const whenText = interaction.options.getString('when', true).trim();
+  const whenText = (interaction.options.getString('when') || 'today').trim();
   const durationMinutes = interaction.options.getInteger('length') || config.crewMatchLengthMinutes;
   const stored = await syncCrewAvailability(Date.now()) || await getCrewAvailability();
   if (!stored?.data) {
@@ -8241,11 +8244,20 @@ async function handleWhosFreeCommand(interaction) {
   }
   const link = parseFaceitMatchRoomLink(whenText);
   const matchId = link?.matchId || null;
-  const startMs = matchId ? await matchStartMs(matchId) : parseCrewWhen(whenText);
+  const cleanedWhen = normalizeScheduleText(whenText);
+  const startMs = matchId ? await matchStartMs(matchId) : parseCrewWhen(cleanedWhen);
+  if (!matchId && !Number.isFinite(startMs)) {
+    // No time given: show the whole day.
+    const dateKey = parseDayKey(cleanedWhen, easternParts(Date.now()).dateKey);
+    if (dateKey) {
+      await interaction.editReply({ embeds: [await crewDayEmbed(stored, dateKey)] });
+      return;
+    }
+  }
   if (!Number.isFinite(startMs)) {
     await interaction.editReply(matchId
       ? 'That match has no time yet.'
-      : `Couldn't read "${whenText}". Try \`Thurs 9:30pm\`, \`11/12 9pm\`, \`today 9pm\` or a FACEIT matchroom link.`);
+      : `Couldn't read "${whenText}". Try \`today\`, \`Thurs\`, \`11/12\`, \`Thurs 9:30pm\`, \`11/12 9pm\` or a FACEIT matchroom link.`);
     return;
   }
   const now = Date.now();
@@ -8274,6 +8286,61 @@ async function handleWhosFreeCommand(interaction) {
     .setColor(0x4a86e8)
     .setFooter({ text: `Staff schedule read ${Number.isFinite(syncedMs) ? new Date(syncedMs).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }) + ' ET' : 'just now'}${stored.error ? ' (latest read failed)' : ''}` });
   await interaction.editReply({ embeds: [embed] });
+}
+
+function crewSyncFooter(stored) {
+  const syncedMs = Date.parse(stored?.syncedAt || '');
+  const time = Number.isFinite(syncedMs)
+    ? `${new Date(syncedMs).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' })} ET`
+    : 'just now';
+  return `Staff schedule read ${time}${stored?.error ? ' (latest read failed)' : ''}`;
+}
+
+// `/cf whosfree` for a whole day: everyone's availability that day by role, plus who is already on a
+// main stream crew that day.
+async function crewDayEmbed(stored, dateKey) {
+  const now = Date.now();
+  const people = crewPeopleWithIds(stored);
+  const allBookings = await crewBookings();
+  const bookings = allBookings.filter((booking) => sheetSlotFor(booking.startMs).dateKey === dateKey);
+  const bookedNote = (person) => {
+    if (!person.userId) return '';
+    const times = bookings
+      .filter((booking) => booking.userIds.includes(person.userId))
+      .map((booking) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date(booking.startMs)));
+    return times.length ? `, booked ${times.join(' & ')}` : '';
+  };
+  const order = { free: 0, partial: 1, maybe: 2, unknown: 3, busy: 4 };
+  const fields = [];
+  for (const role of CREW_ROLES) {
+    const entries = people
+      .filter((person) => person.roles?.includes(role))
+      .map((person) => ({ person, ...dayAvailability(person, dateKey), worked: person.userId ? workedThisWeek(allBookings, person.userId, now) : 0 }));
+    if (!entries.length) continue;
+    entries.sort((a, b) => order[a.state] - order[b.state] || a.worked - b.worked || a.person.name.localeCompare(b.person.name));
+    const list = (state, format) => entries.filter((entry) => entry.state === state).map(format);
+    const free = list('free', (entry) => `${entry.person.name} (${entry.worked}${bookedNote(entry.person)})`);
+    const partial = list('partial', (entry) => `${entry.person.name} (${entry.note}${bookedNote(entry.person)})`);
+    const maybe = list('maybe', (entry) => `${entry.person.name}${entry.note && entry.note !== 'could work' ? ` (${entry.note})` : ''}`);
+    const missing = list('unknown', (entry) => entry.person.name);
+    const value = [
+      free.length ? `✅ All day: ${free.join(', ')}` : '✅ Nobody free all day',
+      partial.length ? `🕒 Part of the day: ${partial.join(', ')}` : null,
+      maybe.length ? `❔ Maybe: ${maybe.join(', ')}` : null,
+      missing.length ? `▫️ Not filled in: ${missing.join(', ')}` : null
+    ].filter(Boolean).join('\n');
+    fields.push({ name: CREW_ROLE_LABELS[role], value: value.slice(0, 1024) });
+  }
+  const dayLabel = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'long', month: 'short', day: 'numeric' }).format(new Date(`${dateKey}T12:00:00Z`));
+  const onStream = bookings.length
+    ? `Main stream that day: ${bookings.map((booking) => `${booking.coverage.matchup} (${discordTimestamp(new Date(booking.startMs).toISOString(), 't')})`).join(', ')}.`
+    : 'No main stream matches booked that day yet.';
+  return new EmbedBuilder()
+    .setTitle(`Who's free · ${dayLabel}`)
+    .setDescription(`The whole day, from the staff schedule. Numbers are main stream matches worked this week. Add a time (e.g. \`${dayLabel.split(',')[0]} 9:30pm\`) to check one match.\n${onStream}`)
+    .addFields(fields.length ? fields : [{ name: 'Nobody', value: 'Nobody is on the staff schedule for that day.' }])
+    .setColor(0x4a86e8)
+    .setFooter({ text: crewSyncFooter(stored) });
 }
 
 async function handleCrewLinkCommand(interaction) {
