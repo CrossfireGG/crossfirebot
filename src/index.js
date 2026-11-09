@@ -197,6 +197,7 @@ import {
 } from './streamRequest.js';
 import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
+import { buildRoundup, buildSocialCard, buildWeekAhead, buildWeekRecap, matchTopPlayer, normalizeHandle, teamSocials, weekTopPlayer } from './socialInfo.js';
 import { buildPrepPack, compactMatchStats, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, teamKey, vetoSummary } from './prepPack.js';
 import {
   STAT_ROLES,
@@ -7701,6 +7702,7 @@ async function runStreamOperationsTick(now = Date.now()) {
   await sendDueMainStreamPrompts(now).catch((error) => console.error('Main stream connection prompts failed:', error));
   await postDuePrepPacks(now).catch((error) => console.error('Prep packs failed:', error));
   await syncTeamInfo(now).catch((error) => console.error('Team Info sync failed:', error));
+  await runSocialInfo(now).catch((error) => console.error('Social info failed:', error.message || error));
   await fillSeasonMatchStats().catch((error) => console.error('Season match stats fill failed:', error.message || error));
   await syncSheetResultsAndStats(now).catch((error) => console.error('Sheet results/stats sync failed:', error));
   await syncCrewAvailability(now).catch((error) => console.error('Crew availability sync failed:', error));
@@ -9214,6 +9216,17 @@ async function handleTeamNotesCommand(interaction) {
   text('notes', 'Notes');
   link('hltv', 'HLTV');
   link('liquipedia', 'Liquipedia');
+  for (const [option, header] of [['x', 'X']]) {
+    const value = interaction.options.getString(option);
+    if (value === null || value === undefined) continue;
+    if (clear(value)) {
+      fields[header] = { clear: true };
+      continue;
+    }
+    const handle = normalizeHandle(value);
+    if (handle) fields[header] = { text: handle };
+    else problems.push(`${header} should be a handle like @team or a profile link.`);
+  }
   if (problems.length) {
     await interaction.editReply(problems.join(' '));
     return;
@@ -9230,7 +9243,8 @@ async function handleTeamNotesCommand(interaction) {
         `**${info.name}** on the Team Info tab:`,
         `Pronunciation: ${info.pronunciation || '—'}`,
         `Notes: ${info.notes || '—'}`,
-        ...Object.entries(info.links).map(([label, url]) => `${label}: <${url}>`),
+        `X: ${teamSocials(info).x || '—'}`,
+        ...Object.entries(info.links).filter(([label]) => !['x', 'twitter', 'instagram', 'ig'].includes(label)).map(([label, url]) => `${label}: <${url}>`),
         'Change any of it with the options on this command (`none` clears one).'
       ].join('\n')
       : `**${team}** isn't on the Team Info tab yet. Add something with the options on this command.`);
@@ -9268,4 +9282,206 @@ async function handleTeamNotesAutocomplete(interaction) {
     .slice(0, 25)
     .map((name) => ({ name: name.slice(0, 100), value: name.slice(0, 100) })))
     .catch(() => null);
+}
+
+
+// --- Social info for the Social Media team -----------------------------------------------
+// Facts, not finished posts, in SOCIAL_CHANNEL_ID with no pings:
+// - daily at SOCIAL_POST_TIME (4 PM ET): "Tonight on stream", the main stream games with their
+//   production crew (casters, producer, observer) and every community-cast game with its channels;
+//   edited when crews or casts change;
+// - SOCIAL_CARD_LEAD_MINUTES (2 hours) before each main stream match: a card with time, stream,
+//   crew, round, team tags, storylines, players to watch and maps; "LIVE NOW" at the start; the
+//   final result and top player when FACEIT finishes it;
+// - Mondays at SOCIAL_POST_TIME: this week on stream, and last week's streamed results.
+// Team X handles come from the Team Info tab (X column).
+
+const SOCIAL_REFRESH_MS = 5 * 60 * 1000;
+const SOCIAL_CARD_UNTIL_MS = 6 * 60 * 60 * 1000;
+
+async function socialTeams() {
+  let cache = await getTeamInfoCache();
+  if (!cache.teams || cache.error || Date.now() - (Date.parse(cache.syncedAt || '') || 0) > TEAM_INFO_SYNC_MS) {
+    cache = await syncTeamInfo(Date.now(), { force: !cache.teams }).catch(() => null) || cache;
+  }
+  return cache.teams || [];
+}
+
+function teamsOf(matchup, fallbackA = null, fallbackB = null) {
+  if (fallbackA && fallbackB) return [fallbackA, fallbackB];
+  const [teamA = matchup || 'TBD', teamB = 'TBD'] = String(matchup || '').split(/\s+vs\.?\s+/i).map((team) => team.trim());
+  return [teamA, teamB];
+}
+
+async function streamedMatchesBetween(startKey, endKey) {
+  const teams = await socialTeams();
+  const socials = (name) => teamSocials(findTeamInfo(teams, name));
+  const inRange = (ms) => {
+    const key = sheetSlotFor(ms).dateKey;
+    return key >= startKey && key <= endKey;
+  };
+  const main = (await crewBookings())
+    .filter((booking) => inRange(booking.startMs))
+    .map(({ coverage, startMs }) => {
+      const [teamA, teamB] = teamsOf(coverage.matchup, coverage.teamA, coverage.teamB);
+      return { matchId: coverage.matchId, startMs, teamA, teamB, socialsA: socials(teamA), socialsB: socials(teamB), streamUrl: mainStreamUrlFor(coverage), crew: coverage.crew || {}, kind: 'main' };
+    });
+  const mainIds = new Set(main.map((match) => match.matchId));
+  const byMatch = new Map();
+  for (const request of await listStreamRequests({ status: 'approved' })) {
+    if (/cancel/i.test(String(request.faceitStatus || ''))) continue;
+    const startMs = Date.parse(castTimeIso(request) || '');
+    if (!Number.isFinite(startMs) || !inRange(startMs) || !request.streamUrl) continue;
+    const key = request.matchId || request.id;
+    if (!byMatch.has(key)) {
+      const [teamA, teamB] = teamsOf(request.matchup);
+      byMatch.set(key, { matchId: request.matchId || null, startMs, teamA, teamB, socialsA: socials(teamA), socialsB: socials(teamB), casts: [], alsoMainStream: mainIds.has(request.matchId), kind: 'community' });
+    }
+    byMatch.get(key).casts.push({ url: request.streamUrl, userId: request.requesterId });
+  }
+  return { main, community: [...byMatch.values()] };
+}
+
+function socialEmbed(card, color = 0xe91e63) {
+  return new EmbedBuilder().setTitle(card.title.slice(0, 256)).setDescription(card.description.slice(0, 4096)).setColor(color);
+}
+
+async function socialChannel() {
+  if (!config.socialChannelId) return null;
+  const channel = await client.channels.fetch(config.socialChannelId).catch(() => null);
+  return channel?.isTextBased?.() ? channel : null;
+}
+
+async function postOrEditSocial(key, card, { color, skipIfEmpty = false, empty = false } = {}) {
+  const sync = await getSheetSync();
+  const entry = sync[key] || {};
+  const hash = `${card.title}\n${card.description}`;
+  if (entry.messageId && entry.hash === hash) return;
+  if (!entry.messageId && skipIfEmpty && empty) return;
+  const channel = await socialChannel();
+  if (!channel) return;
+  if (entry.messageId) {
+    const message = await channel.messages.fetch(entry.messageId).catch(() => null);
+    if (message) {
+      await message.edit({ embeds: [socialEmbed(card, color)], allowedMentions: { parse: [] } }).catch(() => null);
+      await updateSheetSync(key, { hash });
+      return;
+    }
+  }
+  const message = await channel.send({ embeds: [socialEmbed(card, color)], allowedMentions: { parse: [] } }).catch(() => null);
+  if (message) await updateSheetSync(key, { messageId: message.id, channelId: channel.id, hash, postedAt: new Date().toISOString() });
+}
+
+let lastSocialRefreshAt = 0;
+
+async function runSocialInfo(now = Date.now()) {
+  if (!config.socialChannelId) return;
+  const [hour, minute] = config.socialPostTime.split(':').map(Number);
+  const { dateKey, minutes } = easternParts(now);
+  const postMinutes = hour * 60 + minute;
+  const due = minutes >= postMinutes;
+  // Cards per main stream match run every minute (their timing matters); the roundup every 5.
+  await refreshSocialCards(now).catch((error) => console.error('[Social] match cards failed:', error.message || error));
+  if (!due || now - lastSocialRefreshAt < SOCIAL_REFRESH_MS) return;
+  lastSocialRefreshAt = now;
+
+  // Daily roundup (posted once there is something on stream tonight; edited as crews/casts change).
+  const tonight = await streamedMatchesBetween(dateKey, dateKey);
+  await postOrEditSocial(`social:roundup:${dateKey}`, buildRoundup({ dateMs: now, mainStream: tonight.main, community: tonight.community }), {
+    skipIfEmpty: true,
+    empty: !tonight.main.length && !tonight.community.length
+  });
+
+  // Mondays: this week and last week.
+  if (weekdayIndex(dateKey) === 0) {
+    const sync = await getSheetSync();
+    if (!sync[`social:week:${dateKey}`]?.messageId) {
+      const thisWeek = await streamedMatchesBetween(dateKey, addDaysToKey(dateKey, 6));
+      await postOrEditSocial(`social:week:${dateKey}`, buildWeekAhead({ weekStartMs: now, items: [...thisWeek.main, ...thisWeek.community] }), { color: 0x4a86e8 });
+      const lastMonday = addDaysToKey(dateKey, -7);
+      const lastWeek = await streamedMatchesBetween(lastMonday, addDaysToKey(dateKey, -1));
+      const seasonMatches = await loadSeasonMatches().catch(() => []);
+      const ids = [...lastWeek.main, ...lastWeek.community].map((match) => match.matchId).filter(Boolean);
+      const statsById = await statsForMatches(ids, { fetchLimit: 30 });
+      const results = [];
+      for (const item of [...lastWeek.main, ...lastWeek.community]) {
+        const match = seasonMatches.find((candidate) => candidate.id === item.matchId);
+        if (!match || !/finished/i.test(String(match.status || ''))) continue;
+        const result = buildMatchResult(match, null);
+        // Map scores from the stored stats, winner's score first.
+        const winnerKey = teamKey(result?.winner || '');
+        const maps = (statsById.get(match.id)?.maps || []).map((map) => {
+          const winner = map.teams.find((team) => teamKey(team.name) === winnerKey) || map.teams[0];
+          const loser = map.teams.find((team) => team !== winner) || map.teams[1];
+          return `${map.map} ${winner.score}-${loser.score}`;
+        });
+        const base = result?.text?.replace(/\s*\(.*\)$/, '') || `${match.teamA} vs ${match.teamB}`;
+        results.push({ startMs: item.startMs, kind: item.kind, text: `${base}${maps.length ? ` (${maps.join(', ')})` : ''}` });
+      }
+      const topPlayer = weekTopPlayer(ids.map((id) => statsById.get(id)).filter(Boolean));
+      await postOrEditSocial(`social:recap:${dateKey}`, buildWeekRecap({ weekStartMs: Date.parse(`${lastMonday}T17:00:00Z`), results, topPlayer }), { color: 0xf1c40f });
+    }
+  }
+}
+
+// One card per main stream match: posted SOCIAL_CARD_LEAD_MINUTES before, "LIVE NOW" at the start,
+// the result when FACEIT finishes it. Checked every minute; FACEIT is asked every 5 minutes.
+async function refreshSocialCards(now = Date.now()) {
+  const leadMs = config.socialCardLeadMinutes * 60 * 1000;
+  for (const { coverage, startMs } of await crewBookings()) {
+    if (now < startMs - leadMs || now > startMs + SOCIAL_CARD_UNTIL_MS || coverage.socialDone) continue;
+    const [teamA, teamB] = teamsOf(coverage.matchup, coverage.teamA, coverage.teamB);
+    let facts = coverage.socialFacts || null;
+    if (!facts) {
+      if (now > startMs + 30 * 60 * 1000) continue;
+      const pack = await buildPrepForMatch(coverage.matchId).catch(() => null);
+      facts = pack?.social || { storylines: [], stars: [], maps: [] };
+      await saveMainStreamCoverage(coverage.matchId, { socialFacts: facts });
+    }
+    const checkedMs = Date.parse(coverage.socialCheckedAt || '') || 0;
+    let { maps = [] } = facts;
+    let state = now >= startMs ? 'live' : 'upcoming';
+    let result = null;
+    let topPlayer = null;
+    if (now - checkedMs >= SOCIAL_REFRESH_MS || !coverage.socialMessageId) {
+      const match = await faceit.getMatch(coverage.matchId).catch(() => null);
+      if (match) {
+        maps = vetoSummary({ veto: await getVeto(coverage.matchId).catch(() => null), match }).maps.map((entry) => entry.map);
+        if (/ongoing|live/i.test(String(match.status || ''))) state = 'live';
+        if (/finished/i.test(String(match.status || ''))) {
+          const raw = await faceit.getMatchStats(coverage.matchId).catch(() => null);
+          result = buildMatchResult(match, raw)?.text || null;
+          const compact = raw ? compactMatchStats(raw) : null;
+          if (compact?.maps?.length) await saveMatchStats({ [coverage.matchId]: compact });
+          topPlayer = matchTopPlayer(compact);
+          state = 'done';
+        }
+      }
+      await saveMainStreamCoverage(coverage.matchId, { socialCheckedAt: new Date(now).toISOString(), socialFacts: { ...facts, maps } });
+    } else if (coverage.socialState === 'done') {
+      continue;
+    }
+    const teams = await socialTeams();
+    const card = buildSocialCard({
+      startMs,
+      teamA,
+      teamB,
+      socialsA: teamSocials(findTeamInfo(teams, teamA)),
+      socialsB: teamSocials(findTeamInfo(teams, teamB)),
+      streamUrl: mainStreamUrlFor(coverage),
+      crew: coverage.crew || {},
+      round: facts.round,
+      group: facts.group,
+      storylines: facts.storylines,
+      stars: facts.stars,
+      maps,
+      state: state === 'done' && !result ? 'live' : state,
+      result,
+      topPlayer
+    });
+    await postOrEditSocial(`social:card:${coverage.matchId}`, card, { color: state === 'done' ? 0xf1c40f : state === 'live' ? 0xe74c3c : 0xe91e63 });
+    if (state !== coverage.socialState || (state === 'done' && result)) {
+      await saveMainStreamCoverage(coverage.matchId, { socialState: state, ...(state === 'done' && result ? { socialDone: true } : {}) });
+    }
+  }
 }

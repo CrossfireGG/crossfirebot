@@ -2,6 +2,7 @@
 // matches, their per-map stats, the Team Info tab and the veto. Pure functions; index.js fetches.
 
 import { prettyMapName } from './matchResult.js';
+import { isSocialColumn } from './socialInfo.js';
 
 // ---------- team names (Team Info tab -> FACEIT) ----------
 
@@ -383,6 +384,7 @@ function teamCard(faction, season, info, standing, seasonName = 'Season') {
   const links = [
     faction.faction_id ? `[FACEIT](https://www.faceit.com/en/teams/${faction.faction_id})` : null,
     ...Object.entries(info?.links || {})
+      .filter(([label]) => !isSocialColumn(label))
       .sort(([a], [b]) => linkOrder(a) - linkOrder(b))
       .map(([label, url]) => `[${linkLabel(label)}](${url})`)
   ].filter(Boolean);
@@ -394,7 +396,7 @@ export function teamNotesCard(name, info) {
   const lines = [
     info?.pronunciation ? `🗣️ Say it: **${info.pronunciation}**` : null,
     info?.notes ? `📝 ${info.notes}` : null,
-    ...Object.entries(info?.extra || {}).map(([label, value]) => `**${label}:** ${value}`)
+    ...Object.entries(info?.extra || {}).filter(([label]) => !isSocialColumn(label)).map(([label, value]) => `**${label}:** ${value}`)
   ].filter(Boolean);
   return lines.length ? { title: `📝 ${name} notes`, description: lines.join('\n').slice(0, 4000), fields: [] } : null;
 }
@@ -496,6 +498,19 @@ export function buildPrepPack({
     ],
     mapFacts: mapFactsCard,
     notes: [teamNotesCard(a.name, infoA), teamNotesCard(b.name, infoB)].filter(Boolean),
+    // Facts for the Social Media team's card.
+    social: {
+      round: match.round || null,
+      group: match.group || null,
+      storylines: talkingPoints,
+      stars: [[a, seasonA, rosterA], [b, seasonB, rosterB]]
+        .map(([faction, season, roster]) => {
+          const star = season.players.find((player) => !roster.size || roster.has(player.playerId));
+          return star ? { team: faction.name, nickname: star.nickname, kd: star.kd, adr: star.adr } : null;
+        })
+        .filter(Boolean),
+      maps: vetoInfo.maps.map((entry) => entry.map)
+    },
     signature: prepSignature(match, vetoInfo),
     vetoState: vetoInfo.state,
     maps: vetoInfo.maps.map((entry) => entry.map),

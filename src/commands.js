@@ -299,5 +299,6 @@ export const commands = [
       .addStringOption((option) => option.setName('pronunciation').setDescription('How to say the name (none to clear)').setRequired(false).setMaxLength(100))
       .addStringOption((option) => option.setName('notes').setDescription('Anything casters should know (none to clear)').setRequired(false).setMaxLength(500))
       .addStringOption((option) => option.setName('hltv').setDescription('HLTV team page link (none to clear)').setRequired(false))
-      .addStringOption((option) => option.setName('liquipedia').setDescription('Liquipedia page link (none to clear)').setRequired(false)))
+      .addStringOption((option) => option.setName('liquipedia').setDescription('Liquipedia page link (none to clear)').setRequired(false))
+      .addStringOption((option) => option.setName('x').setDescription('Team X / Twitter handle, e.g. @team (none to clear)').setRequired(false)))
 ].map((command) => command.toJSON());

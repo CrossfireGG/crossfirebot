@@ -244,6 +244,13 @@ export function getConfig() {
     // Caster prep packs: posted here for main stream matches, this many minutes before.
     prepChannelId: process.env.PREP_CHANNEL_ID || '1569447282716311584',
     prepLeadMinutes: Math.max(10, Number(process.env.PREP_LEAD_MINUTES || 45) || 45),
+    // Social info for the Social Media team: daily "Tonight on stream" at SOCIAL_POST_TIME (Eastern),
+    // a card per main stream match SOCIAL_CARD_LEAD_MINUTES before it, weekly cards on Mondays.
+    socialChannelId: process.env.SOCIAL_CHANNEL_ID || '1473806928865005802',
+    socialPostTime: /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(process.env.SOCIAL_POST_TIME || '').trim())
+      ? String(process.env.SOCIAL_POST_TIME).trim()
+      : '16:00',
+    socialCardLeadMinutes: Math.max(30, Number(process.env.SOCIAL_CARD_LEAD_MINUTES || 120) || 120),
     // The production team role: may use /cf prep and /crossfire teamnotes.
     prodRoleId: process.env.PROD_ROLE_ID || '1474117290600562920',
     // Linked in the reminder DM.
