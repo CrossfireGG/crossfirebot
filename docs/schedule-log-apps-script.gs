@@ -4,12 +4,17 @@
  * Writes confirmed match schedules into the "Game Schedules" tab of the
  * "CF Game and Staff Schedule" spreadsheet:
  *
- *   A Date | B TIME | C TEAM 1 | D VS | E TEAM 2 | F MATCH (FACEIT link) | G ROUND | H GROUP:
- *   I STREAM | J Stats Collected? | K–N staff checkboxes
- *   O Sort Key (hidden; ISO timestamp used to keep the tab sorted by date and time)
+ *   A DATE & TIME | B TEAM 1 | C VS | D TEAM 2 | E MATCH (FACEIT link) | F ROUND | G GROUP:
+ *   H STREAM | I Stats Collected? | J–M staff checkboxes
  *
- * Two actions, picked by `action` in the POST body:
- *   "schedule" (default)  fills columns A–H and O for a match. One row per match: a
+ * Column A holds a real date-and-time value (Eastern), shown as "Thu, Nov 12 · 9:30 PM ET", so the
+ * tab sorts by it directly. Staff adding a row by hand can type e.g. "11/12/2026 9:30 PM" there.
+ * Sheets set up with separate Date and TIME columns are converted once with combineDateAndTime()
+ * (run it from the editor; it makes a backup copy of the tab first). Until then the web app
+ * refuses to write, so the old layout is never written in the new shape.
+ *
+ * Actions, picked by `action` in the POST body:
+ *   "schedule" (default)  fills columns A–G for a match. One row per match: a
  *                         reschedule updates the row whose FACEIT LINK matches. The FACEIT
  *                         LINK cell shows the word "Link", hyperlinked to the match page.
  *   "streamLink"          appends an approved caster's stream to the STREAM cell of
@@ -20,7 +25,7 @@
  *   "removeStreamLink"    takes one stream URL back out of that cell (caster withdrew or
  *                         staff revoked). Other links in the cell are kept.
  *                         Both stream link actions take an optional `row.highlight`:
- *                         "main" colours the row (A–N) as a main stream game, "community" as a
+ *                         "main" colours the row (A–M) as a main stream game, "community" as a
  *                         community cast, "none" clears the colour. The bot works out which.
  *   "matchResult"         writes the finished match's result (e.g. "Team won 13-7 (Mirage)")
  *                         into the "Result" column of the row whose FACEIT LINK matches. The
@@ -34,9 +39,8 @@
  *                         post-cast stats form's response sheet (read-only). The bot uses
  *                         this to block casters who skipped the form for their last cast.
  *
- * Everything else in columns I–N is left for staff and is never touched.
- * After every write the tab is sorted by date and time. Rows added by hand get a
- * Sort Key computed from their Date and Time cells, so they sort as well.
+ * Everything else in columns H–M is left for staff and is never touched.
+ * After every write the tab is sorted by column A (date and time).
  *
  * Setup: paste into the Apps Script project, set SHARED_SECRET, then
  *   Deploy > New deployment > Web app, Execute as: Me, Who has access: Anyone.
@@ -59,25 +63,27 @@ const POST_CAST_REQUEST_ID_HEADER = 'Request ID';
 // Crew availability tabs in this spreadsheet, read by the "availability" action.
 const AVAILABILITY_TABS = ['PROD SCHEDULE', 'Admin Schedule'];
 
+const DATE_TIME_HEADER = 'DATE & TIME';
 const HEADERS = [
-  '', 'TIME', 'TEAM 1', '', 'TEAM 2', 'MATCH', 'ROUND', 'GROUP:',
-  'STREAM', 'Stats Collected?', '', '', '', '',
-  'Sort Key'
+  DATE_TIME_HEADER, 'TEAM 1', '', 'TEAM 2', 'MATCH', 'ROUND', 'GROUP:',
+  'STREAM', 'Stats Collected?', '', '', '', ''
 ];
-const BOT_COLUMNS = 8; // A–H
-const DATE_COLUMN = 1; // A
-const TIME_COLUMN = 2; // B
-const FACEIT_LINK_COLUMN = 6; // F
-// Column F shows the word "Link", hyperlinked to the FACEIT match page.
+const BOT_COLUMNS = 7; // A–G
+const DATE_TIME_COLUMN = 1; // A
+// How column A shows the date and time, e.g. "Thu, Nov 12 · 9:30 PM ET".
+const DATE_TIME_FORMAT = 'ddd, mmm d "·" h:mm AM/PM "ET"';
+// Match times are Eastern.
+const SCHEDULE_TIME_ZONE = 'America/New_York';
+const FACEIT_LINK_COLUMN = 5; // E
+// Column E shows the word "Link", hyperlinked to the FACEIT match page.
 const FACEIT_LINK_LABEL = 'Link';
 // The stream column's header. 'STREAM' is current; 'Stream Link/s' is the older name.
 const STREAM_LINK_HEADERS = ['STREAM', 'Stream Link/s'];
-const DEFAULT_STREAM_LINK_COLUMN = 9; // I, used only if the header cannot be found
-const SORT_KEY_COLUMN = 15; // O
-const HIGHLIGHT_COLUMNS = 14; // A–N
+const DEFAULT_STREAM_LINK_COLUMN = 8; // H, used only if the header cannot be found
+const HIGHLIGHT_COLUMNS = 13; // A–M
 const RESULT_HEADER = 'Result';
 const STATS_COLLECTED_HEADER = 'Stats Collected?';
-const DEFAULT_STATS_COLLECTED_COLUMN = 10; // J, used only if the header cannot be found
+const DEFAULT_STATS_COLLECTED_COLUMN = 9; // I, used only if the header cannot be found
 // Row colours (Google Sheets palette): CROSSFIRE main stream games cornflower blue, community
 // casts orange.
 const HIGHLIGHT_COLORS = { main: '#4a86e8', community: '#ff9900', none: null };
@@ -99,6 +105,9 @@ function doPost(e) {
     if (action === 'postCastForms') return lookupPostCastForms(body.requestIds || []);
     if (action === 'availability') return readAvailability();
     const sheet = getOrCreateSheet();
+    if (hasSeparateTimeColumn(sheet)) {
+      return reply(409, { ok: false, error: 'the ' + SHEET_NAME + ' tab still has separate Date and TIME columns: run combineDateAndTime once in the Apps Script editor' });
+    }
     if (action === 'schedule') return writeSchedule(sheet, body.row || {});
     if (action === 'streamLink') return writeStreamLink(sheet, body.row || {});
     if (action === 'removeStreamLink') return removeStreamLink(sheet, body.row || {});
@@ -114,8 +123,7 @@ function doPost(e) {
 
 function writeSchedule(sheet, row) {
   const values = [
-    row.date || '',
-    row.time || '',
+    scheduleCellValue(sheet, row),
     row.team1 || '',
     'VS',
     row.team2 || '',
@@ -123,13 +131,12 @@ function writeSchedule(sheet, row) {
     row.round || '',
     row.group || ''
   ];
-  const sortKey = row.scheduledAtIso || sortKeyFromText(row.date, row.time);
 
   const existingRow = row.faceitLink ? findRowByFaceitLink(sheet, row.faceitLink) : 0;
   const targetRow = existingRow || sheet.getLastRow() + 1;
   sheet.getRange(targetRow, 1, 1, BOT_COLUMNS).setValues([values]);
+  sheet.getRange(targetRow, DATE_TIME_COLUMN).setNumberFormat(DATE_TIME_FORMAT);
   setFaceitLinkCell(sheet, targetRow, row.faceitLink);
-  sheet.getRange(targetRow, SORT_KEY_COLUMN).setValue(sortKey);
 
   sortByDate(sheet);
   const finalRow = row.faceitLink ? findRowByFaceitLink(sheet, row.faceitLink) : targetRow;
@@ -278,7 +285,7 @@ function findColumnByHeader(sheet, header) {
 function findOrCreateColumn(sheet, header) {
   const found = findColumnByHeader(sheet, header);
   if (found) return found;
-  const column = Math.max(sheet.getLastColumn(), SORT_KEY_COLUMN) + 1;
+  const column = Math.max(sheet.getLastColumn(), HIGHLIGHT_COLUMNS) + 1;
   if (sheet.getMaxColumns() < column) sheet.insertColumnsAfter(sheet.getMaxColumns(), column - sheet.getMaxColumns());
   sheet.getRange(1, column).setValue(header).setFontWeight('bold');
   return column;
@@ -349,7 +356,7 @@ function lookupPostCastForms(requestIds) {
 }
 
 // Looks the column up by header ("STREAM" or the older "Stream Link/s") so staff can move it;
-// falls back to column I.
+// falls back to column H.
 function findStreamLinkColumn(sheet) {
   const lastColumn = Math.max(sheet.getLastColumn(), DEFAULT_STREAM_LINK_COLUMN);
   const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
@@ -396,7 +403,7 @@ function setFaceitLinkCell(sheet, targetRow, url) {
 }
 
 // Run once by hand (select it in the editor and press Run) to tidy rows already on the sheet:
-// FACEIT URLs in column F become the word "Link", and stream URLs in the STREAM column become the
+// FACEIT URLs in the MATCH column become the word "Link", and stream URLs in the STREAM column become the
 // channel name, each hyperlinked to the same page. Safe to run again.
 function convertLinksToLabels() {
   const sheet = getOrCreateSheet();
@@ -421,55 +428,108 @@ function faceitLinkKey(value) {
   return room ? room[1] : text.replace(/\/+$/, '');
 }
 
-// Rebuilds Sort Keys from the displayed Date and Time on every pass, then sorts
-// rows 2..last. Recomputing prevents a manually edited time from keeping a stale key.
+// Column A as a real date-time value: the match's Eastern wall-clock time, stored in the
+// spreadsheet's own time zone so it displays exactly that. Free-text schedules stay text.
+function scheduleCellValue(sheet, row) {
+  if (row.scheduledAtIso) {
+    const instant = new Date(row.scheduledAtIso);
+    if (!isNaN(instant.getTime())) {
+      const wallClock = Utilities.formatDate(instant, SCHEDULE_TIME_ZONE, 'yyyy-MM-dd HH:mm:ss');
+      return Utilities.parseDate(wallClock, sheetTimeZone(sheet), 'yyyy-MM-dd HH:mm:ss');
+    }
+  }
+  return [row.date, row.time].filter(Boolean).join(' ');
+}
+
+function sheetTimeZone(sheet) {
+  return sheet.getParent().getSpreadsheetTimeZone();
+}
+
+// Sorts rows 2..last by column A. Date-times sort in time order; any text left in column A
+// (a schedule the bot could not read) sorts after them.
 function sortByDate(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 3) return;
-  const lastColumn = Math.max(sheet.getLastColumn(), SORT_KEY_COLUMN);
-  const data = sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues();
-
-  data.forEach((cells) => {
-    const key = sortKeyFromText(cells[DATE_COLUMN - 1], cells[TIME_COLUMN - 1]);
-    cells[SORT_KEY_COLUMN - 1] = key || '';
-  });
-  sheet.getRange(2, SORT_KEY_COLUMN, data.length, 1).setValues(data.map((cells) => [cells[SORT_KEY_COLUMN - 1]]));
-
-  sheet.getRange(2, 1, lastRow - 1, lastColumn).sort({ column: SORT_KEY_COLUMN, ascending: true });
+  sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).sort({ column: DATE_TIME_COLUMN, ascending: true });
 }
 
-// Builds a timezone-free sortable key from the displayed Eastern date and time.
-// This intentionally avoids mixing UTC timestamps with local timestamps, which
-// can put an 8:00 PM row below a 9:00 PM row on the same date.
-function sortKeyFromText(dateValue, timeValue) {
-  const dateKey = dateKeyFromValue(dateValue);
-  if (!dateKey) return '';
-  return dateKey + 'T' + timeKeyFromValue(timeValue);
+// The old layout had "TIME" in B1.
+function hasSeparateTimeColumn(sheet) {
+  return String(sheet.getRange(1, 2).getValue() || '').trim().toLowerCase() === 'time';
 }
 
-function dateKeyFromValue(value) {
+// Run ONCE by hand (select it in the editor and press Run) to switch the tab from separate Date
+// and TIME columns to one DATE & TIME column. It first copies the tab to a hidden backup tab,
+// then writes each row's date and time into column A as a real date-time, deletes the TIME
+// column and sorts. Rows whose date can't be read keep their text and are counted in the log.
+// Running it again does nothing.
+function combineDateAndTime() {
+  const sheet = getOrCreateSheet();
+  if (!hasSeparateTimeColumn(sheet)) {
+    Logger.log('Nothing to do: ' + SHEET_NAME + ' already has one DATE & TIME column.');
+    return;
+  }
+  const spreadsheet = sheet.getParent();
+  const zone = spreadsheet.getSpreadsheetTimeZone();
+  const backupName = SHEET_NAME + ' backup ' + Utilities.formatDate(new Date(), zone, 'yyyy-MM-dd HH.mm');
+  sheet.copyTo(spreadsheet).setName(backupName).hideSheet();
+
+  const lastRow = sheet.getLastRow();
+  let converted = 0;
+  const unreadable = [];
+  if (lastRow >= 2) {
+    const range = sheet.getRange(2, 1, lastRow - 1, 2);
+    const values = range.getValues();
+    const shown = range.getDisplayValues();
+    let previousDate = '';
+    const combined = values.map((cells, i) => {
+      const dateText = String(shown[i][0] || '').trim();
+      const timeText = String(shown[i][1] || '').trim();
+      let dateKey = dateKeyFromValue(cells[0], zone);
+      // Older rows only wrote the date on a day's first match.
+      if (!dateKey && !dateText && timeText) dateKey = previousDate;
+      if (dateKey) previousDate = dateKey;
+      if (!dateKey) {
+        if (dateText || timeText) unreadable.push(i + 2);
+        return [[dateText, timeText].filter(Boolean).join(' ')];
+      }
+      converted++;
+      return [Utilities.parseDate(dateKey + ' ' + timeKeyFromValue(cells[1], zone), zone, 'yyyy-MM-dd HH:mm:ss')];
+    });
+    sheet.getRange(2, 1, combined.length, 1).setValues(combined);
+  }
+  sheet.deleteColumn(2);
+  sheet.getRange(1, 1).setValue(DATE_TIME_HEADER).setFontWeight('bold');
+  if (sheet.getMaxRows() > 1) sheet.getRange(2, 1, sheet.getMaxRows() - 1, 1).setNumberFormat(DATE_TIME_FORMAT);
+  sortByDate(sheet);
+  Logger.log('Combined ' + converted + ' row(s). Backup tab: "' + backupName + '" (hidden).'
+    + (unreadable.length ? ' Could not read the date on row(s) ' + unreadable.join(', ') + ' (before sorting); their text was kept in column A.' : ''));
+}
+
+function dateKeyFromValue(value, zone) {
   if (value instanceof Date && !isNaN(value.getTime())) {
-    const zone = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
     return Utilities.formatDate(value, zone, 'yyyy-MM-dd');
   }
 
   const text = String(value || '').trim().replace(/^[A-Za-z]+,\s*/, '');
   if (!text) return '';
   const months = {
-    january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
-    july: 7, august: 8, september: 9, october: 10, november: 11, december: 12
+    jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+    jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12
   };
-  const named = text.match(/^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})$/);
-  if (named && months[named[1].toLowerCase()]) {
-    return named[3] + '-' + pad2(months[named[1].toLowerCase()]) + '-' + pad2(named[2]);
+  const named = text.match(/^([A-Za-z]+)\.?\s+(\d{1,2}),\s*(\d{2,4})$/);
+  if (named && months[named[1].slice(0, 3).toLowerCase()]) {
+    const year = named[3].length === 2 ? '20' + named[3] : named[3];
+    return year + '-' + pad2(months[named[1].slice(0, 3).toLowerCase()]) + '-' + pad2(named[2]);
   }
-  const numeric = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
-  return numeric ? numeric[3] + '-' + pad2(numeric[1]) + '-' + pad2(numeric[2]) : '';
+  const numeric = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
+  if (!numeric) return '';
+  const year = numeric[3].length === 2 ? '20' + numeric[3] : numeric[3];
+  return year + '-' + pad2(numeric[1]) + '-' + pad2(numeric[2]);
 }
 
-function timeKeyFromValue(value) {
+function timeKeyFromValue(value, zone) {
   if (value instanceof Date && !isNaN(value.getTime())) {
-    const zone = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
     return Utilities.formatDate(value, zone, 'HH:mm:ss');
   }
 
@@ -505,15 +565,6 @@ function getOrCreateSheet() {
     sheet.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
     sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight('bold');
     sheet.setFrozenRows(1);
-  }
-  if (sheet.getMaxColumns() < SORT_KEY_COLUMN) {
-    sheet.insertColumnsAfter(sheet.getMaxColumns(), SORT_KEY_COLUMN - sheet.getMaxColumns());
-  }
-  if (!sheet.getRange(1, SORT_KEY_COLUMN).getValue()) {
-    sheet.getRange(1, SORT_KEY_COLUMN).setValue('Sort Key').setFontWeight('bold');
-  }
-  if (!sheet.isColumnHiddenByUser(SORT_KEY_COLUMN)) {
-    sheet.hideColumns(SORT_KEY_COLUMN);
   }
   return sheet;
 }
