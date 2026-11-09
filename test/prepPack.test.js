@@ -130,7 +130,10 @@ test('the whole pack: three cards, talking points, stand-ins, team notes', () =>
   const teamCard = pack.embeds[1];
   assert.match(teamCard.description, /Say it: \*\*suh-LESS\*\*/);
   assert.match(teamCard.description, /\[HLTV\]\(https:\/\/hltv\.org\/x\)/);
-  assert.match(teamCard.description, /Last on the main stream: Nov 1 vs Solar Gravity \(won 2-0\)/);
+  assert.match(teamCard.description, /Last on the main stream: \[Nov 1 vs Solar Gravity\]\(https:\/\/www\.faceit\.com\/en\/cs2\/room\/m1\) \(won 2-0\)/);
+  assert.match(teamCard.description, /^🔗 \[FACEIT\]\(https:\/\/www\.faceit\.com\/en\/teams\/ta\) · \[HLTV\]\(https:\/\/hltv\.org\/x\)/);
+  assert.match(teamCard.fields.find((field) => field.name === 'Last 3').value, /✅ \[2-1 vs FUELED BY HATE\]\(https:\/\/www\.faceit\.com\/en\/cs2\/room\/m3\)/);
+  assert.match(pack.embeds[0].fields.find((field) => field.name === 'Head-to-head').value, /^\[Celestial Esports won 2-1\]\(https:\/\/www\.faceit\.com\/en\/cs2\/room\/m3\)/);
   assert.match(teamCard.fields.find((field) => field.name === 'Roster').value, /👑 Zeph \(lvl 9\)/);
   assert.match(teamCard.fields.find((field) => field.name === 'Roster').value, /Ringer \(lvl 5\) · stand-in/);
   assert.match(teamCard.fields.find((field) => field.name === 'Season').value, /1st of 3 in Group I \(2-0\)/);

@@ -8985,8 +8985,10 @@ async function fillSeasonMatchStats() {
 async function syncTeamInfo(now = Date.now(), { force = false } = {}) {
   if (scheduleSheet.mode !== 'apps-script') return null;
   const cached = await getTeamInfoCache();
+  // After a failed read (e.g. the script was not updated yet) try again in 5 minutes, not 30.
+  const wait = cached.error ? 5 * 60 * 1000 : TEAM_INFO_SYNC_MS;
   const last = Math.max(Date.parse(cached.syncedAt || '') || 0, Date.parse(cached.errorAt || '') || 0);
-  if (!force && now - last < TEAM_INFO_SYNC_MS) return cached;
+  if (!force && now - last < wait) return cached;
   const result = await scheduleSheet.readTeamInfo();
   if (!result.ok) {
     if (result.error !== lastTeamInfoErrorLogged) console.error(`[Team Info] Could not read the Team Info tab: ${result.error}`);
@@ -9019,7 +9021,12 @@ async function buildPrepForMatch(matchId) {
   const statsById = await statsForMatches([...relevant, ...groupMatches].map((candidate) => candidate.id));
   const coverage = await getMainStreamCoverage(matchId);
   const stored = await getStoredMatch(matchId);
-  const teamInfo = (await getTeamInfoCache()).teams || [];
+  // A prep pack always uses a fresh Team Info read when the last one is over 5 minutes old or failed.
+  let teamInfoCache = await getTeamInfoCache();
+  if (!teamInfoCache.teams || teamInfoCache.error || Date.now() - (Date.parse(teamInfoCache.syncedAt || '') || 0) > 5 * 60 * 1000) {
+    teamInfoCache = await syncTeamInfo(Date.now(), { force: true }).catch(() => null) || teamInfoCache;
+  }
+  const teamInfo = teamInfoCache.teams || [];
   return buildPrepPack({
     match,
     seasonMatches: seasonMatches.some((candidate) => candidate.id === match.id) ? seasonMatches : [...seasonMatches, match],
@@ -9143,7 +9150,11 @@ async function handleTeamNotesCommand(interaction) {
     return;
   }
   if (!Object.keys(fields).length) {
-    const cache = await syncTeamInfo(Date.now()) || await getTeamInfoCache();
+    const cache = await syncTeamInfo(Date.now(), { force: true }) || await getTeamInfoCache();
+    if (cache.error) {
+      await interaction.editReply(`I couldn't read the Team Info tab: ${cache.error}`);
+      return;
+    }
     const info = findTeamInfo(cache.teams || [], team);
     await interaction.editReply(info
       ? [

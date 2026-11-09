@@ -359,8 +359,13 @@ function readTeamInfo() {
   const range = sheet.getDataRange();
   const values = range.getDisplayValues();
   const rich = range.getRichTextValues();
+  const formulas = range.getFormulas();
   const rows = values.map(function (row, r) {
-    return row.map(function (text, c) { return { text: text, link: cellLink(rich[r][c]) }; });
+    return row.map(function (text, c) {
+      // A link inserted on the text, or a =HYPERLINK("url", "label") formula.
+      const fromFormula = String(formulas[r][c] || '').match(/HYPERLINK\(\s*"([^"]+)"/i);
+      return { text: text, link: cellLink(rich[r][c]) || (fromFormula ? fromFormula[1] : null) };
+    });
   });
   return reply(200, { ok: true, rows: rows });
 }

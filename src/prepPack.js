@@ -126,6 +126,7 @@ function teamResult(match, team, statsById) {
   const won = winner ? winner === own.side : (Number.isFinite(ownScore) && Number.isFinite(otherScore) ? ownScore > otherScore : mapsWon > mapsLost);
   return {
     matchId: match.id,
+    url: match.faceitUrl || null,
     timeMs: matchTimeMs(match),
     opponent: other.name,
     opponentId: other.faction_id || null,
@@ -288,6 +289,24 @@ function shortDate(ms) {
   return ms ? new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' }).format(new Date(ms)) : '';
 }
 
+// "[text](url)" when there is a link, plain text otherwise.
+function linked(text, url) {
+  return url ? `[${text}](${url})` : text;
+}
+
+function linkLabel(header) {
+  const lower = String(header || '').toLowerCase();
+  if (lower === 'hltv') return 'HLTV';
+  if (lower === 'liquipedia') return 'Liquipedia';
+  return String(header || '').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function linkOrder(header) {
+  const order = ['hltv', 'liquipedia'];
+  const index = order.indexOf(String(header || '').toLowerCase());
+  return index < 0 ? order.length : index;
+}
+
 function mapLine(map) {
   return `${map.map} ${map.for}-${map.against}`;
 }
@@ -309,7 +328,7 @@ function teamCard(faction, season, info, standing, lastOnStream) {
   if (season.results.length) {
     fields.push({
       name: 'Last 3',
-      value: season.results.slice(-3).reverse().map((result) => `${result.won ? '✅' : '❌'} ${result.series} vs ${result.opponent} · ${shortDate(result.timeMs)}${result.maps.length ? `\n  ${result.maps.map(mapLine).join(', ')}` : ''}`).join('\n').slice(0, 1024)
+      value: season.results.slice(-3).reverse().map((result) => `${result.won ? '✅' : '❌'} ${linked(`${result.series} vs ${result.opponent}`, result.url)} · ${shortDate(result.timeMs)}${result.maps.length ? `\n  ${result.maps.map(mapLine).join(', ')}` : ''}`).join('\n').slice(0, 1024)
     });
   }
   if (season.mapPool.length) {
@@ -325,14 +344,16 @@ function teamCard(faction, season, info, standing, lastOnStream) {
   }
   const links = [
     faction.faction_id ? `[FACEIT](https://www.faceit.com/en/teams/${faction.faction_id})` : null,
-    ...Object.entries(info?.links || {}).map(([label, url]) => `[${label.replace(/\b\w/g, (letter) => letter.toUpperCase()).replace(/^Hltv$/, 'HLTV')}](${url})`)
+    ...Object.entries(info?.links || {})
+      .sort(([a], [b]) => linkOrder(a) - linkOrder(b))
+      .map(([label, url]) => `[${linkLabel(label)}](${url})`)
   ].filter(Boolean);
   const description = [
+    links.length ? `🔗 ${links.join(' · ')}` : null,
     info?.pronunciation ? `🗣️ Say it: **${info.pronunciation}**` : null,
     info?.notes ? `📝 ${info.notes}` : null,
     ...Object.entries(info?.extra || {}).map(([label, value]) => `${label}: ${value}`),
-    lastOnStream ? `📺 Last on the main stream: ${lastOnStream}` : null,
-    links.length ? links.join(' · ') : null
+    lastOnStream ? `📺 Last on the main stream: ${lastOnStream}` : null
   ].filter(Boolean).join('\n');
   return { title: faction.name, description: description || null, fields };
 }
@@ -370,7 +391,7 @@ export function buildPrepPack({
       .sort((x, y) => y.entry.startMs - x.entry.startMs)[0];
     if (!played) return null;
     const result = isFinished(played.match) ? teamResult(played.match, team, statsById) : null;
-    return `${shortDate(played.entry.startMs)} vs ${result?.opponent || 'TBD'}${result ? ` (${result.won ? 'won' : 'lost'} ${result.series})` : ''}`;
+    return `${linked(`${shortDate(played.entry.startMs)} vs ${result?.opponent || 'TBD'}`, played.match.faceitUrl)}${result ? ` (${result.won ? 'won' : 'lost'} ${result.series})` : ''}`;
   };
 
   const rosterA = new Set((a.roster || []).map((player) => player.player_id));
@@ -411,7 +432,7 @@ export function buildPrepPack({
       {
         name: 'Head-to-head',
         value: h2h.length
-          ? h2h.map((result) => `${result.won ? teamA.name : teamB.name} won ${result.won ? result.series : result.series.split('-').reverse().join('-')} · ${shortDate(result.timeMs)}${result.maps.length ? ` (${result.maps.map(mapLine).join(', ')})` : ''}`).join('\n').slice(0, 1024)
+          ? h2h.map((result) => `${linked(`${result.won ? teamA.name : teamB.name} won ${result.won ? result.series : result.series.split('-').reverse().join('-')}`, result.url)} · ${shortDate(result.timeMs)}${result.maps.length ? ` (${result.maps.map(mapLine).join(', ')})` : ''}`).join('\n').slice(0, 1024)
           : 'First meeting this season.'
       },
       { name: 'Talking points', value: talkingPoints.map((point) => `• ${point}`).join('\n').slice(0, 1024) }
