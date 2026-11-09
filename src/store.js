@@ -36,7 +36,8 @@ function normalizeDb(db) {
     matchConnections: db.matchConnections || {},
     seasons: Array.isArray(db.seasons) ? db.seasons : [],
     sheetSync: db.sheetSync || {},
-    crewAvailability: db.crewAvailability || {}
+    crewAvailability: db.crewAvailability || {},
+    crewHistory: db.crewHistory || {}
   };
 }
 
@@ -755,4 +756,19 @@ export async function listMainStreamCoverageWithSchedules() {
     coverage,
     schedule: db.schedules[coverage.matchId] || null
   }));
+}
+
+// Main stream crews imported from Schedule channel posts (for season stats only).
+export async function listCrewHistory() {
+  return Object.values((await snapshot()).crewHistory || {});
+}
+
+export async function saveCrewHistory(records) {
+  return mutateDb((db) => {
+    db.crewHistory = db.crewHistory || {};
+    for (const record of records) {
+      if (record?.matchId) db.crewHistory[record.matchId] = { ...record, savedAt: new Date().toISOString() };
+    }
+    return Object.keys(db.crewHistory).length;
+  });
 }

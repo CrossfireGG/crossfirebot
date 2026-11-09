@@ -81,6 +81,8 @@ import {
   listMainStreamCoverageWithSchedules,
   getCrewAvailability,
   updateCrewAvailability,
+  listCrewHistory,
+  saveCrewHistory,
   claimMainStreamDeliveryPrompt,
   deleteMainStreamCoverage,
   getSheetSync,
@@ -95,6 +97,7 @@ import {
   currentSeason,
   easternDateKey,
   findSeasonByRef,
+  seasonContains,
   findSeasonRound,
   formatRoundLine,
   formatRoundsText,
@@ -190,6 +193,15 @@ import {
 } from './streamRequest.js';
 import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
+import {
+  STAT_ROLES,
+  STAT_ROLE_LABELS,
+  computeSeasonCrewStats,
+  formatRanking,
+  parseSchedulePost,
+  personSeasonHistory,
+  schedulePostDateText
+} from './crewStats.js';
 import {
   CREW_FIELD_ROLES,
   CREW_ROLES,
@@ -398,6 +410,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const cfSubcommand = interaction.commandName === 'cf' ? interaction.options.getSubcommand(false) : null;
       if (cfSubcommand === 'mainstream') await handleMainStreamAutocomplete(interaction);
       else if (cfSubcommand === 'crewlink') await handleCrewLinkAutocomplete(interaction);
+      else if (cfSubcommand === 'crewstats') await handleSeasonAutocomplete(interaction);
       else if (interaction.commandName === 'cf') await handleSeasonAutocomplete(interaction);
       return;
     }
@@ -411,7 +424,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
       const streamStaffCommand = interaction.commandName === 'cf'
-        && ['streams', 'forms', 'upcoming', 'mainstream', 'whosfree', 'crewlink'].includes(interaction.options.getSubcommand(false));
+        && ['streams', 'forms', 'upcoming', 'mainstream', 'whosfree', 'crewlink', 'crewstats', 'crewimport'].includes(interaction.options.getSubcommand(false));
       const allowed = streamStaffCommand ? canManageStreamRequests(interaction.member) : canUseBotAdminCommand(interaction.member);
       if (!allowed) {
         await interaction.reply({ content: 'Only admins/match staff can use this bot command.', ephemeral: true });
@@ -432,6 +445,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('crew_stream:')) {
       await handleCrewStreamSelect(interaction);
+      return;
+    }
+    if (interaction.isButton() && /^crew_import(_cancel)?(:|$)/.test(interaction.customId)) {
+      await handleCrewImportButton(interaction);
       return;
     }
     if (interaction.isButton() && /^crew_drop(_yes|_no)?(:|$)/.test(interaction.customId)) {
@@ -659,6 +676,14 @@ async function handleAdminCommand(interaction) {
     }
     if (subcommand === 'crewlink') {
       await handleCrewLinkCommand(interaction);
+      return;
+    }
+    if (subcommand === 'crewstats') {
+      await handleCrewStatsCommand(interaction);
+      return;
+    }
+    if (subcommand === 'crewimport') {
+      await handleCrewImportCommand(interaction);
       return;
     }
   }
@@ -6592,6 +6617,9 @@ async function logScheduleToSheet({ stored, proposal, approvedBy = null, accepte
   const row = buildScheduleSheetRow({ stored, proposal, details: getMatchDisplayDetails(stored.match), approvedBy, acceptedBy, kind });
   try {
     const result = await scheduleSheet.append(row);
+    if (row.matchId && !result.skipped) {
+      await updateSheetSync(`row:${row.matchId}`, { ok: Boolean(result.ok), error: result.ok ? null : result.error || null }).catch(() => null);
+    }
     if (result.ok) {
       if (!result.skipped) {
         console.log(`Schedule sheet ${result.updated ? 'updated' : 'added'} row ${result.row ?? '?'} for ${row.team1} vs ${row.team2}.`);
@@ -6715,7 +6743,8 @@ async function syncSheetResultsAndStats(now = Date.now()) {
   if (scheduleSheet.mode === 'log-only' || now - lastSheetSyncAt < SHEET_SYNC_EVERY_MS) return;
   lastSheetSyncAt = now;
   const sync = await getSheetSync();
-  await syncSheetResults(sync, now);
+  await checkApprovedSchedules(sync, now).catch((error) => console.error('Schedule check against FACEIT failed:', error));
+  await syncSheetResults(await getSheetSync(), now);
   await syncSheetStatsCollected(sync, now);
 }
 
@@ -8522,4 +8551,323 @@ async function handleAddGameToSheet(message, content) {
   }
   await appendAuditLog({ type: 'schedule_sheet_added_by_hand', actorId: message.author.id, matchId: parsed.matchId }).catch(() => null);
   await message.reply({ content: lines.join('\n').slice(0, 2000), allowedMentions: { parse: [] } });
+}
+
+
+// --- Season crew stats ------------------------------------------------------------------
+// `/cf crewstats`: community casts per caster and main stream matches per person and role.
+// `/cf crewimport`: reads this season's Schedule channel posts so crews set up by hand before the
+// bot kept them count too (preview first, nothing saved until staff press Import).
+
+const pendingCrewImports = new Map();
+const CREW_IMPORT_TTL_MS = 15 * 60 * 1000;
+const CREW_IMPORT_MAX_MESSAGES = 5000;
+
+function seasonInRange(season) {
+  return (ms) => seasonContains(season, easternParts(ms).dateKey);
+}
+
+async function seasonCrewSources() {
+  const mainStream = new Map();
+  for (const record of await listCrewHistory()) {
+    const startMs = Date.parse(record.startIso || '');
+    if (Number.isFinite(startMs)) mainStream.set(record.matchId, { matchId: record.matchId, startMs, crew: record.crew || {}, matchup: record.matchup });
+  }
+  for (const booking of await crewBookings()) {
+    mainStream.set(booking.matchId, { matchId: booking.matchId, startMs: booking.startMs, crew: booking.coverage.crew || {}, matchup: booking.coverage.matchup });
+  }
+  const community = (await listStreamRequests({ status: 'approved' }))
+    .filter((request) => !/cancel/i.test(String(request.faceitStatus || '')))
+    .map((request) => ({ requesterId: request.requesterId, startMs: Date.parse(castTimeIso(request) || ''), matchup: request.matchup }));
+  return { mainStream: [...mainStream.values()], community };
+}
+
+async function handleCrewStatsCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  await refreshSeasonCache();
+  const ref = interaction.options.getString('season');
+  const season = ref ? findSeasonByRef(seasonCache, ref) : statsSeason();
+  if (!season) {
+    await interaction.editReply(ref ? `No season called "${ref}".` : 'There is no current season. Pick one with `season:`.');
+    return;
+  }
+  const sources = await seasonCrewSources();
+  const inSeason = seasonInRange(season);
+  const user = interaction.options.getUser('user');
+  const importNote = (await listCrewHistory()).length ? '' : ' Main stream crews set up by hand (before the bot kept them) are missing until `/cf crewimport` is run.';
+  if (user) {
+    const history = personSeasonHistory(user.id, { ...sources, inSeason });
+    const now = Date.now();
+    const done = history.filter((entry) => entry.startMs <= now);
+    const byRole = {};
+    for (const entry of done) for (const role of entry.roles) byRole[role] = (byRole[role] || 0) + 1;
+    const booked = history.length - done.length;
+    const lines = history.slice(0, 20).map((entry) => `${discordTimestamp(new Date(entry.startMs).toISOString(), 'd')} · ${entry.matchup || 'Match'} · ${entry.roles.join(' & ')}${entry.startMs > now ? ' (booked)' : ''}`);
+    const embed = new EmbedBuilder()
+      .setTitle(`${season.name} · ${user.globalName || user.username}`)
+      .setDescription([
+        `<@${user.id}>`,
+        Object.keys(byRole).length ? Object.entries(byRole).map(([role, count]) => `**${role}** ${count}`).join(' · ') : 'Nothing worked yet this season.',
+        booked ? `${booked} more booked.` : null,
+        '',
+        ...(lines.length ? lines : ['No matches.']),
+        history.length > 20 ? `… and ${history.length - 20} more.` : null
+      ].filter((line) => line !== null).join('\n').slice(0, 4000))
+      .setColor(0x4a86e8)
+      .setFooter({ text: `Counts matches already played; booked ones are listed separately.${importNote}`.slice(0, 2048) });
+    await interaction.editReply({ embeds: [embed] });
+    return;
+  }
+  const stats = computeSeasonCrewStats({ ...sources, inSeason });
+  const embed = new EmbedBuilder()
+    .setTitle(`${season.name} · Crew stats`)
+    .setDescription(`${stats.mainStreamMatches} main stream match(es) and ${stats.communityCasts} community cast(s) this season. Numbers are matches already played; (+N) are booked.`)
+    .addFields(
+      ...STAT_ROLES.map((role) => ({ name: `Main stream · ${STAT_ROLE_LABELS[role]}`, value: formatRanking(stats.roles[role]) })),
+      { name: 'Community casts', value: formatRanking(stats.community) }
+    )
+    .setColor(0x4a86e8)
+    .setFooter({ text: `Use user: for one person's full season.${importNote}`.slice(0, 2048) });
+  await interaction.editReply({ embeds: [embed] });
+}
+
+// Plain-text names in a post: a linked staff schedule name, else a Discord member with that name.
+async function resolveCrewNames(names, guild, people) {
+  const resolved = {};
+  const unknown = [];
+  for (const [role, list] of Object.entries(names || {})) {
+    for (const name of list) {
+      const person = people.find((entry) => entry.key === normalizeCrewName(name) && entry.userId);
+      const id = person?.userId || await findMemberIdByName(guild, name);
+      if (id) resolved[role] = [...(resolved[role] || []), id];
+      else unknown.push(name);
+    }
+  }
+  return { resolved, unknown };
+}
+
+async function handleCrewImportCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  await refreshSeasonCache();
+  const season = statsSeason();
+  if (!season) {
+    await interaction.editReply('There is no current season to import into.');
+    return;
+  }
+  const channel = config.productionScheduleChannelId ? await client.channels.fetch(config.productionScheduleChannelId).catch(() => null) : null;
+  if (!channel?.isTextBased?.()) {
+    await interaction.editReply('I can\'t read the Schedule channel (`PRODUCTION_SCHEDULE_CHANNEL_ID`).');
+    return;
+  }
+  // Posts go up a few days before the match, so read from a week before the season starts.
+  const sinceMs = Date.parse(`${season.startDate}T00:00:00Z`) - 7 * 24 * 60 * 60 * 1000;
+  const messages = [];
+  let before;
+  while (messages.length < CREW_IMPORT_MAX_MESSAGES) {
+    const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+    if (!batch?.size) break;
+    messages.push(...batch.values());
+    const oldest = batch.last();
+    before = oldest.id;
+    if (oldest.createdTimestamp < sinceMs) break;
+  }
+  messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+  const guild = channel.guild;
+  const people = crewPeopleWithIds(await getCrewAvailability());
+  const inSeason = seasonInRange(season);
+  const records = new Map();
+  const unreadable = [];
+  const unknownNames = new Set();
+  for (const message of messages) {
+    if (message.createdTimestamp < sinceMs) continue;
+    const post = parseSchedulePost(message.content);
+    if (!post) continue;
+    if (!post.matchId) {
+      unreadable.push(message.url);
+      continue;
+    }
+    if (post.cancelled) {
+      records.delete(post.matchId);
+      continue;
+    }
+    const { resolved, unknown } = await resolveCrewNames(post.names, guild, people);
+    unknown.forEach((name) => unknownNames.add(name));
+    const crew = { ...post.crew, casters: [...new Set([...post.crew.casters, ...(resolved.caster || [])])].slice(0, 2) };
+    for (const role of ['producer', 'observer', 'admin', 'social']) crew[role] = crew[role] || resolved[role]?.[0] || null;
+    if (!crew.casters.length && !crew.producer && !crew.observer && !crew.admin && !crew.social) {
+      unreadable.push(message.url);
+      continue;
+    }
+    const stored = await getStoredMatch(post.matchId);
+    const typed = parseScheduleInput(schedulePostDateText(message.content));
+    const startIso = await approvedScheduleIso(post.matchId)
+      || (post.timestampMs ? new Date(post.timestampMs).toISOString() : null)
+      || typed?.iso
+      || getFaceitScheduledAtIso(stored?.match)
+      || new Date(message.createdTimestamp).toISOString();
+    const startMs = Date.parse(startIso);
+    if (!inSeason(startMs)) continue;
+    records.set(post.matchId, {
+      matchId: post.matchId,
+      faceitUrl: post.faceitUrl,
+      matchup: stored?.match ? `${stored.match.teamA} vs ${stored.match.teamB}` : (post.matchupText || 'Main stream match'),
+      startIso: new Date(startMs).toISOString(),
+      crew,
+      sourceMessageUrl: message.url,
+      source: 'schedule-channel'
+    });
+  }
+  const tracked = new Set((await listMainStreamCoverage()).map((coverage) => coverage.matchId));
+  const all = [...records.values()];
+  const fresh = all.filter((record) => !tracked.has(record.matchId));
+  const token = Math.random().toString(36).slice(2, 10);
+  pendingCrewImports.set(token, { records: fresh, actorId: interaction.user.id, expiresAt: Date.now() + CREW_IMPORT_TTL_MS });
+  const preview = fresh
+    .sort((a, b) => Date.parse(a.startIso) - Date.parse(b.startIso))
+    .slice(0, 15)
+    .map((record) => {
+      const count = record.crew.casters.length + ['producer', 'observer', 'admin', 'social'].filter((role) => record.crew[role]).length;
+      return `- ${discordTimestamp(record.startIso, 'd')} · ${record.matchup} · ${count} crew`;
+    });
+  const lines = [
+    `Read ${messages.length} message(s) in <#${channel.id}> back to ${season.startDate}.`,
+    `Found **${all.length}** main stream match(es) this season: **${fresh.length}** to import, ${all.length - fresh.length} already kept by the bot.`,
+    ...preview,
+    fresh.length > preview.length ? `… and ${fresh.length - preview.length} more.` : null,
+    unreadable.length ? `\n⚠️ ${unreadable.length} crew post(s) had no FACEIT link or no crew I could read, so they were skipped: ${unreadable.slice(0, 8).join(' ')}` : null,
+    unknownNames.size ? `⚠️ Names I couldn't match to Discord (left out): ${[...unknownNames].slice(0, 15).join(', ')}. Link them with \`/cf crewlink\` and run this again.` : null,
+    fresh.length ? '\nNothing is saved until you press **Import**. Nobody is pinged or DMed, and the sheet isn\'t touched.' : 'Nothing new to import.'
+  ].filter(Boolean);
+  await interaction.editReply({
+    content: lines.join('\n').slice(0, 2000),
+    components: fresh.length ? [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`crew_import:${token}`).setLabel(`Import ${fresh.length} match(es)`).setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('crew_import_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+    )] : [],
+    allowedMentions: { parse: [] }
+  });
+}
+
+async function handleCrewImportButton(interaction) {
+  if (interaction.customId === 'crew_import_cancel') {
+    await interaction.update({ content: 'Import canceled. Nothing was saved.', components: [] });
+    return;
+  }
+  if (!canManageStreamRequests(interaction.member)) {
+    await interaction.reply({ content: 'Only admins/stream staff can import crews.', ephemeral: true });
+    return;
+  }
+  const token = interaction.customId.slice('crew_import:'.length);
+  const pending = pendingCrewImports.get(token);
+  pendingCrewImports.delete(token);
+  if (!pending || pending.expiresAt < Date.now()) {
+    await interaction.update({ content: 'This preview expired. Run `/cf crewimport` again.', components: [] });
+    return;
+  }
+  await saveCrewHistory(pending.records);
+  await appendAuditLog({ type: 'crew_history_imported', actorId: interaction.user.id, matches: pending.records.length }).catch(() => null);
+  await interaction.update({ content: `Imported ${pending.records.length} main stream match(es). They now count in \`/cf crewstats\`.`, components: [] });
+}
+
+// --- Approved schedules vs FACEIT ----------------------------------------------------------
+// Every 30 minutes per match (inside the 10-minute sheet sync, a few matches at a time):
+// - an approved time the bot couldn't read takes FACEIT's time once FACEIT has one, and the
+//   match's sheet row is rewritten with it (so results, prompts and crew stats work too);
+// - a sheet row whose write failed is written again;
+// - FACEIT showing a different time than the approved one, or no time within 24 hours of the
+//   match, alerts staff once (per pair of times).
+const SCHEDULE_CHECK_EVERY_MINUTES = 30;
+const SCHEDULE_CHECK_PER_RUN = 6;
+const SCHEDULE_MISMATCH_TOLERANCE_MS = 5 * 60 * 1000;
+const SCHEDULE_SETTLE_MS = 2 * 60 * 60 * 1000;
+
+async function checkApprovedSchedules(sync, now) {
+  const due = (await listSchedules()).filter((schedule) => {
+    if (!schedule.adminApproved || !schedule.matchId) return false;
+    if (!sheetSyncDue(sync[`time:${schedule.matchId}`], now)) return false;
+    const startMs = Date.parse(schedule.scheduledAtIso || '');
+    if (Number.isFinite(startMs)) return startMs > now - 2 * 60 * 60 * 1000 && startMs < now + 21 * 24 * 60 * 60 * 1000;
+    const updatedMs = Date.parse(schedule.updatedAt || '');
+    return Number.isFinite(updatedMs) && updatedMs > now - 21 * 24 * 60 * 60 * 1000;
+  }).slice(0, SCHEDULE_CHECK_PER_RUN);
+  for (const schedule of due) {
+    const key = `time:${schedule.matchId}`;
+    const entry = sync[key] || {};
+    const patch = { nextCheckAt: laterIso(now, SCHEDULE_CHECK_EVERY_MINUTES) };
+    const match = await faceit.getMatch(schedule.matchId).catch(() => null);
+    if (!match) {
+      await updateSheetSync(key, patch);
+      continue;
+    }
+    if (/cancel|finished/i.test(String(match.status || ''))) {
+      await updateSheetSync(key, { doneAt: new Date(now).toISOString() });
+      continue;
+    }
+    const faceitIso = getFaceitScheduledAtIso(match);
+    const approvedMs = Date.parse(schedule.scheduledAtIso || '');
+    const stored = await getStoredMatch(schedule.matchId);
+    if (!Number.isFinite(approvedMs)) {
+      if (faceitIso) {
+        await saveSchedule(schedule.matchId, { scheduledAtIso: faceitIso, scheduledAtIsoSource: 'faceit' });
+        const warning = stored
+          ? await logScheduleToSheet({ stored, proposal: { ...schedule, scheduledAtIso: faceitIso, scheduledAt: faceitIso }, kind: 'auto-fix' })
+          : 'the match is not stored';
+        await appendAuditLog({ type: 'schedule_time_from_faceit', matchId: schedule.matchId, sheetUpdated: !warning }).catch(() => null);
+        await sendScheduleStaffAlert(stored, [
+          `🛠️ **${matchLabel(stored, schedule)}**: the approved time "${String(schedule.scheduledAt || '').slice(0, 60)}" couldn't be read, so I used FACEIT's time, ${discordTimestamp(faceitIso, 'F')}.`,
+          warning ? `⚠️ ${warning}` : 'The Google Sheet row is updated.'
+        ].join('\n'));
+      }
+      await updateSheetSync(key, patch);
+      continue;
+    }
+    // A sheet write that failed earlier.
+    if (stored && sync[`row:${schedule.matchId}`]?.ok === false) {
+      await logScheduleToSheet({ stored, proposal: { ...schedule }, kind: 'retry' });
+    }
+    if (approvedMs <= now) {
+      await updateSheetSync(key, { doneAt: new Date(now).toISOString() });
+      continue;
+    }
+    const settled = now - (Date.parse(schedule.updatedAt || '') || 0) > SCHEDULE_SETTLE_MS;
+    const faceitMs = Date.parse(faceitIso || '');
+    if (settled && Number.isFinite(faceitMs) && Math.abs(faceitMs - approvedMs) > SCHEDULE_MISMATCH_TOLERANCE_MS) {
+      const alertKey = `${schedule.scheduledAtIso}|${faceitIso}`;
+      if (entry.mismatchAlerted !== alertKey) {
+        await sendScheduleStaffAlert(stored, [
+          `⏰ **Time mismatch: ${matchLabel(stored, schedule)}**`,
+          `Approved in Discord: ${discordTimestamp(schedule.scheduledAtIso, 'F')}`,
+          `FACEIT says: ${discordTimestamp(faceitIso, 'F')}`,
+          `Update FACEIT, or reschedule in Discord if FACEIT is right.${stored?.match?.faceitUrl ? ` ${stored.match.faceitUrl}` : ''}`
+        ].join('\n'));
+        patch.mismatchAlerted = alertKey;
+        await appendAuditLog({ type: 'schedule_faceit_mismatch', matchId: schedule.matchId }).catch(() => null);
+      }
+    } else if (settled && !faceitIso && approvedMs - now < 24 * 60 * 60 * 1000 && entry.missingAlerted !== schedule.scheduledAtIso) {
+      await sendScheduleStaffAlert(stored, [
+        `⏰ **Not scheduled on FACEIT yet: ${matchLabel(stored, schedule)}**`,
+        `Approved for ${discordTimestamp(schedule.scheduledAtIso, 'F')} (${discordTimestamp(schedule.scheduledAtIso, 'R')}), but FACEIT has no time.${stored?.match?.faceitUrl ? ` ${stored.match.faceitUrl}` : ''}`
+      ].join('\n'));
+      patch.missingAlerted = schedule.scheduledAtIso;
+      await appendAuditLog({ type: 'schedule_faceit_missing', matchId: schedule.matchId }).catch(() => null);
+    }
+    await updateSheetSync(key, patch);
+  }
+}
+
+function matchLabel(stored, schedule) {
+  return stored?.match ? `${stored.match.teamA} vs ${stored.match.teamB}` : schedule.matchId;
+}
+
+async function sendScheduleStaffAlert(stored, content) {
+  const channel = await getScheduleAdminChannel();
+  const channelLink = stored?.discord?.channelId ? ` <#${stored.discord.channelId}>` : '';
+  if (!channel?.isTextBased?.()) {
+    console.log(`[Schedule check] ${content.replace(/\s+/g, ' ')}`);
+    return false;
+  }
+  return Boolean(await channel.send({
+    content: `${getStaffMentions(channel.guild)}\n${content}${channelLink}`.slice(0, 2000),
+    allowedMentions: getAdminAllowedMentions(channel.guild)
+  }).catch(() => null));
 }

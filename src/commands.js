@@ -242,6 +242,18 @@ export const commands = [
     )
     .addSubcommand((subcommand) =>
       subcommand
+        .setName('crewstats')
+        .setDescription('Season counts: community casts per caster, main stream matches per person and role')
+        .addUserOption((option) => option.setName('user').setDescription('One person\'s full season').setRequired(false))
+        .addStringOption((option) => option.setName('season').setDescription('Season (defaults to the current one)').setRequired(false).setAutocomplete(true))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('crewimport')
+        .setDescription('Read this season\'s Schedule channel posts to count main stream crews from before the bot kept them')
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
         .setName('crewlink')
         .setDescription('Link a staff schedule name to a Discord account, or list names the bot could not match')
         .addStringOption((option) => option.setName('name').setDescription('Name as written on the staff schedule').setRequired(false).setAutocomplete(true))
