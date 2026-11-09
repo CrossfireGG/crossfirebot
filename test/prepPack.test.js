@@ -120,6 +120,7 @@ test('the whole pack: three cards, talking points, stand-ins, team notes', () =>
     teamInfo: parseTeamInfoRows([[{ text: 'Name' }, { text: 'HLTV' }, { text: 'Pronunciation' }], [{ text: 'Celestial' }, { text: 'HLTV', link: 'https://hltv.org/x' }, { text: 'suh-LESS' }]]),
     streamHistory: [{ matchId: 'm1', startMs: Date.UTC(2026, 10, 2, 2) }],
     startIso: '2026-11-10T02:30:00Z',
+    seasonName: 'Season 7',
     streamUrl: 'https://twitch.tv/playcrossfire',
     now: Date.UTC(2026, 10, 10)
   });
@@ -128,15 +129,71 @@ test('the whole pack: three cards, talking points, stand-ins, team notes', () =>
   assert.match(pack.talkingPoints.join(' '), /Celestial Esports is unbeaten this season \(2-0\)/);
   assert.match(pack.talkingPoints.join(' '), /Celestial Esports has a stand-in: Ringer/);
   const teamCard = pack.embeds[1];
-  assert.match(teamCard.description, /Say it: \*\*suh-LESS\*\*/);
+  assert.doesNotMatch(teamCard.description, /Say it/);
+  assert.equal(pack.notes.length, 1, 'only the team with notes gets a notes reply');
+  assert.match(pack.notes[0].description, /Say it: \*\*suh-LESS\*\*/);
   assert.match(teamCard.description, /\[HLTV\]\(https:\/\/hltv\.org\/x\)/);
-  assert.match(teamCard.description, /Last on the main stream: \[Nov 1 vs Solar Gravity\]\(https:\/\/www\.faceit\.com\/en\/cs2\/room\/m1\) \(won 2-0\)/);
-  assert.match(teamCard.description, /^🔗 \[FACEIT\]\(https:\/\/www\.faceit\.com\/en\/teams\/ta\) · \[HLTV\]\(https:\/\/hltv\.org\/x\)/);
-  assert.match(teamCard.fields.find((field) => field.name === 'Last 3').value, /✅ \[2-1 vs FUELED BY HATE\]\(https:\/\/www\.faceit\.com\/en\/cs2\/room\/m3\)/);
-  assert.match(pack.embeds[0].fields.find((field) => field.name === 'Head-to-head').value, /^\[Celestial Esports won 2-1\]\(https:\/\/www\.faceit\.com\/en\/cs2\/room\/m3\)/);
-  assert.match(teamCard.fields.find((field) => field.name === 'Roster').value, /👑 Zeph \(lvl 9\)/);
-  assert.match(teamCard.fields.find((field) => field.name === 'Roster').value, /Ringer \(lvl 5\) · stand-in/);
-  assert.match(teamCard.fields.find((field) => field.name === 'Season').value, /1st of 3 in Group I \(2-0\)/);
-  assert.match(pack.embeds[0].fields.find((field) => field.name === 'Maps').value, /Veto not done yet/);
+  assert.doesNotMatch(teamCard.description, /Last on the main stream/);
+  assert.equal(teamCard.description, '🔗 [FACEIT](https://www.faceit.com/en/teams/ta) · [HLTV](https://hltv.org/x)');
+  assert.match(teamCard.fields.find((field) => field.name === 'Season 7').value, /✅ \[2-1 vs FUELED BY HATE\]\(https:\/\/www\.faceit\.com\/en\/cs2\/room\/m3\)/);
+  assert.match(pack.embeds[0].fields.find((field) => field.name === 'H2H').value, /^\[Celestial Esports won 2-1\]\(https:\/\/www\.faceit\.com\/en\/cs2\/room\/m3\)/);
+  assert.match(teamCard.fields.find((field) => field.name === 'Roster').value, /^👑 Zeph$/m);
+  assert.match(teamCard.fields.find((field) => field.name === 'Roster').value, /^Ringer · stand-in$/m);
+  assert.doesNotMatch(teamCard.fields.find((field) => field.name === 'Roster').value, /lvl/);
+  assert.match(teamCard.fields.find((field) => field.name === 'Record').value, /1st in Group I \(2-0\)/);
+  assert.match(pack.embeds[0].fields.find((field) => field.name === '🗺️ Maps').value, /Veto not done yet/);
   assert.ok(pack.signature.includes('a9'));
+});
+
+test('locked maps get a block each: picker, records, last result, best player there, head-to-head', () => {
+  const tonight = match('m5', A, B, { status: 'READY', day: 9 });
+  const veto = {
+    status: 'complete', teamA: 'Celestial Esports', teamB: 'FUELED BY HATE',
+    actions: [
+      { team: 'teamA', action: 'ban', map: 'de_train' }, { team: 'teamB', action: 'ban', map: 'de_vertigo' },
+      { team: 'teamA', action: 'pick', map: 'de_mirage' }, { team: 'teamB', action: 'pick', map: 'de_dust2' }
+    ],
+    final: { playableMaps: ['de_mirage', 'de_dust2', 'de_nuke'], decider: 'de_nuke' }
+  };
+  const pack = buildPrepPack({ match: tonight, seasonMatches, statsById, veto, now: Date.UTC(2026, 10, 10) });
+  const summary = pack.embeds[0].fields.find((field) => field.name === '🗺️ Maps locked').value;
+  assert.equal(summary, '**1. Mirage** · Celestial Esports pick\n**2. Dust2** · FUELED BY HATE pick\n**3. Nuke** · decider\nBans: Train (Celestial Esports) · Vertigo (FUELED BY HATE)');
+  assert.equal(pack.embeds.length, 3, 'match and two teams; map facts are their own reply');
+  assert.equal(pack.mapFacts.title, '🗺️ Map facts');
+  const fields = pack.mapFacts.fields;
+  const mirage = fields.find((field) => field.name === 'Map 1 · Mirage (Celestial Esports pick)').value;
+  assert.match(mirage, /\*\*Celestial Esports\*\* 2-0 · last: \[W 13-9 vs FUELED BY HATE\]\(https:\/\/www\.faceit\.com\/en\/cs2\/room\/m3\) · ⭐ Zeph 1\.42 K\/D, 80 ADR here/);
+  assert.match(mirage, /\*\*FUELED BY HATE\*\* 0-1 · last: \[L 9-13 vs Celestial Esports\]/);
+  assert.match(mirage, /H2H here: \[Celestial Esports won 13-9\]/);
+  assert.match(fields.find((field) => field.name === 'Map 2 · Dust2 (FUELED BY HATE pick)').value, /first time on Dust2 this season/);
+  assert.match(fields.find((field) => field.name === 'Map 3 · Nuke (decider)').value, /\*\*FUELED BY HATE\*\* 1-0/);
+  assert.deepEqual(pack.maps, ['Mirage', 'Dust2', 'Nuke']);
+});
+
+test('a veto in progress lists each ban and pick as it happens', () => {
+  const tonight = match('m6', A, B, { status: 'READY', day: 9 });
+  const veto = { status: 'active', teamA: 'Celestial Esports', teamB: 'FUELED BY HATE', actions: [{ team: 'teamA', action: 'ban', map: 'de_train' }, { team: 'teamB', action: 'ban', map: 'de_vertigo' }, { team: 'teamA', action: 'pick', map: 'de_mirage' }] };
+  const pack = buildPrepPack({ match: tonight, seasonMatches, statsById, veto });
+  assert.equal(pack.embeds[0].fields.find((field) => field.name === '🗺️ Maps').value, 'Ban: Train (Celestial Esports)\nBan: Vertigo (FUELED BY HATE)\nPick: Mirage (Celestial Esports)\nVeto in progress…');
+  assert.equal(pack.mapFacts, null, 'no map facts until the maps are locked');
+  const later = buildPrepPack({ match: tonight, seasonMatches, statsById, veto: { ...veto, actions: [...veto.actions, { team: 'teamB', action: 'pick', map: 'de_dust2' }] } });
+  assert.notEqual(later.signature, pack.signature, 'each step changes the post');
+});
+
+test('team card headings: Record, the season name for results, Map pool', () => {
+  const tonight = match('m7', A, B, { status: 'READY', day: 9 });
+  const pack = buildPrepPack({ match: tonight, seasonMatches, statsById, seasonName: 'Season 7' });
+  const names = pack.embeds[1].fields.map((field) => field.name);
+  assert.deepEqual(names, ['Roster', 'Record', 'Season 7', 'Map pool', 'Top players']);
+});
+
+test('record shows the round differential; top players show kills and deaths first', () => {
+  const tonight = match('m8', A, B, { status: 'READY', day: 9 });
+  const pack = buildPrepPack({ match: tonight, seasonMatches, statsById });
+  const record = pack.embeds[1].fields.find((field) => field.name === 'Record').value;
+  // Celestial: m1 13-5, 13-8; m3 13-9, 14-16, 13-11 -> 66 won, 49 lost
+  assert.match(record, /Round diff: \*\*\+17\*\* \(66 won, 49 lost\)/);
+  assert.match(record, /1st in Group I \(2-0\)/);
+  assert.match(pack.embeds[1].fields.find((field) => field.name === 'Top players').value, /^⭐ Zeph: 67 K · 47 D · 1\.43 K\/D · /);
+  assert.ok(pack.embeds[0].fields.some((field) => field.name === 'H2H'));
 });

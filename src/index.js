@@ -197,7 +197,7 @@ import {
 } from './streamRequest.js';
 import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
-import { buildPrepPack, compactMatchStats, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, teamKey } from './prepPack.js';
+import { buildPrepPack, compactMatchStats, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, teamKey, vetoSummary } from './prepPack.js';
 import {
   STAT_ROLES,
   STAT_ROLE_LABELS,
@@ -8926,7 +8926,9 @@ async function sendScheduleStaffAlert(stored, content) {
 // FACEIT championship match list (cached 10 minutes) and per-match stats (stored once per match,
 // filled in the background). Team links and notes come from the "Team Info" tab.
 
-const PREP_RECHECK_MS = 5 * 60 * 1000;
+// Lineups and maps are checked every minute (one FACEIT call); the pack is rebuilt only on a change.
+const PREP_RECHECK_MS = 60 * 1000;
+const VETO_LATE_WARNING_MS = 10 * 60 * 1000;
 const PREP_UPDATE_UNTIL_MS = 2 * 60 * 60 * 1000;
 const SEASON_MATCHES_TTL_MS = 10 * 60 * 1000;
 const TEAM_INFO_SYNC_MS = 30 * 60 * 1000;
@@ -9035,18 +9037,40 @@ async function buildPrepForMatch(matchId) {
     veto: await getVeto(matchId).catch(() => null),
     streamHistory: await mainStreamHistory(),
     startIso: await approvedScheduleIso(matchId) || getFaceitScheduledAtIso(match),
+    seasonName: (statsSeason() || activeSeason())?.name || 'Season',
     streamUrl: coverage ? mainStreamUrlFor(coverage) : null,
     matchChannelId: stored?.discord?.channelId || null
   });
 }
 
-function prepEmbeds(pack, { note = null } = {}) {
-  return pack.embeds.map((card, index) => {
+// Discord allows 6000 characters across all embeds of one message: the longest field values are
+// shortened first (with "…") until the post fits.
+const PREP_MESSAGE_BUDGET = 5800;
+
+function fitPrepCards(cards, note) {
+  const copy = cards.map((card) => ({ ...card, fields: (card.fields || []).map((field) => ({ ...field, value: String(field.value || '—').slice(0, 1024) })) }));
+  const size = () => copy.reduce((total, card, index) => total
+    + (card.title || '').length
+    + ((index === 0 && note ? `${note}\n` : '') + (card.description || '')).length
+    + card.fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0)
+    + (index === 0 ? 70 : 0), 0);
+  let guard = 0;
+  while (size() > PREP_MESSAGE_BUDGET && guard < 200) {
+    guard += 1;
+    const longest = copy.flatMap((card) => card.fields).sort((a, b) => b.value.length - a.value.length)[0];
+    if (!longest || longest.value.length <= 120) break;
+    longest.value = `${longest.value.slice(0, Math.floor(longest.value.length * 0.8)).replace(/\s+\S*$/, '')} …`;
+  }
+  return copy;
+}
+
+function prepEmbeds(pack, { note = null, footer = true } = {}) {
+  return fitPrepCards(pack.embeds, note).map((card, index) => {
     const embed = new EmbedBuilder().setTitle(card.title.slice(0, 256)).setColor(index === 0 ? 0x4a86e8 : 0x2b2d31);
     const description = index === 0 && note ? `${note}\n${card.description || ''}` : card.description;
     if (description) embed.setDescription(description.slice(0, 4000));
     if (card.fields?.length) embed.addFields(card.fields.map((field) => ({ name: field.name.slice(0, 256), value: (field.value || '—').slice(0, 1024), inline: Boolean(field.inline) })));
-    if (index === 0) embed.setFooter({ text: 'Caster prep · FACEIT stats this season · /cf prep for any match' });
+    if (index === 0 && footer) embed.setFooter({ text: 'Caster prep · FACEIT stats this season · /cf prep for any match' });
     return embed;
   });
 }
@@ -9081,20 +9105,62 @@ async function postDuePrepPacks(now = Date.now()) {
         allowedMentions: { parse: [], users: casters }
       }).catch(() => null);
       if (!message) continue;
+      // Team notes (pronunciation, notes) as their own replies, only for teams that have some.
+      for (const card of pack.notes || []) {
+        await channel.send({ embeds: prepEmbeds({ embeds: [card] }, { footer: false }), reply: { messageReference: message.id, failIfNotExists: false }, allowedMentions: { parse: [], repliedUser: false } }).catch(() => null);
+      }
       await saveMainStreamCoverage(coverage.matchId, { prepChannelId: channel.id, prepMessageId: message.id, prepSignature: pack.signature, prepCheckedAt: new Date(now).toISOString() });
+      if (pack.mapFacts) {
+        const crewIds = [...new Set([...(casters), coverage.crew?.producer, coverage.crew?.observer].filter(Boolean))];
+        await replyToPrep({ ...coverage, prepChannelId: channel.id, prepMessageId: message.id }, mapsLockedText(coverage, pack, false), crewIds, [pack.mapFacts]);
+      }
       await appendAuditLog({ type: 'prep_pack_posted', matchId: coverage.matchId }).catch(() => null);
       continue;
     }
     if (now - (Date.parse(coverage.prepCheckedAt || '') || 0) < PREP_RECHECK_MS) continue;
     await saveMainStreamCoverage(coverage.matchId, { prepCheckedAt: new Date(now).toISOString() });
+    const current = await faceit.getMatch(coverage.matchId).catch(() => null);
+    if (!current) continue;
+    const veto = await getVeto(coverage.matchId).catch(() => null);
+    const quick = vetoSummary({ veto, match: current });
+    const crewIds = [...new Set([...(coverage.crew?.casters || []), coverage.crew?.producer, coverage.crew?.observer].filter(Boolean))];
+    // No maps 10 minutes before the start: warn the producer once.
+    if (!quick.maps.length && now >= startMs - VETO_LATE_WARNING_MS && now < startMs && !coverage.vetoLateWarnedAt) {
+      await replyToPrep(coverage, `⏳ No maps yet for **${coverage.matchup}** and it starts ${discordTimestamp(new Date(startMs).toISOString(), 'R')}. The veto isn't done.`, [coverage.crew?.producer].filter(Boolean));
+      await saveMainStreamCoverage(coverage.matchId, { vetoLateWarnedAt: new Date(now).toISOString() });
+    }
+    if (prepSignature(current, quick) === coverage.prepSignature) continue;
     const pack = await buildPrepForMatch(coverage.matchId).catch(() => null);
     if (!pack || pack.signature === coverage.prepSignature) continue;
     const channel = await client.channels.fetch(coverage.prepChannelId).catch(() => null);
     const message = channel?.isTextBased?.() ? await channel.messages.fetch(coverage.prepMessageId).catch(() => null) : null;
     if (!message) continue;
     await message.edit({ embeds: prepEmbeds(pack, { note: prepChangeNote(coverage.prepSignature, pack.signature, pack.vetoState) }) }).catch(() => null);
+    const mapsBefore = String(coverage.prepSignature || '').split('#')[1] || '';
+    const mapsNow = pack.maps.join(',');
+    // Editing a post notifies nobody, so the maps locking (or changing) gets a reply that pings the crew.
+    if (pack.maps.length && mapsNow !== mapsBefore) {
+      await replyToPrep(coverage, mapsLockedText(coverage, pack, Boolean(mapsBefore)), crewIds, pack.mapFacts ? [pack.mapFacts] : []);
+      await appendAuditLog({ type: 'prep_maps_locked', matchId: coverage.matchId, maps: pack.maps }).catch(() => null);
+    }
     await saveMainStreamCoverage(coverage.matchId, { prepSignature: pack.signature });
   }
+}
+
+function mapsLockedText(coverage, pack, changed) {
+  return `🗺️ ${changed ? 'Maps changed' : 'Maps locked'} for **${coverage.matchup}**: ${pack.maps.map((map, index) => `${index + 1}. ${map}`).join(' · ')}`;
+}
+
+async function replyToPrep(coverage, content, userIds = [], cards = []) {
+  const channel = coverage.prepChannelId ? await client.channels.fetch(coverage.prepChannelId).catch(() => null) : null;
+  if (!channel?.isTextBased?.()) return null;
+  const mentions = userIds.length ? ` ${userIds.map((id) => `<@${id}>`).join(' ')}` : '';
+  return channel.send({
+    content: `${content}${mentions}`.slice(0, 2000),
+    embeds: cards.length ? prepEmbeds({ embeds: cards }, { footer: false }) : [],
+    reply: coverage.prepMessageId ? { messageReference: coverage.prepMessageId, failIfNotExists: false } : undefined,
+    allowedMentions: { parse: [], users: userIds, repliedUser: false }
+  }).catch(() => null);
 }
 
 async function handlePrepCommand(interaction) {
@@ -9107,6 +9173,9 @@ async function handlePrepCommand(interaction) {
   try {
     const pack = await buildPrepForMatch(parsed.matchId);
     await interaction.editReply({ embeds: prepEmbeds(pack) });
+    for (const card of [...(pack.notes || []), pack.mapFacts].filter(Boolean)) {
+      await interaction.followUp({ embeds: prepEmbeds({ embeds: [card] }, { footer: false }), ephemeral: true }).catch(() => null);
+    }
   } catch (error) {
     await interaction.editReply(`Couldn't build the prep pack: ${error.message || error}`.slice(0, 2000));
   }
