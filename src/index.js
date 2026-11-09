@@ -8495,10 +8495,18 @@ async function handleAddGameToSheet(message, content) {
     await message.reply('Only admins/match staff can add games to the sheet.');
     return;
   }
-  const link = content.replace(/^!add\s*game\b/i, '').trim().split(/\s+/)[0] || '';
+  const input = content.replace(/^!add\s*game\b/i, '').trim();
+  const link = input.split(/\s+/)[0] || '';
+  const timeText = input.slice(link.length).trim();
   const parsed = parseFaceitMatchRoomLink(link);
   if (!parsed) {
-    await message.reply('Use `!addgame FACEIT_MATCHROOM_LINK`, for example `!addgame https://www.faceit.com/en/cs2/room/1-...`.');
+    await message.reply('Use `!addgame FACEIT_MATCHROOM_LINK`, or with a time: `!addgame FACEIT_MATCHROOM_LINK 11/9 8:30 PM ET`.');
+    return;
+  }
+  // An optional time after the link wins over everything else.
+  const typedTime = timeText ? parseScheduleInput(timeText) : null;
+  if (timeText && !typedTime) {
+    await message.reply(`I couldn't read **${timeText.slice(0, 80)}** as a date and time. Try \`!addgame ${link} 11/9 8:30 PM ET\`.`);
     return;
   }
   if (scheduleSheet.mode !== 'apps-script') {
@@ -8517,15 +8525,34 @@ async function handleAddGameToSheet(message, content) {
   }
   if (!stored.match.faceitUrl) stored = { ...stored, match: { ...stored.match, faceitUrl: parsed.url } };
 
-  // Time: the admin-approved schedule, else FACEIT's scheduled time.
+  // Time: one typed after the link, else the admin-approved schedule, else FACEIT's scheduled time.
   const schedule = await getSchedule(parsed.matchId).catch(() => null);
   let proposal = schedule?.adminApproved ? { ...schedule, matchId: parsed.matchId } : null;
   let timeSource = 'the approved time';
-  if (!proposal?.scheduledAtIso) {
+  if (typedTime) {
+    proposal = { ...(proposal || {}), scheduledAtIso: typedTime.iso, scheduledAt: typedTime.display, timezone: typedTime.timeZone, matchId: parsed.matchId };
+    timeSource = 'the time you gave';
+  } else if (!proposal?.scheduledAtIso) {
     const faceitMatch = await faceit.getMatch(parsed.matchId).catch(() => null);
     const faceitIso = getFaceitScheduledAtIso(faceitMatch) || getFaceitScheduledAtIso(stored.match);
     proposal = faceitIso ? { scheduledAtIso: faceitIso, scheduledAt: faceitIso, matchId: parsed.matchId } : proposal;
     timeSource = faceitIso ? "FACEIT's time (no time approved in Discord)" : null;
+  }
+
+  // Confirm the match in the bot too, so it shows in /request open, the daily Upcoming Matches
+  // post, crew planning and the IP prompts, not only on the sheet.
+  let confirmedInBot = false;
+  if (proposal?.scheduledAtIso && (typedTime || !(schedule?.adminApproved && Date.parse(schedule.scheduledAtIso || '')))) {
+    await saveSchedule(parsed.matchId, {
+      scheduledAt: proposal.scheduledAt && !/^\d{4}-\d{2}-\d{2}T/.test(proposal.scheduledAt) ? proposal.scheduledAt : formatScheduleDisplay(new Date(proposal.scheduledAtIso), 'America/New_York'),
+      scheduledAtIso: proposal.scheduledAtIso,
+      timezone: proposal.timezone || 'America/New_York',
+      adminApproved: true,
+      approvedBy: message.author.id,
+      scheduledAtIsoSource: typedTime ? 'addgame' : (schedule?.adminApproved ? 'faceit-fix' : 'faceit'),
+      kind: 'manual'
+    });
+    confirmedInBot = true;
   }
 
   const warning = await logScheduleToSheet({ stored, proposal, approvedBy: message.author.id, kind: 'manual' });
@@ -8535,7 +8562,8 @@ async function handleAddGameToSheet(message, content) {
     return;
   }
   const lines = [
-    `📄 **${matchup}** is on the Google Sheet${proposal?.scheduledAtIso ? ` for ${discordTimestamp(new Date(proposal.scheduledAtIso).toISOString(), 'F')}, using ${timeSource}` : ' with no time yet (nothing approved and nothing on FACEIT)'}.`
+    `📄 **${matchup}** is on the Google Sheet${proposal?.scheduledAtIso ? ` for ${discordTimestamp(new Date(proposal.scheduledAtIso).toISOString(), 'F')}, using ${timeSource}` : ' with no time yet (nothing approved and nothing on FACEIT). Add the time after the link to confirm it: `!addgame <link> 11/9 8:30 PM ET`'}.`,
+    confirmedInBot ? '✅ Confirmed in the bot too: it now shows in `/request open` and the Upcoming Matches post.' : null
   ];
 
   // Stream links the sheet should have for this match.
@@ -8550,7 +8578,7 @@ async function handleAddGameToSheet(message, content) {
     lines.push(streamWarning ? `⚠️ ${request.streamUrl}: ${streamWarning}` : `🎙️ Community cast link: ${request.streamUrl}`);
   }
   await appendAuditLog({ type: 'schedule_sheet_added_by_hand', actorId: message.author.id, matchId: parsed.matchId }).catch(() => null);
-  await message.reply({ content: lines.join('\n').slice(0, 2000), allowedMentions: { parse: [] } });
+  await message.reply({ content: lines.filter(Boolean).join('\n').slice(0, 2000), allowedMentions: { parse: [] } });
 }
 
 
