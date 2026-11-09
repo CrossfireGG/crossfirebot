@@ -34,7 +34,7 @@ export class FaceitClient {
 
   async getMatch(matchId, source = null) {
     const raw = await this.request(`/matches/${encodeURIComponent(matchId)}`);
-    return normalizeMatch(raw, source || raw.source || { type: 'match', id: matchId, name: '' });
+    return normalizeMatch(raw, source || sourceForMatch(raw, this.sources) || raw.source || { type: 'match', id: matchId, name: '' });
   }
 
   // Per-map stats of a finished match (map names and final round scores). Raw FACEIT payload.
@@ -80,6 +80,19 @@ export class FaceitClient {
     return all.map((raw, index) => normalizeMatch(raw, source, index)).filter(Boolean);
   }
 
+}
+
+// A single match fetched by ID doesn't say which configured source (Group Stage / Playoffs) it is
+// from, and without that its round number was read with generic names (round 2 = "Quarter
+// Finals"). Match it to the configured source by competition ID, or use FACEIT's competition name.
+export function sourceForMatch(raw, sources = []) {
+  const competitionId = raw?.competition_id || raw?.championship_id || raw?.tournament_id || null;
+  const configured = competitionId ? (sources || []).find((source) => source.id === competitionId) : null;
+  if (configured) return configured;
+  if (raw?.competition_name) {
+    return { type: raw.competition_type || 'championship', id: competitionId || raw.match_id || '', name: raw.competition_name };
+  }
+  return null;
 }
 
 function normalizeMatch(raw, source, sourceOrder = 0) {

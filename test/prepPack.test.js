@@ -197,3 +197,24 @@ test('record shows the round differential; top players show kills and deaths fir
   assert.match(pack.embeds[1].fields.find((field) => field.name === 'Top players').value, /^⭐ Zeph: 67 K · 47 D · 1\.43 K\/D · /);
   assert.ok(pack.embeds[0].fields.some((field) => field.name === 'H2H'));
 });
+
+test('a single match fetched by ID keeps its Group Stage round, not "Quarter Finals"', async () => {
+  const { FaceitClient } = await import('../src/faceit.js');
+  const raw = {
+    match_id: '1-x', status: 'READY', round: 2, group: 9, competition_id: 'grp', competition_name: 'CROSSFIRE S7 Group Stage',
+    teams: { faction1: { faction_id: 'a', name: 'NineFlyeSports', roster: [] }, faction2: { faction_id: 'b', name: 'enigma', roster: [] } }
+  };
+  const client = new FaceitClient('key', [{ type: 'championship', id: 'grp', name: 'Group Stage' }, { type: 'championship', id: 'po', name: 'Playoffs' }]);
+  client.request = async () => raw;
+  const match = await client.getMatch('1-x');
+  assert.equal(match.round, 'Group Stage - Round 2');
+  assert.equal(match.group, 'Group I');
+  // Not one of the configured sources: FACEIT's competition name still says it's group stage.
+  const other = new FaceitClient('key', []);
+  other.request = async () => raw;
+  assert.equal((await other.getMatch('1-x')).round, 'Group Stage - Round 2');
+  // A playoff source still gets bracket names.
+  const playoff = new FaceitClient('key', [{ type: 'championship', id: 'grp', name: 'Playoffs' }]);
+  playoff.request = async () => ({ ...raw, group: 1 });
+  assert.equal((await playoff.getMatch('1-x')).round, 'Upper Bracket - Round 2');
+});
