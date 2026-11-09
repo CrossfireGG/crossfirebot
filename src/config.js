@@ -241,6 +241,11 @@ export function getConfig() {
     crewReminderTime: /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(process.env.CREW_REMINDER_TIME || '').trim())
       ? String(process.env.CREW_REMINDER_TIME).trim()
       : '18:00',
+    // Caster prep packs: posted here for main stream matches, this many minutes before.
+    prepChannelId: process.env.PREP_CHANNEL_ID || '1569447282716311584',
+    prepLeadMinutes: Math.max(10, Number(process.env.PREP_LEAD_MINUTES || 45) || 45),
+    // The production team role: may use /cf prep and /crossfire teamnotes.
+    prodRoleId: process.env.PROD_ROLE_ID || '1474117290600562920',
     // Linked in the reminder DM.
     availabilitySheetUrl: process.env.AVAILABILITY_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1I4lcVFTOG9C1ju_50YJHVi3TCe_694_vkKCxzIXeIso/edit',
     // Optional: restrict accepted stream platforms (twitch, youtube, kick). Empty = all.

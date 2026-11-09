@@ -35,6 +35,12 @@
  *   "availability"        reads the crew availability tabs (PROD SCHEDULE, Admin Schedule) and
  *                         returns each tab's cell text and background colours (read-only). The
  *                         bot works out who is free from the legend colours and cell text.
+ *   "teamInfo"            reads the "Team Info" tab (read-only): every cell's text and the link
+ *                         behind it (the HLTV / Liquipedia labels are links). Used in prep packs.
+ *   "teamInfoUpdate"      writes one team's row on the "Team Info" tab (/crossfire teamnotes):
+ *                         finds the row by team name (or adds one) and sets the given columns,
+ *                         adding a column header if it is missing. Links are written as a label
+ *                         ("HLTV") hyperlinked to the URL, like the rest of the tab.
  *   "postCastForms"       looks up which stream request IDs have a response in the
  *                         post-cast stats form's response sheet (read-only). The bot uses
  *                         this to block casters who skipped the form for their last cast.
@@ -62,6 +68,8 @@ const POST_CAST_REQUEST_ID_HEADER = 'Request ID';
 
 // Crew availability tabs in this spreadsheet, read by the "availability" action.
 const AVAILABILITY_TABS = ['PROD SCHEDULE', 'Admin Schedule'];
+// Team links and notes for caster prep packs.
+const TEAM_INFO_TAB = 'Team Info';
 
 const DATE_TIME_HEADER = 'DATE & TIME';
 const HEADERS = [
@@ -104,6 +112,8 @@ function doPost(e) {
     const action = body.action || 'schedule';
     if (action === 'postCastForms') return lookupPostCastForms(body.requestIds || []);
     if (action === 'availability') return readAvailability();
+    if (action === 'teamInfo') return readTeamInfo();
+    if (action === 'teamInfoUpdate') return updateTeamInfo(body.team, body.fields || {});
     const sheet = getOrCreateSheet();
     if (hasSeparateTimeColumn(sheet)) {
       return reply(409, { ok: false, error: 'the ' + SHEET_NAME + ' tab still has separate Date and TIME columns: run combineDateAndTime once in the Apps Script editor' });
@@ -318,6 +328,90 @@ function readAvailability() {
     tabs.push({ name: name, values: values, backgrounds: backgrounds });
   });
   return reply(200, { ok: true, tabs: tabs });
+}
+
+// --- Team Info tab ---------------------------------------------------------------------
+
+function teamInfoSheet(create) {
+  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+  let sheet = spreadsheet.getSheets().filter(function (tab) {
+    return tab.getName().trim().toLowerCase() === TEAM_INFO_TAB.toLowerCase();
+  })[0] || null;
+  if (!sheet && create) {
+    sheet = spreadsheet.insertSheet(TEAM_INFO_TAB);
+    sheet.getRange(1, 1, 1, 3).setValues([['Name', 'HLTV', 'Liquipedia']]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function cellLink(rich) {
+  if (!rich) return null;
+  const direct = rich.getLinkUrl();
+  if (direct) return direct;
+  const run = rich.getRuns().filter(function (part) { return part.getLinkUrl(); })[0];
+  return run ? run.getLinkUrl() : null;
+}
+
+function readTeamInfo() {
+  const sheet = teamInfoSheet(false);
+  if (!sheet || sheet.getLastRow() < 1) return reply(200, { ok: true, rows: [] });
+  const range = sheet.getDataRange();
+  const values = range.getDisplayValues();
+  const rich = range.getRichTextValues();
+  const rows = values.map(function (row, r) {
+    return row.map(function (text, c) { return { text: text, link: cellLink(rich[r][c]) }; });
+  });
+  return reply(200, { ok: true, rows: rows });
+}
+
+// Same matching as the bot: "Celestial" matches "Celestial Esports".
+function teamInfoKey(name) {
+  return String(name || '').toLowerCase().replace(/\b(e-?sports?|gaming|team|club|gg|cs2?|org)\b/g, ' ').replace(/[^a-z0-9]+/g, '');
+}
+
+// fields: { "<Column header>": { text } | { link, label } | { clear: true } }
+function updateTeamInfo(team, fields) {
+  const name = String(team || '').trim();
+  if (!name) return reply(400, { ok: false, error: 'team is required' });
+  const sheet = teamInfoSheet(true);
+  const headers = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getDisplayValues()[0].map(function (header) { return String(header).trim(); });
+  let nameColumn = 0;
+  headers.forEach(function (header, index) { if (!nameColumn && /^(name|team|team name)$/i.test(header)) nameColumn = index + 1; });
+  if (!nameColumn) nameColumn = 1;
+  const key = teamInfoKey(name);
+  const lastRow = sheet.getLastRow();
+  let targetRow = 0;
+  let best = 0;
+  if (lastRow >= 2) {
+    sheet.getRange(2, nameColumn, lastRow - 1, 1).getDisplayValues().forEach(function (cells, index) {
+      const other = teamInfoKey(cells[0]);
+      if (!other) return;
+      const score = other === key ? 1000
+        : (other.length >= 4 && key.length >= 4 && (key.indexOf(other) === 0 || other.indexOf(key) === 0)) ? Math.min(other.length, key.length) : 0;
+      if (score > best) { best = score; targetRow = index + 2; }
+    });
+  }
+  const created = !targetRow;
+  if (!targetRow) {
+    targetRow = lastRow + 1;
+    sheet.getRange(targetRow, nameColumn).setValue(name);
+  }
+  Object.keys(fields || {}).forEach(function (header) {
+    const field = fields[header] || {};
+    let column = 0;
+    headers.forEach(function (existing, index) { if (!column && existing.toLowerCase() === header.toLowerCase()) column = index + 1; });
+    if (!column) {
+      column = sheet.getLastColumn() + 1;
+      sheet.getRange(1, column).setValue(header).setFontWeight('bold');
+      headers[column - 1] = header;
+    }
+    const cell = sheet.getRange(targetRow, column);
+    if (field.clear) cell.clearContent();
+    else if (field.link) cell.setRichTextValue(SpreadsheetApp.newRichTextValue().setText(field.label || header).setLinkUrl(field.link).build());
+    else cell.setValue(String(field.text || ''));
+  });
+  return reply(200, { ok: true, row: targetRow, created: created });
 }
 
 // Which of the given request IDs have a post-cast form response. Read-only.

@@ -136,6 +136,14 @@ export class LogOnlyScheduleSheet {
     return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)', tabs: [] };
   }
 
+  async readTeamInfo() {
+    return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)', rows: [] };
+  }
+
+  async updateTeamInfo() {
+    return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)' };
+  }
+
   // Without a sheet there is nothing to look in, so no form is ever confirmed here.
   async lookupPostCastForms(requestIds) {
     this.log.info?.(`Schedule sheet (log-only): cannot look up post-cast forms for ${(requestIds || []).join(', ')}`);
@@ -201,6 +209,20 @@ export class AppsScriptScheduleSheet {
     const { body, ...result } = await this.post('availability', null);
     if (!result.ok) return { ...result, tabs: [] };
     return { ...result, tabs: Array.isArray(body.tabs) ? body.tabs : [] };
+  }
+
+  // The "Team Info" tab: { rows: [[{ text, link }]] } (row 0 is the header).
+  async readTeamInfo() {
+    const { body, ...result } = await this.post('teamInfo', null);
+    if (!result.ok) return { ...result, rows: [] };
+    return { ...result, rows: Array.isArray(body.rows) ? body.rows : [] };
+  }
+
+  // Sets columns on one team's "Team Info" row: fields = { Header: { text } | { link, label } | { clear: true } }.
+  async updateTeamInfo(team, fields) {
+    const { body, ...result } = await this.post('teamInfoUpdate', null, { team, fields });
+    if (!result.ok) return result;
+    return { ...result, row: body.row ?? null, created: Boolean(body.created) };
   }
 
   async post(action, row, extra = {}) {

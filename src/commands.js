@@ -242,6 +242,12 @@ export const commands = [
     )
     .addSubcommand((subcommand) =>
       subcommand
+        .setName('prep')
+        .setDescription('Caster prep pack for any match: rosters, records, maps, players, head-to-head')
+        .addStringOption((option) => option.setName('match').setDescription('FACEIT matchroom link').setRequired(true))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
         .setName('crewstats')
         .setDescription('Season counts: community casts per caster, main stream matches per person and role')
         .addUserOption((option) => option.setName('user').setDescription('One person\'s full season').setRequired(false))
@@ -288,4 +294,10 @@ export const commands = [
     .addSubcommand((subcommand) => subcommand.setName('rounds').setDescription('Show configured round windows and defaults'))
     .addSubcommand((subcommand) => subcommand.setName('veto').setDescription('Show veto status for this match room'))
     .addSubcommand((subcommand) => subcommand.setName('help').setDescription('Show CROSSFIRE command help and rules links'))
+    .addSubcommand((subcommand) => subcommand.setName('teamnotes').setDescription('Production: see or set a team\'s pronunciation, notes, HLTV and Liquipedia (Team Info tab)')
+      .addStringOption((option) => option.setName('team').setDescription('Team').setRequired(true).setAutocomplete(true))
+      .addStringOption((option) => option.setName('pronunciation').setDescription('How to say the name (none to clear)').setRequired(false).setMaxLength(100))
+      .addStringOption((option) => option.setName('notes').setDescription('Anything casters should know (none to clear)').setRequired(false).setMaxLength(500))
+      .addStringOption((option) => option.setName('hltv').setDescription('HLTV team page link (none to clear)').setRequired(false))
+      .addStringOption((option) => option.setName('liquipedia').setDescription('Liquipedia page link (none to clear)').setRequired(false)))
 ].map((command) => command.toJSON());

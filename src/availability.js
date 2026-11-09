@@ -258,6 +258,7 @@ export function parseCellTimes(rawText) {
   const windows = [];
   let latestStart = null;
   const segments = cleaned
+    .replace(/\b(?:or|and)\s+later\b/g, 'onwards')
     .replace(new RegExp(`${TIME}\\s*\\+`, 'g'), 'after $&')
     .replace(/\+/g, ' ')
     .split(/\/\/|\/(?!\d)|,|;|&|\band\b|\bor\b|\n/);
@@ -265,6 +266,12 @@ export function parseCellTimes(rawText) {
     const part = segment.trim();
     if (!part) continue;
     let match = part.match(new RegExp(`^(?:after|from|starting|start(?:ing)? at|available after)\\s+${TIME}`));
+    if (match) {
+      windows.push([toMinutes(match[1], match[2], match[3]), ALL_DAY[1]]);
+      continue;
+    }
+    // "9:30 EST Earliest", "8 or later", "earliest 9": free from then on.
+    match = part.match(new RegExp(`^${TIME}\\s*(?:earliest|or\\s+later|and\\s+later|onwards?|on)$`)) || part.match(new RegExp(`^earliest\\s+${TIME}$`));
     if (match) {
       windows.push([toMinutes(match[1], match[2], match[3]), ALL_DAY[1]]);
       continue;

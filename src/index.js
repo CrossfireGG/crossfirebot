@@ -83,6 +83,10 @@ import {
   updateCrewAvailability,
   listCrewHistory,
   saveCrewHistory,
+  getMatchStatsCache,
+  saveMatchStats,
+  getTeamInfoCache,
+  saveTeamInfoCache,
   claimMainStreamDeliveryPrompt,
   deleteMainStreamCoverage,
   getSheetSync,
@@ -193,6 +197,7 @@ import {
 } from './streamRequest.js';
 import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
+import { buildPrepPack, compactMatchStats, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, teamKey } from './prepPack.js';
 import {
   STAT_ROLES,
   STAT_ROLE_LABELS,
@@ -407,6 +412,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
       if (interaction.commandName === 'request') await handleStreamRequestAutocomplete(interaction);
+      if (interaction.commandName === 'crossfire' && interaction.options.getSubcommand(false) === 'teamnotes') await handleTeamNotesAutocomplete(interaction);
       const cfSubcommand = interaction.commandName === 'cf' ? interaction.options.getSubcommand(false) : null;
       if (cfSubcommand === 'mainstream') await handleMainStreamAutocomplete(interaction);
       else if (cfSubcommand === 'crewlink') await handleCrewLinkAutocomplete(interaction);
@@ -424,8 +430,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
       const streamStaffCommand = interaction.commandName === 'cf'
-        && ['streams', 'forms', 'upcoming', 'mainstream', 'whosfree', 'crewlink', 'crewstats', 'crewimport'].includes(interaction.options.getSubcommand(false));
-      const allowed = streamStaffCommand ? canManageStreamRequests(interaction.member) : canUseBotAdminCommand(interaction.member);
+        && ['streams', 'forms', 'upcoming', 'mainstream', 'whosfree', 'crewlink', 'crewstats', 'crewimport', 'prep'].includes(interaction.options.getSubcommand(false));
+      const prodCommand = interaction.commandName === 'cf' && interaction.options.getSubcommand(false) === 'prep' && hasProdRole(interaction.member);
+      const allowed = prodCommand || (streamStaffCommand ? canManageStreamRequests(interaction.member) : canUseBotAdminCommand(interaction.member));
       if (!allowed) {
         await interaction.reply({ content: 'Only admins/match staff can use this bot command.', ephemeral: true });
         return;
@@ -682,6 +689,10 @@ async function handleAdminCommand(interaction) {
       await handleCrewStatsCommand(interaction);
       return;
     }
+    if (subcommand === 'prep') {
+      await handlePrepCommand(interaction);
+      return;
+    }
     if (subcommand === 'crewimport') {
       await handleCrewImportCommand(interaction);
       return;
@@ -776,6 +787,10 @@ async function handleBotStatus(interaction) {
 async function handleCrossfireCommand(interaction) {
   await interaction.deferReply({ ephemeral: true });
   const subcommand = interaction.options.getSubcommand();
+  if (subcommand === 'teamnotes') {
+    await handleTeamNotesCommand(interaction);
+    return;
+  }
   const member = interaction.member;
   const staff = isAdminStaff(member);
   const storedMatches = await listStoredMatches();
@@ -7684,6 +7699,9 @@ async function runStreamOperationsTick(now = Date.now()) {
   await sendOverduePostCastForms(now).catch((error) => console.error('Overdue post-cast forms failed:', error));
   await postOpenMatchesDigest(now).catch((error) => console.error('Daily open matches post failed:', error));
   await sendDueMainStreamPrompts(now).catch((error) => console.error('Main stream connection prompts failed:', error));
+  await postDuePrepPacks(now).catch((error) => console.error('Prep packs failed:', error));
+  await syncTeamInfo(now).catch((error) => console.error('Team Info sync failed:', error));
+  await fillSeasonMatchStats().catch((error) => console.error('Season match stats fill failed:', error.message || error));
   await syncSheetResultsAndStats(now).catch((error) => console.error('Sheet results/stats sync failed:', error));
   await syncCrewAvailability(now).catch((error) => console.error('Crew availability sync failed:', error));
   await sendCrewAvailabilityReminders(now).catch((error) => console.error('Crew availability reminders failed:', error));
@@ -8898,4 +8916,276 @@ async function sendScheduleStaffAlert(stored, content) {
     content: `${getStaffMentions(channel.guild)}\n${content}${channelLink}`.slice(0, 2000),
     allowedMentions: getAdminAllowedMentions(channel.guild)
   }).catch(() => null));
+}
+
+
+// --- Caster prep packs ----------------------------------------------------------------------
+// Main stream matches get a prep pack in PREP_CHANNEL_ID PREP_LEAD_MINUTES before the start; it is
+// rebuilt every 5 minutes until 2 hours after the start and edited (with a note) when a lineup or
+// the maps change. `/cf prep match:<link>` builds one for any match. Season data comes from the
+// FACEIT championship match list (cached 10 minutes) and per-match stats (stored once per match,
+// filled in the background). Team links and notes come from the "Team Info" tab.
+
+const PREP_RECHECK_MS = 5 * 60 * 1000;
+const PREP_UPDATE_UNTIL_MS = 2 * 60 * 60 * 1000;
+const SEASON_MATCHES_TTL_MS = 10 * 60 * 1000;
+const TEAM_INFO_SYNC_MS = 30 * 60 * 1000;
+let seasonMatchesCache = { at: 0, matches: [] };
+let lastTeamInfoErrorLogged = null;
+
+function hasProdRole(member) {
+  return Boolean(config.prodRoleId && member?.roles?.cache?.has?.(config.prodRoleId));
+}
+
+async function loadSeasonMatches({ force = false } = {}) {
+  if (!force && Date.now() - seasonMatchesCache.at < SEASON_MATCHES_TTL_MS && seasonMatchesCache.matches.length) return seasonMatchesCache.matches;
+  const season = statsSeason() || activeSeason();
+  const all = await faceit.getMatches();
+  const matches = all.filter((match) => {
+    const ms = prepMatchTimeMs(match);
+    return !season || !ms || seasonContains(season, easternParts(ms).dateKey);
+  });
+  seasonMatchesCache = { at: Date.now(), matches };
+  return matches;
+}
+
+// Stats for these finished matches: stored ones, plus up to `fetchLimit` fetched now.
+async function statsForMatches(matchIds, { fetchLimit = 20 } = {}) {
+  const cache = await getMatchStatsCache();
+  const found = new Map();
+  const fetched = {};
+  let fetches = 0;
+  for (const matchId of new Set(matchIds)) {
+    if (cache[matchId]) {
+      found.set(matchId, cache[matchId]);
+      continue;
+    }
+    if (fetches >= fetchLimit) continue;
+    fetches += 1;
+    const raw = await faceit.getMatchStats(matchId).catch(() => null);
+    if (!raw) continue;
+    const compact = compactMatchStats(raw);
+    if (!compact.maps.length) continue;
+    fetched[matchId] = compact;
+    found.set(matchId, compact);
+  }
+  if (Object.keys(fetched).length) await saveMatchStats(fetched);
+  return found;
+}
+
+// Background: a few finished season matches' stats per minute, so prep packs are quick.
+async function fillSeasonMatchStats() {
+  if (!faceit || !config.faceitApiKey) return;
+  const matches = await loadSeasonMatches();
+  const cache = await getMatchStatsCache();
+  const missing = matches.filter((match) => /finished/i.test(String(match.status || '')) && !cache[match.id]).map((match) => match.id);
+  if (missing.length) await statsForMatches(missing.slice(0, 5), { fetchLimit: 5 });
+}
+
+async function syncTeamInfo(now = Date.now(), { force = false } = {}) {
+  if (scheduleSheet.mode !== 'apps-script') return null;
+  const cached = await getTeamInfoCache();
+  const last = Math.max(Date.parse(cached.syncedAt || '') || 0, Date.parse(cached.errorAt || '') || 0);
+  if (!force && now - last < TEAM_INFO_SYNC_MS) return cached;
+  const result = await scheduleSheet.readTeamInfo();
+  if (!result.ok) {
+    if (result.error !== lastTeamInfoErrorLogged) console.error(`[Team Info] Could not read the Team Info tab: ${result.error}`);
+    lastTeamInfoErrorLogged = result.error;
+    return saveTeamInfoCache({ error: result.error, errorAt: new Date(now).toISOString() });
+  }
+  lastTeamInfoErrorLogged = null;
+  return saveTeamInfoCache({ teams: parseTeamInfoRows(result.rows), syncedAt: new Date(now).toISOString(), error: null, errorAt: null });
+}
+
+async function mainStreamHistory() {
+  const history = new Map();
+  for (const record of await listCrewHistory()) {
+    const startMs = Date.parse(record.startIso || '');
+    if (Number.isFinite(startMs)) history.set(record.matchId, { matchId: record.matchId, startMs });
+  }
+  for (const booking of await crewBookings()) history.set(booking.matchId, { matchId: booking.matchId, startMs: booking.startMs });
+  return [...history.values()];
+}
+
+async function buildPrepForMatch(matchId) {
+  const match = await faceit.getMatch(matchId);
+  const seasonMatches = await loadSeasonMatches();
+  const teamIds = [match.raw?.teams?.faction1?.faction_id, match.raw?.teams?.faction2?.faction_id].filter(Boolean);
+  const names = [match.teamA, match.teamB].map((name) => String(name || '').toLowerCase());
+  const relevant = seasonMatches.filter((candidate) => /finished/i.test(String(candidate.status || '')) && [candidate.raw?.teams?.faction1, candidate.raw?.teams?.faction2]
+    .some((faction) => (faction?.faction_id && teamIds.includes(faction.faction_id)) || names.includes(String(faction?.name || '').toLowerCase())));
+  const group = match.group;
+  const groupMatches = group ? seasonMatches.filter((candidate) => candidate.group === group && /finished/i.test(String(candidate.status || ''))) : [];
+  const statsById = await statsForMatches([...relevant, ...groupMatches].map((candidate) => candidate.id));
+  const coverage = await getMainStreamCoverage(matchId);
+  const stored = await getStoredMatch(matchId);
+  const teamInfo = (await getTeamInfoCache()).teams || [];
+  return buildPrepPack({
+    match,
+    seasonMatches: seasonMatches.some((candidate) => candidate.id === match.id) ? seasonMatches : [...seasonMatches, match],
+    statsById,
+    teamInfo,
+    veto: await getVeto(matchId).catch(() => null),
+    streamHistory: await mainStreamHistory(),
+    startIso: await approvedScheduleIso(matchId) || getFaceitScheduledAtIso(match),
+    streamUrl: coverage ? mainStreamUrlFor(coverage) : null,
+    matchChannelId: stored?.discord?.channelId || null
+  });
+}
+
+function prepEmbeds(pack, { note = null } = {}) {
+  return pack.embeds.map((card, index) => {
+    const embed = new EmbedBuilder().setTitle(card.title.slice(0, 256)).setColor(index === 0 ? 0x4a86e8 : 0x2b2d31);
+    const description = index === 0 && note ? `${note}\n${card.description || ''}` : card.description;
+    if (description) embed.setDescription(description.slice(0, 4000));
+    if (card.fields?.length) embed.addFields(card.fields.map((field) => ({ name: field.name.slice(0, 256), value: (field.value || '—').slice(0, 1024), inline: Boolean(field.inline) })));
+    if (index === 0) embed.setFooter({ text: 'Caster prep · FACEIT stats this season · /cf prep for any match' });
+    return embed;
+  });
+}
+
+function prepChangeNote(previousSignature, nextSignature, vetoState) {
+  const [oldRosters, oldMaps] = String(previousSignature || '').split('#');
+  const [newRosters, newMaps] = String(nextSignature || '').split('#');
+  const changes = [];
+  if (oldMaps !== newMaps) changes.push(vetoState === 'done' ? 'maps are in' : 'maps changed');
+  if (oldRosters !== newRosters) changes.push('a lineup changed');
+  return changes.length ? `🔄 **Updated <t:${Math.floor(Date.now() / 1000)}:R>: ${changes.join(' and ')}.**` : null;
+}
+
+async function postDuePrepPacks(now = Date.now()) {
+  if (!config.prepChannelId || !config.faceitApiKey) return;
+  const leadMs = config.prepLeadMinutes * 60 * 1000;
+  for (const { coverage, startMs } of await crewBookings()) {
+    if (now < startMs - leadMs || now > startMs + PREP_UPDATE_UNTIL_MS) continue;
+    if (!coverage.prepMessageId) {
+      if (now > startMs + 15 * 60 * 1000) continue;
+      const channel = await client.channels.fetch(config.prepChannelId).catch(() => null);
+      if (!channel?.isTextBased?.()) return;
+      const pack = await buildPrepForMatch(coverage.matchId).catch((error) => {
+        console.error(`[Prep] ${coverage.matchId}: ${error.message || error}`);
+        return null;
+      });
+      if (!pack) continue;
+      const casters = (coverage.crew?.casters || []).filter(Boolean);
+      const message = await channel.send({
+        content: `🎙️ Prep for **${coverage.matchup}** (main stream)${casters.length ? ` · ${casters.map((id) => `<@${id}>`).join(' ')}` : ''}`,
+        embeds: prepEmbeds(pack),
+        allowedMentions: { parse: [], users: casters }
+      }).catch(() => null);
+      if (!message) continue;
+      await saveMainStreamCoverage(coverage.matchId, { prepChannelId: channel.id, prepMessageId: message.id, prepSignature: pack.signature, prepCheckedAt: new Date(now).toISOString() });
+      await appendAuditLog({ type: 'prep_pack_posted', matchId: coverage.matchId }).catch(() => null);
+      continue;
+    }
+    if (now - (Date.parse(coverage.prepCheckedAt || '') || 0) < PREP_RECHECK_MS) continue;
+    await saveMainStreamCoverage(coverage.matchId, { prepCheckedAt: new Date(now).toISOString() });
+    const pack = await buildPrepForMatch(coverage.matchId).catch(() => null);
+    if (!pack || pack.signature === coverage.prepSignature) continue;
+    const channel = await client.channels.fetch(coverage.prepChannelId).catch(() => null);
+    const message = channel?.isTextBased?.() ? await channel.messages.fetch(coverage.prepMessageId).catch(() => null) : null;
+    if (!message) continue;
+    await message.edit({ embeds: prepEmbeds(pack, { note: prepChangeNote(coverage.prepSignature, pack.signature, pack.vetoState) }) }).catch(() => null);
+    await saveMainStreamCoverage(coverage.matchId, { prepSignature: pack.signature });
+  }
+}
+
+async function handlePrepCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const parsed = parseFaceitMatchRoomLink(interaction.options.getString('match', true));
+  if (!parsed) {
+    await interaction.editReply('That is not a FACEIT matchroom link.');
+    return;
+  }
+  try {
+    const pack = await buildPrepForMatch(parsed.matchId);
+    await interaction.editReply({ embeds: prepEmbeds(pack) });
+  } catch (error) {
+    await interaction.editReply(`Couldn't build the prep pack: ${error.message || error}`.slice(0, 2000));
+  }
+}
+
+async function handleTeamNotesCommand(interaction) {
+  if (!hasProdRole(interaction.member) && !canManageStreamRequests(interaction.member)) {
+    await interaction.editReply('Only the production team and stream staff can edit team notes.');
+    return;
+  }
+  const team = interaction.options.getString('team', true).trim();
+  const clear = (value) => /^(none|clear|remove|-)$/i.test(String(value || '').trim());
+  const fields = {};
+  const problems = [];
+  const text = (option, header) => {
+    const value = interaction.options.getString(option);
+    if (value === null || value === undefined) return;
+    fields[header] = clear(value) ? { clear: true } : { text: value.trim() };
+  };
+  const link = (option, header) => {
+    const value = interaction.options.getString(option);
+    if (value === null || value === undefined) return;
+    if (clear(value)) {
+      fields[header] = { clear: true };
+      return;
+    }
+    const url = /^https?:\/\//i.test(value.trim()) ? value.trim() : `https://${value.trim()}`;
+    try {
+      new URL(url);
+      fields[header] = { link: url, label: header };
+    } catch {
+      problems.push(`${header} link isn't a valid URL.`);
+    }
+  };
+  text('pronunciation', 'Pronunciation');
+  text('notes', 'Notes');
+  link('hltv', 'HLTV');
+  link('liquipedia', 'Liquipedia');
+  if (problems.length) {
+    await interaction.editReply(problems.join(' '));
+    return;
+  }
+  if (!Object.keys(fields).length) {
+    const cache = await syncTeamInfo(Date.now()) || await getTeamInfoCache();
+    const info = findTeamInfo(cache.teams || [], team);
+    await interaction.editReply(info
+      ? [
+        `**${info.name}** on the Team Info tab:`,
+        `Pronunciation: ${info.pronunciation || '—'}`,
+        `Notes: ${info.notes || '—'}`,
+        ...Object.entries(info.links).map(([label, url]) => `${label}: <${url}>`),
+        'Change any of it with the options on this command (`none` clears one).'
+      ].join('\n')
+      : `**${team}** isn't on the Team Info tab yet. Add something with the options on this command.`);
+    return;
+  }
+  const result = await scheduleSheet.updateTeamInfo(team, fields);
+  if (!result.ok) {
+    await interaction.editReply(`The Team Info tab wasn't updated: ${result.error}`);
+    return;
+  }
+  await syncTeamInfo(Date.now(), { force: true }).catch(() => null);
+  await appendAuditLog({ type: 'team_info_updated', actorId: interaction.user.id, team, fields: Object.keys(fields) }).catch(() => null);
+  await interaction.editReply(`${result.created ? 'Added' : 'Updated'} **${team}** on the Team Info tab (${Object.keys(fields).join(', ')}). It shows in prep packs from now on.`);
+}
+
+async function handleTeamNotesAutocomplete(interaction) {
+  const query = String(interaction.options.getFocused() || '').toLowerCase();
+  const names = new Set();
+  for (const match of seasonMatchesCache.matches) {
+    if (match.teamA) names.add(match.teamA);
+    if (match.teamB) names.add(match.teamB);
+  }
+  for (const team of (await getTeamInfoCache()).teams || []) {
+    if (![...names].some((name) => teamKey(name) === team.key)) names.add(team.name);
+  }
+  if (!names.size) {
+    for (const stored of await listStoredMatches()) {
+      if (stored.match?.teamA) names.add(stored.match.teamA);
+      if (stored.match?.teamB) names.add(stored.match.teamB);
+    }
+  }
+  await interaction.respond([...names]
+    .filter((name) => !query || name.toLowerCase().includes(query))
+    .sort((a, b) => a.localeCompare(b))
+    .slice(0, 25)
+    .map((name) => ({ name: name.slice(0, 100), value: name.slice(0, 100) })))
+    .catch(() => null);
 }

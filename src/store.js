@@ -37,7 +37,9 @@ function normalizeDb(db) {
     seasons: Array.isArray(db.seasons) ? db.seasons : [],
     sheetSync: db.sheetSync || {},
     crewAvailability: db.crewAvailability || {},
-    crewHistory: db.crewHistory || {}
+    crewHistory: db.crewHistory || {},
+    matchStats: db.matchStats || {},
+    teamInfoCache: db.teamInfoCache || {}
   };
 }
 
@@ -770,5 +772,30 @@ export async function saveCrewHistory(records) {
       if (record?.matchId) db.crewHistory[record.matchId] = { ...record, savedAt: new Date().toISOString() };
     }
     return Object.keys(db.crewHistory).length;
+  });
+}
+
+// FACEIT per-map stats of finished matches (compact; they never change once a match is over).
+export async function getMatchStatsCache() {
+  return (await snapshot()).matchStats || {};
+}
+
+export async function saveMatchStats(entries) {
+  return mutateDb((db) => {
+    db.matchStats = db.matchStats || {};
+    for (const [matchId, stats] of Object.entries(entries || {})) db.matchStats[matchId] = stats;
+    return Object.keys(db.matchStats).length;
+  });
+}
+
+// The Team Info tab as last read: { syncedAt, teams, error }.
+export async function getTeamInfoCache() {
+  return (await snapshot()).teamInfoCache || {};
+}
+
+export async function saveTeamInfoCache(patch) {
+  return mutateDb((db) => {
+    db.teamInfoCache = { ...(db.teamInfoCache || {}), ...patch };
+    return db.teamInfoCache;
   });
 }

@@ -164,3 +164,9 @@ test('a whole day: availability summary and day parsing', async () => {
   assert.equal(parseDayKey('nov 12', '2026-11-09'), '2026-11-12');
   assert.equal(parseDayKey('9pm', '2026-11-09'), null);
 });
+
+test('"earliest" and "or later" mean free from that time on', () => {
+  assert.deepEqual(parseCellTimes('9:30 EST Earliest').windows, [[h(21, 30), h(28)]]);
+  assert.deepEqual(parseCellTimes('8 or later').windows, [[h(20), h(28)]]);
+  assert.deepEqual(parseCellTimes('earliest 9pm').windows, [[h(21), h(28)]]);
+});
