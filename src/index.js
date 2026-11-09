@@ -188,7 +188,7 @@ import {
   openMatchesDigestDue,
   UPCOMING_POST_FOOTER
 } from './streamRequest.js';
-import { parseScheduleClock } from './scheduleInput.js';
+import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
 import {
   CREW_FIELD_ROLES,
@@ -2880,6 +2880,17 @@ async function handleTextScheduleProposal(message, content, kind) {
   }
 
   const parsedSchedule = parseScheduleInput(proposedText);
+  // A time the bot can't read never goes to the other team or staff: it can't be checked against
+  // the scheduling window or written to the sheet. Tournament Ops can still send it with --force.
+  if (!parsedSchedule && !(canScheduleDirectly && forceDirective.reason)) {
+    const command = kind === 'reschedule' ? 'reschedule' : 'schedule';
+    await message.reply([
+      `I couldn't read **${proposedText.slice(0, 100)}** as a date and time, so nothing was sent.`,
+      `Write the date and the time with AM/PM, like \`!${command} 11/9 8:30 PM ET\` or \`!${command} Monday 8:30 PM ET\`.`,
+      canScheduleDirectly ? 'Tournament Ops can add `--force reason` after the time to send it anyway.' : null
+    ].filter(Boolean).join('\n'));
+    return;
+  }
   const validation = validateScheduleRequest(stored, proposedText, kind, parsedSchedule?.date || null);
   const bypassPolicy = canScheduleDirectly && !validation.allowed && Boolean(forceDirective.reason);
   if (!validation.allowed && !bypassPolicy) {
@@ -7159,11 +7170,12 @@ function parseScheduleText(value) {
 
 function parseScheduleInput(value) {
   const original = String(value || '').trim();
-  const cleaned = original
+  // normalizeScheduleText also fixes "8:30est", "p.m." and misspelled months/days.
+  const cleaned = normalizeScheduleText(original
     .replace(/<@!?\d+>/g, ' ')
     .replace(/\bgame\s*time\b/gi, ' ')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim());
   const clock = parseScheduleClock(cleaned);
   if (!clock) return null;
 
