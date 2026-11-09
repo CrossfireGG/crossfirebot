@@ -78,6 +78,9 @@ import {
   updateSeasons,
   listMainStreamCoverageMatchIds,
   listMainStreamCoverage,
+  listMainStreamCoverageWithSchedules,
+  getCrewAvailability,
+  updateCrewAvailability,
   claimMainStreamDeliveryPrompt,
   deleteMainStreamCoverage,
   getSheetSync,
@@ -153,6 +156,7 @@ import {
   parseStreamRequestModalId,
   validateDenialReason,
   validateStreamDelivery,
+  parseEasternDateTime,
   buildCstvConnect,
   wantsSeasonPassword,
   parseSeasonPassword,
@@ -186,6 +190,21 @@ import {
 } from './streamRequest.js';
 import { parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
+import {
+  CREW_FIELD_ROLES,
+  CREW_ROLES,
+  CREW_ROLE_LABELS,
+  addDaysToKey,
+  availabilityAt,
+  easternParts,
+  mondayOf,
+  normalizeCrewName,
+  parseAvailability,
+  peopleMissingWeek,
+  rankCrewForRole,
+  weekdayIndex,
+  weekKeys
+} from './availability.js';
 import { createWebsitePublisher } from './websitePublisher.js';
 import { buildMainStreamSheetRow, buildScheduleSheetRow, buildStreamLinkSheetRow, createScheduleSheet } from './scheduleSheet.js';
 import { isAuthorizedStaffMember, parseForceDirective } from './operationsPolicy.js';
@@ -373,7 +392,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
       if (interaction.commandName === 'request') await handleStreamRequestAutocomplete(interaction);
-      if (interaction.commandName === 'cf' && interaction.options.getSubcommand(false) === 'mainstream') await handleMainStreamAutocomplete(interaction);
+      const cfSubcommand = interaction.commandName === 'cf' ? interaction.options.getSubcommand(false) : null;
+      if (cfSubcommand === 'mainstream') await handleMainStreamAutocomplete(interaction);
+      else if (cfSubcommand === 'crewlink') await handleCrewLinkAutocomplete(interaction);
       else if (interaction.commandName === 'cf') await handleSeasonAutocomplete(interaction);
       return;
     }
@@ -387,7 +408,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
       const streamStaffCommand = interaction.commandName === 'cf'
-        && ['streams', 'forms', 'upcoming', 'mainstream'].includes(interaction.options.getSubcommand(false));
+        && ['streams', 'forms', 'upcoming', 'mainstream', 'whosfree', 'crewlink'].includes(interaction.options.getSubcommand(false));
       const allowed = streamStaffCommand ? canManageStreamRequests(interaction.member) : canUseBotAdminCommand(interaction.member);
       if (!allowed) {
         await interaction.reply({ content: 'Only admins/match staff can use this bot command.', ephemeral: true });
@@ -408,6 +429,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('crew_stream:')) {
       await handleCrewStreamSelect(interaction);
+      return;
+    }
+    if (interaction.isButton() && /^crew_drop(_yes|_no)?(:|$)/.test(interaction.customId)) {
+      await handleCrewDropButton(interaction);
       return;
     }
     if (interaction.isModalSubmit() && interaction.customId.startsWith('crew_submit:')) {
@@ -623,6 +648,14 @@ async function handleAdminCommand(interaction) {
 
     if (subcommand === 'mainstream') {
       await handleMainStreamCommand(interaction);
+      return;
+    }
+    if (subcommand === 'whosfree') {
+      await handleWhosFreeCommand(interaction);
+      return;
+    }
+    if (subcommand === 'crewlink') {
+      await handleCrewLinkCommand(interaction);
       return;
     }
   }
@@ -1232,6 +1265,10 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (/^!sendip\b/i.test(content)) {
       await handleSendIp(message, content);
+    }
+
+    if (/^!add\s*game\b/i.test(content)) {
+      await handleAddGameToSheet(message, content);
     }
   } catch (error) {
     console.error(error);
@@ -4542,10 +4579,29 @@ async function handleCrewOpenButton(interaction) {
     return;
   }
   const crew = coverage.crew || {};
+  // With the staff schedule read, each dropdown lists only people free for this match.
+  const selectOptions = await crewFormSelectOptions(coverage).catch((error) => {
+    console.error('[Crew availability] crew form options failed:', error);
+    return null;
+  });
   const modal = new ModalBuilder()
     .setCustomId(`crew_submit:${matchId}`)
     .setTitle(`Crew · ${coverage.matchup || 'Main stream'}`.slice(0, 45));
   modal.addLabelComponents(...PRODUCTION_CREW_FIELDS.map((field) => {
+    const options = selectOptions?.[field.key];
+    if (options?.length) {
+      const select = new StringSelectMenuBuilder()
+        .setCustomId(field.key)
+        .setRequired(field.required)
+        .setMinValues(field.required ? 1 : 0)
+        .setMaxValues(Math.min(field.max, options.length))
+        .setPlaceholder('Free people first · (matches this week)')
+        .addOptions(options);
+      return new LabelBuilder()
+        .setLabel(field.label)
+        .setDescription(field.key === 'casters' ? 'Caster 1, plus Caster 2 if there is one. Only people free then.' : 'Only people free then, from the staff schedule.')
+        .setStringSelectMenuComponent(select);
+    }
     const picker = new UserSelectMenuBuilder()
       .setCustomId(field.key)
       .setRequired(field.required)
@@ -4554,7 +4610,8 @@ async function handleCrewOpenButton(interaction) {
     const defaults = (field.key === 'casters' ? crew.casters || [] : [crew[field.key]]).filter(Boolean);
     if (defaults.length) picker.setDefaultUsers(...defaults);
     const label = new LabelBuilder().setLabel(field.label).setUserSelectMenuComponent(picker);
-    if (field.description) label.setDescription(field.description);
+    if (selectOptions) label.setDescription('Nobody on the staff schedule is free then, so pick anyone.');
+    else if (field.description) label.setDescription(field.description);
     return label;
   }));
   await interaction.showModal(modal);
@@ -4567,7 +4624,20 @@ async function handleCrewSubmit(interaction) {
   }
   const matchId = interaction.customId.slice('crew_submit:'.length);
   await interaction.deferReply({ ephemeral: true });
-  const picked = (key) => [...(interaction.fields.getSelectedUsers(key)?.keys() || [])];
+  // Each field is either a "who's free" dropdown (user IDs as values) or a plain user picker.
+  const picked = (key) => {
+    try {
+      const values = interaction.fields.getStringSelectValues(key);
+      if (values) return [...values];
+    } catch {
+      // not a string select
+    }
+    try {
+      return [...(interaction.fields.getSelectedUsers(key)?.keys() || [])];
+    } catch {
+      return [];
+    }
+  };
   const crew = {
     casters: picked('casters').slice(0, 2),
     producer: picked('producer')[0] || null,
@@ -4630,7 +4700,10 @@ async function dmNewCrewMembers(coverage, { postUrl = null, scheduleIso = null }
         streamUrl: mainStreamUrlFor(coverage),
         faceitUrl: coverage.faceitUrl,
         postUrl
-      })
+      }) + "\n\nCan't make it? Press the button below and staff will be told right away.",
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`crew_drop:${coverage.matchId}`).setLabel("Can't make it").setStyle(ButtonStyle.Danger)
+      )]
     }).then(() => true).catch(() => false));
     if (!sent) failed.push(userId);
   }
@@ -5349,14 +5422,13 @@ async function handleMainStreamCommand(interaction) {
   if (streamChanged) await refreshMainStreamCoverageNotice(coverage);
 
   // Crew: only the roles given change.
-  const crewOptions = {
-    caster1: interaction.options.getUser('caster1')?.id || null,
-    caster2: interaction.options.getUser('caster2')?.id || null,
-    producer: interaction.options.getUser('producer')?.id || null,
-    observer: interaction.options.getUser('observer')?.id || null,
-    admin: interaction.options.getUser('admin')?.id || null,
-    social: interaction.options.getUser('social')?.id || null
-  };
+  // Each crew option is a suggestion (user ID), an @mention or a name.
+  const crewOptions = {};
+  for (const key of ['caster1', 'caster2', 'producer', 'observer', 'admin', 'social']) {
+    const resolved = await resolveCrewInput(interaction.options.getString(key));
+    crewOptions[key] = resolved.id;
+    if (resolved.error) lines.push(resolved.error);
+  }
   const crewGiven = Object.values(crewOptions).some(Boolean);
   let previousCrew = null;
   if (crewGiven) {
@@ -5364,6 +5436,7 @@ async function handleMainStreamCommand(interaction) {
     const crew = mergeCrewOptions(previousCrew, crewOptions);
     coverage = await saveMainStreamCoverage(matchId, { crew, crewSetBy: actorId, crewSetAt: new Date().toISOString() });
     await appendAuditLog({ type: 'main_stream_crew_set', actorId, matchId, crew }).catch(() => null);
+    lines.push(...await crewAvailabilityWarnings(matchId, Object.values(crewOptions).filter(Boolean)).catch(() => []));
   }
   const crewReady = Boolean(coverage.crew?.casters?.length && coverage.crew?.producer);
   if (crewReady && (crewGiven || (streamChanged && coverage.scheduleMessageId))) {
@@ -5452,7 +5525,12 @@ async function handleMainStreamAutocomplete(interaction) {
     await interaction.respond([]).catch(() => null);
     return;
   }
-  const focused = String(interaction.options.getFocused() || '').toLowerCase();
+  const focusedOption = interaction.options.getFocused(true);
+  if (focusedOption.name !== 'stream') {
+    await interaction.respond(await crewAutocompleteChoices(interaction, focusedOption).catch(() => [])).catch(() => null);
+    return;
+  }
+  const focused = String(focusedOption.value || '').toLowerCase();
   await interaction.respond(config.mainStreamUrls
     .filter((url) => !focused || url.toLowerCase().includes(focused))
     .slice(0, 25)
@@ -7563,6 +7641,8 @@ async function runStreamOperationsTick(now = Date.now()) {
   await postOpenMatchesDigest(now).catch((error) => console.error('Daily open matches post failed:', error));
   await sendDueMainStreamPrompts(now).catch((error) => console.error('Main stream connection prompts failed:', error));
   await syncSheetResultsAndStats(now).catch((error) => console.error('Sheet results/stats sync failed:', error));
+  await syncCrewAvailability(now).catch((error) => console.error('Crew availability sync failed:', error));
+  await sendCrewAvailabilityReminders(now).catch((error) => console.error('Crew availability reminders failed:', error));
   const active = (await listStreamRequests()).filter((request) =>
     request.faceitLinkValid && request.matchId && !request.terminalNotifiedAt && STREAM_ACTIVE_STATUSES.includes(request.status)
   );
@@ -7738,4 +7818,629 @@ async function safelyRespondToInteraction(interaction, message) {
   } catch (error) {
     console.error(`Could not send interaction error response: ${error.message}`);
   }
+}
+
+
+// --- Crew availability (staff schedule sheet) ---------------------------------------
+// The PROD SCHEDULE / Admin Schedule tabs are read through the sheet web app every
+// CREW_AVAILABILITY_SYNC_MINUTES and stored, so the crew form (which must open within
+// 3 seconds) can list who is free without waiting on Google. See src/availability.js.
+
+let crewAvailabilitySyncing = null;
+const CREW_NAME_RETRY_MS = 6 * 60 * 60 * 1000;
+const CREW_STATE_WORDS = { free: 'Free', partial: 'Partly free', maybe: 'Maybe', unknown: 'Not filled in', busy: 'Busy' };
+
+function crewPeopleWithIds(stored) {
+  const links = stored?.links || {};
+  const resolved = stored?.resolved || {};
+  return (stored?.data?.people || []).map((person) => ({
+    ...person,
+    userId: links[person.key] || resolved[person.key]?.id || null
+  }));
+}
+
+async function crewGuild() {
+  const channel = config.productionScheduleChannelId
+    ? await client.channels.fetch(config.productionScheduleChannelId).catch(() => null)
+    : null;
+  return channel?.guild || client.guilds.cache.first() || null;
+}
+
+// A Discord member whose username, display name or nickname is exactly this sheet name.
+async function findMemberIdByName(guild, name) {
+  const target = normalizeCrewName(name);
+  if (!guild || !target) return null;
+  const found = await guild.members.search({ query: String(name).trim().slice(0, 32), limit: 10 }).catch(() => null);
+  const members = found ? [...found.values()] : [];
+  const namesOf = (member) => [member.user?.username, member.user?.globalName, member.nickname, member.displayName]
+    .filter(Boolean)
+    .map(normalizeCrewName);
+  const exact = members.filter((member) => namesOf(member).includes(target));
+  if (exact.length === 1) return exact[0].id;
+  return exact.find((member) => normalizeCrewName(member.user?.username) === target)?.id || null;
+}
+
+async function resolveCrewDiscordIds(people, stored, now) {
+  const guild = await crewGuild();
+  const resolved = { ...(stored?.resolved || {}) };
+  for (const person of people) {
+    if (stored?.links?.[person.key] || resolved[person.key]?.id) continue;
+    const checkedAt = Date.parse(resolved[person.key]?.checkedAt || '') || 0;
+    if (checkedAt && now - checkedAt < CREW_NAME_RETRY_MS) continue;
+    const id = guild ? await findMemberIdByName(guild, person.name) : null;
+    resolved[person.key] = { id, checkedAt: new Date(now).toISOString() };
+  }
+  return resolved;
+}
+
+// Reads the staff schedule tabs (at most every CREW_AVAILABILITY_SYNC_MINUTES unless forced).
+async function syncCrewAvailability(now = Date.now(), { force = false } = {}) {
+  if (!config.crewAvailabilityEnabled || scheduleSheet.mode !== 'apps-script') return null;
+  const stored = await getCrewAvailability();
+  const last = Math.max(Date.parse(stored.syncedAt || '') || 0, Date.parse(stored.errorAt || '') || 0);
+  if (!force && now - last < config.crewAvailabilitySyncMinutes * 60_000) return stored;
+  if (crewAvailabilitySyncing) return crewAvailabilitySyncing;
+  crewAvailabilitySyncing = (async () => {
+    const result = await scheduleSheet.readAvailability();
+    if (!result.ok) {
+      if (result.error !== stored.error) console.error(`[Crew availability] Could not read the staff schedule: ${result.error}`);
+      await updateCrewAvailability((state) => {
+        state.error = result.error;
+        state.errorAt = new Date(now).toISOString();
+      });
+      return getCrewAvailability();
+    }
+    const data = parseAvailability(result.tabs, { referenceYear: Number(easternParts(now).dateKey.slice(0, 4)) });
+    const resolved = await resolveCrewDiscordIds(data.people, stored, now);
+    await updateCrewAvailability((state) => {
+      state.data = data;
+      state.resolved = resolved;
+      state.syncedAt = new Date(now).toISOString();
+      state.error = null;
+      state.errorAt = null;
+    });
+    const fresh = await getCrewAvailability();
+    await checkBookedCrewAvailability(fresh, now).catch((error) => console.error('[Crew availability] booked crew check failed:', error));
+    return fresh;
+  })().finally(() => {
+    crewAvailabilitySyncing = null;
+  });
+  return crewAvailabilitySyncing;
+}
+
+// Start time of every main stream match (approved schedule, else FACEIT's time) and its crew.
+async function crewBookings() {
+  const bookings = [];
+  for (const { coverage, schedule } of await listMainStreamCoverageWithSchedules()) {
+    const approved = schedule?.adminApproved ? (schedule.scheduledAtIso || schedule.scheduledAt || null) : null;
+    const startMs = Date.parse(approved || coverage.faceitScheduledAtIso || '');
+    if (!Number.isFinite(startMs)) continue;
+    bookings.push({ coverage, matchId: coverage.matchId, startMs, userIds: crewUserIds(coverage.crew || {}) });
+  }
+  return bookings;
+}
+
+function workedThisWeek(bookings, userId, now) {
+  const week = new Set(weekKeys(mondayOf(easternParts(now).dateKey)));
+  return bookings.filter((booking) => booking.userIds.includes(userId) && week.has(easternParts(booking.startMs).dateKey)).length;
+}
+
+function bookedElsewhereAt(bookings, userId, matchId, startMs, durationMinutes) {
+  return bookings.some((booking) => booking.matchId !== matchId
+    && booking.userIds.includes(userId)
+    && Math.abs(booking.startMs - startMs) < durationMinutes * 60_000);
+}
+
+function rankCrew(people, role, { matchId = null, startMs, bookings, now, durationMinutes = config.crewMatchLengthMinutes }) {
+  return rankCrewForRole(people, role, startMs, durationMinutes, {
+    workCount: (person) => (person.userId ? workedThisWeek(bookings, person.userId, now) : 0),
+    bookedElsewhere: (person) => Boolean(person.userId) && bookedElsewhereAt(bookings, person.userId, matchId, startMs, durationMinutes)
+  });
+}
+
+function crewEntryDescription(entry) {
+  const note = entry.note && !/^free all day$/i.test(entry.note) ? `: ${entry.note}` : '';
+  return `${CREW_STATE_WORDS[entry.state] || entry.state}${note}`.slice(0, 100);
+}
+
+async function matchStartMs(matchId) {
+  const coverage = await getMainStreamCoverage(matchId);
+  let iso = await approvedScheduleIso(matchId) || coverage?.faceitScheduledAtIso || null;
+  if (!iso) iso = getFaceitScheduledAtIso((await getStoredMatch(matchId))?.match);
+  const ms = Date.parse(iso || '');
+  return Number.isFinite(ms) ? ms : null;
+}
+
+// Options for each crew form dropdown: people free for this match who can do the role, plus the
+// current picks. null = availability is not available (the form then uses plain user pickers).
+async function crewFormSelectOptions(coverage) {
+  const stored = await getCrewAvailability();
+  if (!config.crewAvailabilityEnabled || !stored.data) return null;
+  const startMs = await matchStartMs(coverage.matchId);
+  if (!startMs) return null;
+  const now = Date.now();
+  const people = crewPeopleWithIds(stored).filter((person) => person.userId);
+  const bookings = await crewBookings();
+  const crew = coverage.crew || {};
+  const result = {};
+  for (const field of PRODUCTION_CREW_FIELDS) {
+    const role = CREW_FIELD_ROLES[field.key];
+    const current = (field.key === 'casters' ? crew.casters || [] : [crew[field.key]]).filter(Boolean);
+    const options = [];
+    const seen = new Set();
+    for (const entry of rankCrew(people, role, { matchId: coverage.matchId, startMs, bookings, now })) {
+      const id = entry.person.userId;
+      const isCurrent = current.includes(id);
+      if (seen.has(id) || (!isCurrent && !['free', 'partial', 'maybe'].includes(entry.state))) continue;
+      seen.add(id);
+      options.push({
+        label: `${entry.person.name} (${entry.worked} this week)`.slice(0, 100),
+        description: crewEntryDescription(entry),
+        value: id,
+        default: isCurrent
+      });
+    }
+    for (const id of current) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const user = client.users.cache.get(id);
+      options.unshift({
+        label: (user?.globalName || user?.username || `User ${id}`).slice(0, 100),
+        description: 'Current pick (not on the staff schedule)',
+        value: id,
+        default: true
+      });
+    }
+    result[field.key] = options.slice(0, 25);
+  }
+  return result;
+}
+
+// Free people for the given roles, for alerts ("who could replace them").
+async function crewReplacementLines(matchId, roles, { excludeUserIds = [] } = {}) {
+  const stored = await getCrewAvailability();
+  const startMs = await matchStartMs(matchId);
+  if (!stored.data || !startMs) return [];
+  const now = Date.now();
+  const people = crewPeopleWithIds(stored).filter((person) => !excludeUserIds.includes(person.userId));
+  const bookings = await crewBookings();
+  const lines = [];
+  for (const role of [...new Set(roles)]) {
+    const free = rankCrew(people, role, { matchId, startMs, bookings, now })
+      .filter((entry) => ['free', 'partial'].includes(entry.state))
+      .slice(0, 6)
+      .map((entry) => `${entry.person.name} (${entry.state === 'free' ? `${entry.worked} this week` : entry.note})`);
+    lines.push(`**${CREW_ROLE_LABELS[role]} free:** ${free.length ? free.join(', ') : 'nobody on the staff schedule'}`);
+  }
+  return lines;
+}
+
+function crewRoleFromLabel(label) {
+  if (/^caster/i.test(label)) return 'caster';
+  if (/^producer/i.test(label)) return 'producer';
+  if (/^observer/i.test(label)) return 'observer';
+  if (/^admin/i.test(label)) return 'admin';
+  return 'social';
+}
+
+// Crew alerts go to CREW_ALERTS_CHANNEL_ID (pinging whoever set the crew), or by DM to that person.
+async function sendCrewAlert(coverage, content) {
+  const setBy = coverage?.crewSetBy || coverage?.requestedBy || null;
+  if (config.crewAlertsChannelId) {
+    const channel = await client.channels.fetch(config.crewAlertsChannelId).catch(() => null);
+    if (channel?.isTextBased?.()) {
+      const sent = await channel.send({
+        content: `${setBy ? `<@${setBy}> ` : ''}${content}`.slice(0, 2000),
+        allowedMentions: { parse: [], users: setBy ? [setBy] : [] }
+      }).catch(() => null);
+      if (sent) return true;
+    }
+  }
+  if (setBy) {
+    const user = await client.users.fetch(setBy).catch(() => null);
+    if (user && await user.send({ content: content.slice(0, 2000), allowedMentions: { parse: [] } }).then(() => true).catch(() => false)) return true;
+  }
+  console.log(`[Crew alert] ${content.replace(/\s+/g, ' ').slice(0, 300)}`);
+  return false;
+}
+
+// After each sync: a booked crew member whose day turned busy is flagged to staff (once per change).
+async function checkBookedCrewAvailability(stored, now = Date.now()) {
+  if (!stored?.data) return;
+  const byUser = new Map(crewPeopleWithIds(stored).filter((person) => person.userId).map((person) => [person.userId, person]));
+  for (const { coverage, startMs, userIds } of await crewBookings()) {
+    if (startMs <= now || !userIds.length) continue;
+    const previous = coverage.crewAvailabilityStates || {};
+    const states = {};
+    const alerts = [];
+    for (const userId of userIds) {
+      const person = byUser.get(userId);
+      if (!person) continue;
+      const { state, note } = availabilityAt(person, startMs, config.crewMatchLengthMinutes);
+      states[userId] = state;
+      if (state === 'busy' && previous[userId] && previous[userId] !== 'busy') alerts.push({ userId, person, note });
+    }
+    if (JSON.stringify(states) !== JSON.stringify(previous)) {
+      await saveMainStreamCoverage(coverage.matchId, { crewAvailabilityStates: states });
+    }
+    for (const alert of alerts) {
+      const roles = crewRolesFor(coverage.crew || {}, alert.userId);
+      const replacements = await crewReplacementLines(coverage.matchId, roles.map(crewRoleFromLabel), { excludeUserIds: [alert.userId] });
+      await sendCrewAlert(coverage, [
+        `⚠️ **${alert.person.name}** (<@${alert.userId}>) is now marked busy for **${coverage.matchup}** (${discordTimestamp(new Date(startMs).toISOString(), 'F')}), and they're ${roles.join(' & ') || 'on the crew'}.`,
+        alert.note ? `Staff schedule says: "${alert.note}".` : null,
+        "They're still on the crew. To swap them, use `/cf mainstream` or the crew form.",
+        ...replacements
+      ].filter(Boolean).join('\n'));
+      await appendAuditLog({ type: 'main_stream_crew_availability_changed', matchId: coverage.matchId, userId: alert.userId }).catch(() => null);
+    }
+  }
+}
+
+// Sunday at CREW_REMINDER_TIME: DM everyone who has not filled in any day of next week.
+async function sendCrewAvailabilityReminders(now = Date.now()) {
+  if (!config.crewAvailabilityEnabled || scheduleSheet.mode !== 'apps-script') return;
+  const { dateKey, minutes } = easternParts(now);
+  if (weekdayIndex(dateKey) !== 6) return;
+  const [hour, minute] = config.crewReminderTime.split(':').map(Number);
+  const target = hour * 60 + minute;
+  if (minutes < target || minutes > target + 180) return;
+  const nextMonday = addDaysToKey(dateKey, 1);
+  let stored = await getCrewAvailability();
+  if (stored.reminderWeek === nextMonday) return;
+  stored = await syncCrewAvailability(now, { force: true }) || stored;
+  if (!stored?.data || stored.error) return;
+  const claimed = await updateCrewAvailability((state) => {
+    if (state.reminderWeek === nextMonday) return false;
+    state.reminderWeek = nextMonday;
+    return true;
+  });
+  if (!claimed) return;
+  const { people, missingTabs } = peopleMissingWeek(stored.data, nextMonday);
+  const withIds = new Map(crewPeopleWithIds(stored).map((person) => [person.key, person.userId]));
+  const weekLabel = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' })
+    .format(new Date(`${nextMonday}T12:00:00Z`));
+  let sent = 0;
+  const failed = [];
+  const unlinked = [];
+  for (const person of people) {
+    const userId = withIds.get(person.key);
+    if (!userId) {
+      unlinked.push(person.name);
+      continue;
+    }
+    const user = await client.users.fetch(userId).catch(() => null);
+    const ok = Boolean(user && await user.send({
+      content: [
+        `📅 Hey ${person.name}! Your CROSSFIRE staff availability for the week of **${weekLabel}** isn't filled in yet.`,
+        `Please mark it here: <${config.availabilitySheetUrl}>`,
+        '- Colour the day with **Can Work**, **Could Work** or **Cant Work**',
+        '- Only free part of the day? Use the partial colour and write your latest start time (e.g. `8:00PM START`) or your hours (e.g. `After 7 EST`).'
+      ].join('\n')
+    }).then(() => true).catch(() => false));
+    if (ok) sent += 1;
+    else failed.push(person.name);
+  }
+  await appendAuditLog({ type: 'crew_availability_reminders_sent', week: nextMonday, sent, failed: failed.length, unlinked: unlinked.length }).catch(() => null);
+  const summary = [
+    `📅 Sunday reminder: DMed ${sent} staff member(s) to fill in the week of ${weekLabel}.`,
+    failed.length ? `Couldn't DM (DMs closed): ${failed.join(', ')}.` : null,
+    unlinked.length ? `Not linked to Discord, so not reminded: ${unlinked.join(', ')}. Link them with \`/cf crewlink\`.` : null,
+    missingTabs.length ? `Next week isn't on ${missingTabs.join(' / ')} yet, so nobody there was reminded.` : null
+  ].filter(Boolean).join('\n');
+  if (config.crewAlertsChannelId) await sendCrewAlert(null, summary);
+  else console.log(`[Crew availability] ${summary.replace(/\n/g, ' ')}`);
+}
+
+// Typed crew picks in `/cf mainstream`: a suggestion (user ID), an @mention, or a name.
+async function resolveCrewInput(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return { id: null };
+  const direct = text.match(/^<@!?(\d{17,20})>$/) || text.match(/^(\d{17,20})$/);
+  if (direct) return { id: direct[1] };
+  const name = text.replace(/^@/, '');
+  const person = crewPeopleWithIds(await getCrewAvailability()).find((entry) => entry.key === normalizeCrewName(name) && entry.userId);
+  if (person) return { id: person.userId };
+  const id = await findMemberIdByName(await crewGuild(), name);
+  if (id) return { id };
+  return { id: null, error: `⚠️ Couldn't find "${text}", so that role wasn't changed. Pick from the suggestions or @mention them.` };
+}
+
+// Warnings for crew picked in `/cf mainstream` who aren't marked free for the match.
+async function crewAvailabilityWarnings(matchId, userIds) {
+  const stored = await getCrewAvailability();
+  const startMs = await matchStartMs(matchId);
+  if (!stored.data || !startMs || !userIds.length) return [];
+  const byUser = new Map(crewPeopleWithIds(stored).filter((person) => person.userId).map((person) => [person.userId, person]));
+  const bookings = await crewBookings();
+  const time = discordTimestamp(new Date(startMs).toISOString(), 't');
+  const lines = [];
+  for (const userId of [...new Set(userIds)]) {
+    if (bookedElsewhereAt(bookings, userId, matchId, startMs, config.crewMatchLengthMinutes)) {
+      lines.push(`⚠️ <@${userId}> is already on another main stream crew around ${time}.`);
+      continue;
+    }
+    const person = byUser.get(userId);
+    if (!person) continue;
+    const { state, note } = availabilityAt(person, startMs, config.crewMatchLengthMinutes);
+    if (state !== 'free') lines.push(`⚠️ <@${userId}> isn't marked free at ${time} (${CREW_STATE_WORDS[state].toLowerCase()}${note ? `: ${note}` : ''}).`);
+  }
+  return lines;
+}
+
+async function crewAutocompleteChoices(interaction, focused) {
+  const role = CREW_FIELD_ROLES[focused.name];
+  if (!role) return [];
+  const stored = await getCrewAvailability();
+  const people = crewPeopleWithIds(stored).filter((person) => person.userId && person.roles?.includes(role));
+  if (!people.length) return [];
+  const link = interaction.options.getString('match');
+  const parsed = link ? parseFaceitMatchRoomLink(link) : null;
+  const matchId = parsed?.matchId || (await getStoredMatchByChannel(interaction.channelId))?.match?.id || null;
+  const startMs = matchId ? await matchStartMs(matchId) : null;
+  const now = Date.now();
+  const bookings = await crewBookings();
+  const query = normalizeCrewName(focused.value);
+  let entries = startMs
+    ? rankCrew(people, role, { matchId, startMs, bookings, now })
+    : people
+      .map((person) => ({ person, state: 'unknown', note: 'match time unknown', worked: workedThisWeek(bookings, person.userId, now) }))
+      .sort((a, b) => a.worked - b.worked || a.person.name.localeCompare(b.person.name));
+  // Typing a name searches everyone; an empty box shows only people who can make it.
+  entries = query
+    ? entries.filter((entry) => entry.person.key.includes(query))
+    : entries.filter((entry) => !startMs || ['free', 'partial', 'maybe'].includes(entry.state));
+  const seen = new Set();
+  return entries
+    .filter((entry) => !seen.has(entry.person.userId) && seen.add(entry.person.userId))
+    .slice(0, 25)
+    .map((entry) => ({
+      name: `${entry.person.name} · ${startMs ? crewEntryDescription(entry) : 'time unknown'} · ${entry.worked} this week`.slice(0, 100),
+      value: entry.person.userId
+    }));
+}
+
+// "Thurs 9:30pm", "11/12 9pm", "today 9pm", "November 12 9:30 PM" -> ms (Eastern).
+function parseCrewWhen(text, now = Date.now()) {
+  let value = String(text || '').trim();
+  const weekday = value.match(/^(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?,?\s+(.*)$/i);
+  if (weekday) {
+    const wanted = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].indexOf(weekday[1].toLowerCase());
+    const today = easternParts(now).dateKey;
+    const dateKey = addDaysToKey(today, (wanted - weekdayIndex(today) + 7) % 7);
+    const [year, month, day] = dateKey.split('-');
+    value = `${Number(month)}/${Number(day)}/${year} ${weekday[2]}`;
+  }
+  return parseEasternDateTime(value, new Date(now));
+}
+
+async function handleWhosFreeCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  if (!config.crewAvailabilityEnabled) {
+    await interaction.editReply('Crew availability is turned off (`CREW_AVAILABILITY=off`).');
+    return;
+  }
+  const whenText = interaction.options.getString('when', true).trim();
+  const durationMinutes = interaction.options.getInteger('length') || config.crewMatchLengthMinutes;
+  const stored = await syncCrewAvailability(Date.now()) || await getCrewAvailability();
+  if (!stored?.data) {
+    await interaction.editReply(`I haven't been able to read the staff schedule yet${stored?.error ? `: ${stored.error}` : ''}. The sheet web app needs the "availability" action (redeploy the Apps Script).`);
+    return;
+  }
+  const link = parseFaceitMatchRoomLink(whenText);
+  const matchId = link?.matchId || null;
+  const startMs = matchId ? await matchStartMs(matchId) : parseCrewWhen(whenText);
+  if (!Number.isFinite(startMs)) {
+    await interaction.editReply(matchId
+      ? 'That match has no time yet.'
+      : `Couldn't read "${whenText}". Try \`Thurs 9:30pm\`, \`11/12 9pm\`, \`today 9pm\` or a FACEIT matchroom link.`);
+    return;
+  }
+  const now = Date.now();
+  const people = crewPeopleWithIds(stored);
+  const bookings = await crewBookings();
+  const fields = [];
+  for (const role of CREW_ROLES) {
+    const ranked = rankCrew(people, role, { matchId, startMs, bookings, now, durationMinutes });
+    if (!ranked.length) continue;
+    const group = (state, format) => ranked.filter((entry) => entry.state === state).map(format);
+    const free = group('free', (entry) => `${entry.person.name} (${entry.worked})`);
+    const partial = group('partial', (entry) => `${entry.person.name} (${entry.note})`);
+    const maybe = group('maybe', (entry) => entry.person.name);
+    const value = [
+      free.length ? `✅ ${free.join(', ')}` : '✅ Nobody free for the whole match',
+      partial.length ? `🟡 Partly: ${partial.join(', ')}` : null,
+      maybe.length ? `❔ Maybe: ${maybe.join(', ')}` : null
+    ].filter(Boolean).join('\n');
+    fields.push({ name: CREW_ROLE_LABELS[role], value: value.slice(0, 1024) });
+  }
+  const syncedMs = Date.parse(stored.syncedAt || '');
+  const embed = new EmbedBuilder()
+    .setTitle(`Who's free · ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(startMs))} ET`)
+    .setDescription(`${discordTimestamp(new Date(startMs).toISOString(), 'F')} for ${durationMinutes / 60} hours. Numbers are main stream matches worked this week.`)
+    .addFields(fields.length ? fields : [{ name: 'Nobody', value: 'Nobody is on the staff schedule for these roles.' }])
+    .setColor(0x4a86e8)
+    .setFooter({ text: `Staff schedule read ${Number.isFinite(syncedMs) ? new Date(syncedMs).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }) + ' ET' : 'just now'}${stored.error ? ' (latest read failed)' : ''}` });
+  await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleCrewLinkCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const name = interaction.options.getString('name')?.trim() || null;
+  const user = interaction.options.getUser('user');
+  const stored = await getCrewAvailability();
+  const people = crewPeopleWithIds(stored);
+  if (name && user) {
+    const key = normalizeCrewName(name);
+    await updateCrewAvailability((state) => {
+      state.links = { ...(state.links || {}), [key]: user.id };
+    });
+    await appendAuditLog({ type: 'crew_name_linked', actorId: interaction.user.id, name, userId: user.id }).catch(() => null);
+    const onSheet = people.some((person) => person.key === key);
+    await interaction.editReply({
+      content: `Linked **${name}** to <@${user.id}>.${onSheet ? '' : ' (That name is not on the staff schedule right now; check the spelling.)'}`,
+      allowedMentions: { parse: [] }
+    });
+    return;
+  }
+  if (name) {
+    const person = people.find((entry) => entry.key === normalizeCrewName(name));
+    await interaction.editReply({
+      content: person?.userId
+        ? `**${person.name}** is linked to <@${person.userId}>${stored.links?.[person.key] ? ' (set by hand)' : ' (matched automatically)'}. Give \`user:\` to change it.`
+        : `**${name}** isn't linked. Run \`/cf crewlink name:${name} user:@them\`.`,
+      allowedMentions: { parse: [] }
+    });
+    return;
+  }
+  if (!stored.data) {
+    await interaction.editReply(`The staff schedule hasn't been read yet${stored.error ? `: ${stored.error}` : ''}.`);
+    return;
+  }
+  const unlinked = people.filter((person) => !person.userId).map((person) => person.name);
+  await interaction.editReply([
+    `**Staff schedule:** ${people.length} people on ${(stored.data.tabs || []).map((tab) => tab.name).join(', ')}; ${people.length - unlinked.length} linked to Discord.`,
+    unlinked.length ? `**Not linked:** ${unlinked.join(', ')}\nLink them with \`/cf crewlink name:<name> user:@them\`.` : 'Everyone is linked.',
+    (stored.data.tabs || []).some((tab) => !tab.legendFound) ? '⚠️ No colour legend was found on one tab, so colours are read by shade (green free, yellow maybe, red busy).' : null,
+    stored.error ? `⚠️ The latest read failed: ${stored.error}` : null
+  ].filter(Boolean).join('\n'));
+}
+
+async function handleCrewLinkAutocomplete(interaction) {
+  const query = normalizeCrewName(interaction.options.getFocused());
+  const people = crewPeopleWithIds(await getCrewAvailability());
+  await interaction.respond(people
+    .filter((person) => !query || person.key.includes(query))
+    .sort((a, b) => Number(Boolean(a.userId)) - Number(Boolean(b.userId)) || a.name.localeCompare(b.name))
+    .slice(0, 25)
+    .map((person) => ({ name: `${person.name}${person.userId ? '' : ' (not linked)'}`.slice(0, 100), value: person.name.slice(0, 100) })))
+    .catch(() => null);
+}
+
+// "Can't make it" on a crew DM: confirm, then take them off and tell staff with who could replace them.
+async function handleCrewDropButton(interaction) {
+  const [action, matchId] = interaction.customId.split(':');
+  if (action === 'crew_drop_no') {
+    await interaction.update({ content: "OK, you're still on the crew.", components: [] });
+    return;
+  }
+  const coverage = await getMainStreamCoverage(matchId);
+  if (action === 'crew_drop') {
+    if (!coverage || !crewRolesFor(coverage.crew || {}, interaction.user.id).length) {
+      await interaction.reply({ content: "You're not on this crew anymore, so there's nothing to do." });
+      return;
+    }
+    await interaction.reply({
+      content: `Take yourself off the crew for **${coverage.matchup}**? Staff will be told right away.`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`crew_drop_yes:${matchId}`).setLabel('Yes, take me off').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('crew_drop_no').setLabel('Never mind').setStyle(ButtonStyle.Secondary)
+      )]
+    });
+    return;
+  }
+  await interaction.update({ content: 'Taking you off the crew…', components: [] });
+  const message = await dropCrewMember(matchId, interaction.user.id);
+  await interaction.editReply({ content: message, components: [] });
+}
+
+async function dropCrewMember(matchId, userId) {
+  const coverage = await getMainStreamCoverage(matchId);
+  if (!coverage) return "That match isn't on the main stream anymore, so there's nothing to drop.";
+  const crew = coverage.crew || {};
+  const roles = crewRolesFor(crew, userId);
+  if (!roles.length) return "You're not on this crew anymore.";
+  const next = { ...crew, casters: (crew.casters || []).filter((id) => id !== userId) };
+  for (const key of ['producer', 'observer', 'admin', 'social']) {
+    if (next[key] === userId) next[key] = null;
+  }
+  const forget = (ids) => (ids || []).filter((id) => id !== userId);
+  const updated = await saveMainStreamCoverage(matchId, {
+    crew: next,
+    crewDmedUserIds: forget(coverage.crewDmedUserIds || coverage.schedulePingedUserIds),
+    schedulePingedUserIds: forget(coverage.schedulePingedUserIds),
+    ipPingedUserIds: forget(coverage.ipPingedUserIds)
+  });
+  if (updated.scheduleMessageId) await publishMainStreamSchedulePost(updated).catch(() => null);
+  await appendAuditLog({ type: 'main_stream_crew_dropped', matchId, userId, roles }).catch(() => null);
+  const startMs = await matchStartMs(matchId);
+  const missing = [
+    !next.casters.length ? 'Casters' : null,
+    !next.producer ? 'Producer' : null
+  ].filter(Boolean);
+  const replacements = await crewReplacementLines(matchId, roles.map(crewRoleFromLabel), { excludeUserIds: [userId] });
+  await sendCrewAlert(updated, [
+    `🚨 <@${userId}> can't make it to **${coverage.matchup}**${startMs ? ` (${discordTimestamp(new Date(startMs).toISOString(), 'F')})` : ''}. They were ${roles.join(' & ')} and have been taken off the crew.`,
+    missing.length ? `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} now empty.` : null,
+    ...replacements,
+    'Add a replacement with `/cf mainstream` or the crew form.'
+  ].filter(Boolean).join('\n'));
+  return `You're off the crew for **${coverage.matchup}**. Staff have been told. Thanks for letting us know!`;
+}
+
+
+// `!addgame <FACEIT link>` (or `!add game`): puts a match on the Google Sheet by hand when the
+// automatic write was missed. Adds the row (or updates it: one row per FACEIT link), using the
+// approved time or else FACEIT's, then re-adds the main stream / approved caster stream links.
+async function handleAddGameToSheet(message, content) {
+  if (!canUseBotAdminCommand(message.member) && !canManageStreamRequests(message.member)) {
+    await message.reply('Only admins/match staff can add games to the sheet.');
+    return;
+  }
+  const link = content.replace(/^!add\s*game\b/i, '').trim().split(/\s+/)[0] || '';
+  const parsed = parseFaceitMatchRoomLink(link);
+  if (!parsed) {
+    await message.reply('Use `!addgame FACEIT_MATCHROOM_LINK`, for example `!addgame https://www.faceit.com/en/cs2/room/1-...`.');
+    return;
+  }
+  if (scheduleSheet.mode !== 'apps-script') {
+    await message.reply('No Google Sheet is connected (`SCHEDULE_SHEET_WEBHOOK_URL` is empty).');
+    return;
+  }
+  await message.channel.sendTyping?.().catch(() => null);
+  let stored = await getStoredMatch(parsed.matchId);
+  if (!stored?.match) {
+    const match = await findFaceitMatchForLink(link, parsed.matchId).catch(() => null);
+    if (!match) {
+      await message.reply(`I couldn't find that match on FACEIT (${configuredFaceitSourceSummary()}).`);
+      return;
+    }
+    stored = { match: { ...match, faceitUrl: match.faceitUrl || parsed.url } };
+  }
+  if (!stored.match.faceitUrl) stored = { ...stored, match: { ...stored.match, faceitUrl: parsed.url } };
+
+  // Time: the admin-approved schedule, else FACEIT's scheduled time.
+  const schedule = await getSchedule(parsed.matchId).catch(() => null);
+  let proposal = schedule?.adminApproved ? { ...schedule, matchId: parsed.matchId } : null;
+  let timeSource = 'the approved time';
+  if (!proposal?.scheduledAtIso) {
+    const faceitMatch = await faceit.getMatch(parsed.matchId).catch(() => null);
+    const faceitIso = getFaceitScheduledAtIso(faceitMatch) || getFaceitScheduledAtIso(stored.match);
+    proposal = faceitIso ? { scheduledAtIso: faceitIso, scheduledAt: faceitIso, matchId: parsed.matchId } : proposal;
+    timeSource = faceitIso ? "FACEIT's time (no time approved in Discord)" : null;
+  }
+
+  const warning = await logScheduleToSheet({ stored, proposal, approvedBy: message.author.id, kind: 'manual' });
+  const matchup = `${stored.match.teamA || 'TBD'} vs ${stored.match.teamB || 'TBD'}`;
+  if (warning) {
+    await message.reply({ content: `⚠️ ${matchup}: ${warning}`, allowedMentions: { parse: [] } });
+    return;
+  }
+  const lines = [
+    `📄 **${matchup}** is on the Google Sheet${proposal?.scheduledAtIso ? ` for ${discordTimestamp(new Date(proposal.scheduledAtIso).toISOString(), 'F')}, using ${timeSource}` : ' with no time yet (nothing approved and nothing on FACEIT)'}.`
+  ];
+
+  // Stream links the sheet should have for this match.
+  const coverage = await getMainStreamCoverage(parsed.matchId);
+  if (coverage) {
+    const sheetLine = await syncMainStreamSheetLink(coverage, message.author.id).catch(() => null);
+    lines.push(sheetLine && sheetLine.startsWith('⚠️') ? sheetLine : `📺 Main stream link: ${mainStreamUrlFor(coverage)}`);
+  }
+  const approved = (await listStreamRequests({ matchId: parsed.matchId, status: 'approved' })).filter((request) => request.streamUrl);
+  for (const request of approved) {
+    const streamWarning = await logStreamLinkToSheet(request, request.reviewedBy || null).catch((error) => error?.message || String(error));
+    lines.push(streamWarning ? `⚠️ ${request.streamUrl}: ${streamWarning}` : `🎙️ Community cast link: ${request.streamUrl}`);
+  }
+  await appendAuditLog({ type: 'schedule_sheet_added_by_hand', actorId: message.author.id, matchId: parsed.matchId }).catch(() => null);
+  await message.reply({ content: lines.join('\n').slice(0, 2000), allowedMentions: { parse: [] } });
 }

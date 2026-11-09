@@ -221,13 +221,31 @@ export const commands = [
         .setDescription('Put a match on the main stream, change its stream or crew, or take it off')
         .addStringOption((option) => option.setName('match').setDescription('FACEIT matchroom link (leave empty inside the match channel)').setRequired(false))
         .addStringOption((option) => option.setName('stream').setDescription('Which CROSSFIRE stream (default: the first one)').setRequired(false).setAutocomplete(true))
-        .addUserOption((option) => option.setName('caster1').setDescription('Caster 1 (needed to post the crew)').setRequired(false))
-        .addUserOption((option) => option.setName('producer').setDescription('Producer (needed to post the crew)').setRequired(false))
-        .addUserOption((option) => option.setName('caster2').setDescription('Caster 2').setRequired(false))
-        .addUserOption((option) => option.setName('observer').setDescription('Observer').setRequired(false))
-        .addUserOption((option) => option.setName('admin').setDescription('Admin').setRequired(false))
-        .addUserOption((option) => option.setName('social').setDescription('Social Media').setRequired(false))
+        .addStringOption((option) => option.setName('caster1').setDescription('Caster 1 (needed to post the crew); suggestions show who is free').setRequired(false).setAutocomplete(true))
+        .addStringOption((option) => option.setName('producer').setDescription('Producer (needed to post the crew); suggestions show who is free').setRequired(false).setAutocomplete(true))
+        .addStringOption((option) => option.setName('caster2').setDescription('Caster 2').setRequired(false).setAutocomplete(true))
+        .addStringOption((option) => option.setName('observer').setDescription('Observer').setRequired(false).setAutocomplete(true))
+        .addStringOption((option) => option.setName('admin').setDescription('Admin').setRequired(false).setAutocomplete(true))
+        .addStringOption((option) => option.setName('social').setDescription('Social Media').setRequired(false).setAutocomplete(true))
         .addBooleanOption((option) => option.setName('remove').setDescription('Take this match off the main stream').setRequired(false))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('whosfree')
+        .setDescription('Who on the production/admin crew is free at a time (from the staff schedule sheet)')
+        .addStringOption((option) => option.setName('when').setDescription('e.g. Thurs 9:30pm, 11/12 9pm, today 9pm, or a FACEIT matchroom link').setRequired(true))
+        .addIntegerOption((option) => option.setName('length').setDescription('How long it runs (default from settings)').setRequired(false).addChoices(
+          { name: 'BO1 (1.5 hours)', value: 90 },
+          { name: 'BO3 (3 hours)', value: 180 },
+          { name: 'BO5 (5 hours)', value: 300 }
+        ))
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('crewlink')
+        .setDescription('Link a staff schedule name to a Discord account, or list names the bot could not match')
+        .addStringOption((option) => option.setName('name').setDescription('Name as written on the staff schedule').setRequired(false).setAutocomplete(true))
+        .addUserOption((option) => option.setName('user').setDescription('Their Discord account').setRequired(false))
     )
     .addSubcommand((subcommand) =>
       subcommand

@@ -27,6 +27,9 @@
  *                         column is found by header and created after the last column if missing.
  *   "statsCollected"      ticks the "Stats Collected?" cell of that row (a checkbox if the
  *                         cell has one, otherwise ✅) once a caster's post-cast form is in.
+ *   "availability"        reads the crew availability tabs (PROD SCHEDULE, Admin Schedule) and
+ *                         returns each tab's cell text and background colours (read-only). The
+ *                         bot works out who is free from the legend colours and cell text.
  *   "postCastForms"       looks up which stream request IDs have a response in the
  *                         post-cast stats form's response sheet (read-only). The bot uses
  *                         this to block casters who skipped the form for their last cast.
@@ -52,6 +55,9 @@ const SHEET_NAME = 'Game Schedules';
 const POST_CAST_SPREADSHEET_ID = '1rQGdrdrrbh94ZR_EL12uCqcQwHR6A4VR9SBDbjXGJZY';
 const POST_CAST_SHEET_NAME = 'Season 7';
 const POST_CAST_REQUEST_ID_HEADER = 'Request ID';
+
+// Crew availability tabs in this spreadsheet, read by the "availability" action.
+const AVAILABILITY_TABS = ['PROD SCHEDULE', 'Admin Schedule'];
 
 const HEADERS = [
   '', 'TIME', 'TEAM 1', '', 'TEAM 2', 'MATCH', 'ROUND', 'GROUP:',
@@ -91,6 +97,7 @@ function doPost(e) {
     }
     const action = body.action || 'schedule';
     if (action === 'postCastForms') return lookupPostCastForms(body.requestIds || []);
+    if (action === 'availability') return readAvailability();
     const sheet = getOrCreateSheet();
     if (action === 'schedule') return writeSchedule(sheet, body.row || {});
     if (action === 'streamLink') return writeStreamLink(sheet, body.row || {});
@@ -275,6 +282,35 @@ function findOrCreateColumn(sheet, header) {
   if (sheet.getMaxColumns() < column) sheet.insertColumnsAfter(sheet.getMaxColumns(), column - sheet.getMaxColumns());
   sheet.getRange(1, column).setValue(header).setFontWeight('bold');
   return column;
+}
+
+// The crew availability tabs as cell text plus background colours. Read-only. Merged cells
+// (e.g. "Austin LAN" across several days) are filled in so every day carries the value.
+function readAvailability() {
+  const spreadsheet = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const tabs = [];
+  AVAILABILITY_TABS.forEach(function (name) {
+    const sheet = spreadsheet.getSheetByName(name);
+    if (!sheet) return;
+    const range = sheet.getDataRange();
+    const values = range.getDisplayValues();
+    const backgrounds = range.getBackgrounds();
+    range.getMergedRanges().forEach(function (merged) {
+      const top = merged.getRow() - 1;
+      const left = merged.getColumn() - 1;
+      if (!values[top] || left >= values[top].length) return;
+      const value = values[top][left];
+      const background = backgrounds[top][left];
+      for (let r = top; r < top + merged.getNumRows() && r < values.length; r++) {
+        for (let c = left; c < left + merged.getNumColumns() && c < values[r].length; c++) {
+          values[r][c] = value;
+          backgrounds[r][c] = background;
+        }
+      }
+    });
+    tabs.push({ name: name, values: values, backgrounds: backgrounds });
+  });
+  return reply(200, { ok: true, tabs: tabs });
 }
 
 // Which of the given request IDs have a post-cast form response. Read-only.

@@ -228,6 +228,21 @@ export function getConfig() {
     openMatchesPostTime: /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(process.env.OPEN_MATCHES_POST_TIME || '').trim())
       ? String(process.env.OPEN_MATCHES_POST_TIME).trim()
       : '17:00',
+    // Crew availability, read from the PROD SCHEDULE / Admin Schedule tabs through the same Apps Script.
+    // CREW_AVAILABILITY=off turns it off.
+    crewAvailabilityEnabled: !/^(0|false|off|no)$/i.test(String(process.env.CREW_AVAILABILITY || '').trim()),
+    crewAvailabilitySyncMinutes: Math.max(5, Number(process.env.CREW_AVAILABILITY_SYNC_MINUTES || 10) || 10),
+    // How long a main stream match runs, for "is this person free for the whole match".
+    crewMatchLengthMinutes: Math.max(30, Number(process.env.CREW_MATCH_LENGTH_MINUTES || 180) || 180),
+    // Optional: where crew alerts go ("can't make it", availability changed, reminders sent).
+    // Empty = the alert is DMed to whoever set that crew.
+    crewAlertsChannelId: process.env.CREW_ALERTS_CHANNEL_ID || null,
+    // Sunday reminder to fill in next week, Eastern 24-hour HH:MM.
+    crewReminderTime: /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(process.env.CREW_REMINDER_TIME || '').trim())
+      ? String(process.env.CREW_REMINDER_TIME).trim()
+      : '18:00',
+    // Linked in the reminder DM.
+    availabilitySheetUrl: process.env.AVAILABILITY_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1I4lcVFTOG9C1ju_50YJHVi3TCe_694_vkKCxzIXeIso/edit',
     // Optional: restrict accepted stream platforms (twitch, youtube, kick). Empty = all.
     streamAllowedPlatforms: parseCsvValue(process.env.STREAM_ALLOWED_PLATFORMS || '').map((value) => value.toLowerCase()),
     // Website integration for approved streams. Empty endpoint = log-only mode.

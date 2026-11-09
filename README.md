@@ -369,6 +369,28 @@ Streams: https://twitch.tv/playcrossfire
 
 The date and time are the approved match time as Discord timestamps, so everyone sees them in their own time zone ("Date and time TBD" if there is none). Roles left empty are left out. `Streams` is the stream picked in the dropdown. Press the button again (it then reads **Edit production crew**) to change the crew: the form opens with the current picks and the existing post is edited, not reposted. When the connection details are posted in #request-ip for a main stream match, the post pings the crew. If the IP was posted before the crew was set, saving the crew sends a short ping in #request-ip linking the IP post; on later edits only newly added people are pinged. Everyone on the crew also gets a DM when the match is first posted: the match, their role(s), the time in their local time, the stream, the FACEIT room and a link to the Schedule post. People added later by an edit get the same DM; people already DMed for that match are not DMed again. Someone taken off the crew by an edit (or replaced, e.g. `producer:@someone-else`) gets a DM saying so, if they had been told they were on it; adding them back later sends a fresh DM. If someone's DMs are closed, the staff reply says so. Audit events: `main_stream_crew_set`, `main_stream_crew_dmed`, `main_stream_crew_removed_dmed`.
 
+#### Crew availability (staff schedule sheet)
+
+The bot reads the **PROD SCHEDULE** and **Admin Schedule** tabs of the "CF Game and Staff Schedule" spreadsheet through the same Apps Script web app (`availability` action), every `CREW_AVAILABILITY_SYNC_MINUTES` (default 10). Nothing about the tabs has to change:
+
+- **Layout:** a header row with dates across the top (`Monday 11/09/2026`) and names down the column to its left. Several week blocks per tab are fine.
+- **Day colours** are matched to the legend on the tab itself (Can Work = free, Could Work = maybe, Cant Work = busy, Free for partial a day = use the text), so a colour change in the legend just works; slightly different shades still match. With no legend, any green is free, yellow maybe, red busy.
+- **Day text** refines it: `8:00PM START` (latest start), `After 7 EST`, `8-10pm`, `7-8 EST//After 9:30EST`, `9pm-12am`. Busy words (`Team Prac`, `LAN`, `busy`) with times mean busy then; without times, busy all day. CST/MST/PST are converted. A blank, uncoloured cell is "not filled in".
+- **Roles** come from the name cell's colour and the role legend (PRODUCER ONLY, PLAY BY PLAY / COLOR = caster, OBSERVER ONLY, Match Admin, SMM Admin = social, Match & SMM Admin). No role colour = any production role on PROD SCHEDULE, Admin on an admin tab.
+- **Discord accounts:** names are matched to members by username, display name or nickname. `/cf crewlink` lists anyone it couldn't match and links them by hand.
+- A match is assumed to run `CREW_MATCH_LENGTH_MINUTES` (default 180), so "free 8-10pm" is only partly free for a 9:30 match. Someone already on another main stream crew within that time counts as busy.
+
+What it drives:
+
+- **Crew form:** each dropdown lists only people free for that match who can do the role, free first, then partly free and maybe, each with how many main stream matches they've worked this week (fewest first). Current picks always appear. A role with nobody free falls back to the normal user picker.
+- **`/cf mainstream` crew options** suggest the same list as you type (typing a name searches everyone). Picking someone not marked free, or already on another crew then, works but adds a warning to the reply.
+- **`/cf whosfree when:<Thurs 9:30pm | 11/12 9pm | today 9pm | FACEIT link>`** shows who is free, partly free or maybe for every role. `length:` overrides the match length.
+- **"Can't make it" button** on every crew DM: after a confirm, the person is taken off the crew, the Schedule post is edited, and staff get an alert listing who is free to replace them.
+- **Availability changed after booking:** if a booked crew member's day turns busy on the sheet, staff get an alert (once per change) with replacements. They stay on the crew until staff change it.
+- **Sunday reminder** at `CREW_REMINDER_TIME` (default 18:00 ET): everyone who hasn't filled in any day of next week gets a DM with the sheet link (`AVAILABILITY_SHEET_URL`). If next week isn't on a tab yet, nobody on that tab is nagged and the summary says so.
+
+Alerts go to `CREW_ALERTS_CHANNEL_ID`, pinging whoever set the crew; without it they are DMed to that person. `CREW_AVAILABILITY=off` turns all of this off. Audit events: `main_stream_crew_dropped`, `main_stream_crew_availability_changed`, `crew_availability_reminders_sent`, `crew_name_linked`.
+
 **Google Sheet.** `/cf mainstream` adds the picked stream's Twitch link to the match's `STREAM` cell (picking a different stream in the dropdown swaps it). The bot also tells the sheet how to colour the match row (columns A–N): cornflower blue for a CROSSFIRE main stream game, orange for a community cast, and the colour is cleared when the last caster drops off. Main stream wins when a match has both. Row colours need the updated `docs/schedule-log-apps-script.gs` deployed (Deploy > Manage deployments > Edit > New version); an older script still adds the links but leaves the colours alone.
 
 **Results and Stats Collected.** Every 10 minutes the bot also:
@@ -390,6 +412,9 @@ Staff management (admins and the stream staff role):
 | `/cf forms` | Who owes post-cast forms. Pick a caster to see their casts, **Nudge** them or **Mark a form received**; **Nudge all** nudges everyone who owes. |
 | `!sendip FACEIT_LINK MESSAGE` | DMs connection details to every approved caster now. Without a message it reposts the IP prompt. |
 | `/cf mainstream match:<link>` | Puts a match on the official stream (teams told, sheet updated, IP to #request-ip); `stream:` and crew options set or change it; `remove:True` takes it off. |
+| `!addgame <FACEIT link>` (or `!add game`) | Puts a match on the Google Sheet by hand if the automatic write was missed: adds or updates its row (approved time, else FACEIT's), then re-adds its main stream and approved caster stream links. Staff only. |
+| `/cf whosfree when:<time or link>` | Who on the production/admin crew is free then, by role, from the staff schedule sheet. |
+| `/cf crewlink [name:] [user:]` | Lists staff schedule names not matched to Discord; with `name:` and `user:` links one by hand. |
 
 The retired `!cancelreq` and `!resendip` reply with a pointer to their replacements. Embeds use Discord timestamps so each viewer sees the match time in their own time zone.
 

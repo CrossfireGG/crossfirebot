@@ -132,6 +132,10 @@ export class LogOnlyScheduleSheet {
     return { ok: true, skipped: true, error: null };
   }
 
+  async readAvailability() {
+    return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)', tabs: [] };
+  }
+
   // Without a sheet there is nothing to look in, so no form is ever confirmed here.
   async lookupPostCastForms(requestIds) {
     this.log.info?.(`Schedule sheet (log-only): cannot look up post-cast forms for ${(requestIds || []).join(', ')}`);
@@ -190,6 +194,13 @@ export class AppsScriptScheduleSheet {
     const { body, ...result } = await this.post('postCastForms', null, { requestIds });
     if (!result.ok) return { ...result, found: {} };
     return { ...result, found: body.found && typeof body.found === 'object' ? body.found : {} };
+  }
+
+  // The crew availability tabs: { tabs: [{ name, values, backgrounds }] }.
+  async readAvailability() {
+    const { body, ...result } = await this.post('availability', null);
+    if (!result.ok) return { ...result, tabs: [] };
+    return { ...result, tabs: Array.isArray(body.tabs) ? body.tabs : [] };
   }
 
   async post(action, row, extra = {}) {

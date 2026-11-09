@@ -35,7 +35,8 @@ function normalizeDb(db) {
     mainStreamCoverage: db.mainStreamCoverage || {},
     matchConnections: db.matchConnections || {},
     seasons: Array.isArray(db.seasons) ? db.seasons : [],
-    sheetSync: db.sheetSync || {}
+    sheetSync: db.sheetSync || {},
+    crewAvailability: db.crewAvailability || {}
   };
 }
 
@@ -732,4 +733,26 @@ export async function updateSheetSync(key, patch) {
     db.sheetSync[key] = { ...(db.sheetSync[key] || {}), ...patch, updatedAt: new Date().toISOString() };
     return db.sheetSync[key];
   });
+}
+
+// Crew availability: the last sheet read, Discord links for sheet names, reminder state.
+export async function getCrewAvailability() {
+  return (await snapshot()).crewAvailability || {};
+}
+
+// `mutator` changes the crewAvailability object in place; its return value is passed back.
+export async function updateCrewAvailability(mutator) {
+  return mutateDb((db) => {
+    db.crewAvailability = db.crewAvailability || {};
+    return mutator(db.crewAvailability);
+  });
+}
+
+// Every main stream match with its schedule record, from one read of the data file.
+export async function listMainStreamCoverageWithSchedules() {
+  const db = await snapshot();
+  return Object.values(db.mainStreamCoverage || {}).map((coverage) => ({
+    coverage,
+    schedule: db.schedules[coverage.matchId] || null
+  }));
 }
