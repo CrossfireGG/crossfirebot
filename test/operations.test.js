@@ -233,7 +233,7 @@ test('FACEIT matchroom links are canonicalized and non-FACEIT links are rejected
 test('caster delivery accepts any staff connection message and validates Twitch links', () => {
   assert.equal(validateStreamDelivery('cstv', 'connect 123.45.67.89:27020').valid, true);
   assert.equal(
-    validateStreamDelivery('cstv', 'password "313safafo2h13"; connect password "313safafo2h13"; connect 136.83.35.38:20001').valid,
+    validateStreamDelivery('cstv', 'password "examplepw123"; connect password "examplepw123"; connect 136.83.35.38:20001').valid,
     true
   );
   assert.equal(validateStreamDelivery('cstv', 'Use these lobby details and contact Tournament Ops if they fail.').valid, true);
@@ -493,3 +493,31 @@ function fakeMember(roleIds = [], permissionIds = [], roleNames = []) {
     }
   };
 }
+
+test('CSTV connect lines are built from IP:PORT and get the season password', async () => {
+  const { buildCstvConnect, wantsSeasonPassword, parseSeasonPassword } = await import('../src/streamRequest.js');
+  assert.deepEqual(buildCstvConnect('66.206.17.130:27035', { password: 'pw1' }), {
+    valid: true, value: 'connect 66.206.17.130:27035; password "pw1"', address: true, passwordAdded: true, passwordMissing: false
+  });
+  assert.equal(buildCstvConnect('connect 66.206.17.130:27035;', { password: 'pw1' }).value, 'connect 66.206.17.130:27035; password "pw1"');
+  assert.equal(buildCstvConnect(' connect 66.206.17.130:27035 ', { password: 'pw1', usePassword: false }).value, 'connect 66.206.17.130:27035');
+  const missing = buildCstvConnect('66.206.17.130:27035', { password: null });
+  assert.equal(missing.value, 'connect 66.206.17.130:27035');
+  assert.equal(missing.passwordMissing, true);
+  assert.equal(buildCstvConnect('66.206.17.130', { password: 'pw1' }).valid, false, 'no port');
+  assert.equal(buildCstvConnect('66.206.17:27035', { password: 'pw1' }).valid, false, 'short IP');
+  assert.equal(buildCstvConnect('66.206.17.300:27035', { password: 'pw1' }).valid, false, 'octet over 255');
+  assert.equal(buildCstvConnect('', { password: 'pw1' }).valid, false);
+  const full = buildCstvConnect('connect 1.2.3.4:27015; password "other"', { password: 'pw1' });
+  assert.equal(full.value, 'connect 1.2.3.4:27015; password "other"', 'a full line is sent as typed');
+  assert.equal(full.address, false);
+  assert.equal(buildCstvConnect('Use the lobby details from Tournament Ops', { password: 'pw1' }).value, 'Use the lobby details from Tournament Ops');
+  assert.equal(wantsSeasonPassword('Yes'), true);
+  assert.equal(wantsSeasonPassword(''), true);
+  assert.equal(wantsSeasonPassword('no'), false);
+  assert.equal(wantsSeasonPassword(' N '), false);
+  assert.deepEqual(parseSeasonPassword('abc123'), { valid: true, value: 'abc123' });
+  assert.deepEqual(parseSeasonPassword('none'), { valid: true, value: null });
+  assert.equal(parseSeasonPassword('has space').valid, false);
+  assert.equal(parseSeasonPassword('a"b').valid, false);
+});

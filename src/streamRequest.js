@@ -261,6 +261,57 @@ export function validateStreamDelivery(type, value) {
   return { valid: false, error: 'Unknown delivery type.' };
 }
 
+// Turns what staff paste ("66.206.17.130:27035", "connect 66.206.17.130:27035;") into the line
+// casters paste into CS2, adding the season's CSTV password unless staff said not to.
+// Anything that is not a bare address (a full line with its own password, or instructions)
+// is sent exactly as typed.
+const CONNECT_ADDRESS = /^(?:connect\s+)?([A-Za-z0-9.-]+):(\d{1,5})\s*;?\s*$/i;
+
+export function buildCstvConnect(raw, { password = null, usePassword = true } = {}) {
+  const text = String(raw || '').trim();
+  const example = 'Example: 66.206.17.130:27035';
+  if (!text) return { valid: false, error: `Enter the server IP:PORT. ${example}` };
+  const match = text.match(CONNECT_ADDRESS);
+  if (match) {
+    const [, host, portText] = match;
+    const port = Number(portText);
+    const ipv4 = /^\d+(\.\d+)*$/.test(host);
+    const badIp = ipv4 && (host.split('.').length !== 4 || host.split('.').some((part) => Number(part) > 255));
+    if (badIp || port < 1 || port > 65535) {
+      return { valid: false, error: `That doesn't look like a server IP:PORT. ${example}` };
+    }
+    const addPassword = Boolean(usePassword && password);
+    return {
+      valid: true,
+      value: `connect ${host}:${port}${addPassword ? `; password "${password}"` : ''}`,
+      address: true,
+      passwordAdded: addPassword,
+      passwordMissing: Boolean(usePassword && !password)
+    };
+  }
+  if (/^(?:connect\s*)?[\d.:;\s]+$/i.test(text)) {
+    return { valid: false, error: `That doesn't look like a server IP:PORT. ${example}` };
+  }
+  return text.length <= 1500
+    ? { valid: true, value: text, address: false, passwordAdded: false, passwordMissing: false }
+    : { valid: false, error: 'Enter the connection details or instructions to DM, up to 1500 characters.' };
+}
+
+// "No" (or n/false/0) in the form's password box skips the password; anything else keeps it.
+export function wantsSeasonPassword(answer) {
+  return !/^\s*(n|no|false|f|0|off)\s*$/i.test(String(answer ?? ''));
+}
+
+// Season CSTV password as typed in `/cf season`; "none"/"clear" removes it.
+export function parseSeasonPassword(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return { valid: false, error: 'Give the password, e.g. `password:abc123`. Use `password:none` to remove it.' };
+  if (/^(none|clear|remove|-)$/i.test(text)) return { valid: true, value: null };
+  if (/["';\s]/.test(text)) return { valid: false, error: 'The password cannot contain spaces, quotes or `;`.' };
+  if (text.length > 64) return { valid: false, error: 'The password can be at most 64 characters.' };
+  return { valid: true, value: text };
+}
+
 export function parseEasternDateTime(value, now = new Date()) {
   const text = String(value || '').trim();
   const normalized = text

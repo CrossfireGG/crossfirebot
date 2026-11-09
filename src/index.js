@@ -153,6 +153,9 @@ import {
   parseStreamRequestModalId,
   validateDenialReason,
   validateStreamDelivery,
+  buildCstvConnect,
+  wantsSeasonPassword,
+  parseSeasonPassword,
   validateStreamRequest,
   STREAM_WITHDRAWABLE_STATUSES,
   MY_CASTS_LIMIT,
@@ -879,6 +882,7 @@ async function handleSeasonCommand(interaction) {
     }
     const lines = seasons.map((season) =>
       `- **${season.name}** · ${formatSeasonRange(season)} · ${season.rounds?.length || 0} round(s)${current?.id === season.id ? ' · current' : ''}`);
+    if (current) lines.push(`CSTV password: ${current.cstvPassword ? 'set' : 'not set (`/cf season action:set CSTV password`)'}`);
     if (current?.rounds?.length) lines.push('', `**${current.name} rounds**`, ...current.rounds.map((round) => `- ${formatRoundLine(round)}`));
     else if (current) lines.push('', `${current.name} has no round dates yet. Add them with \`/cf season action:rounds\`.`);
     await interaction.editReply(truncateDiscordMessage(lines.join('\n')));
@@ -978,6 +982,26 @@ async function handleSeasonCommand(interaction) {
       after: { name: result.season.name, startDate: result.season.startDate, endDate: result.season.endDate || null }
     });
     await interaction.editReply(`Updated **${result.season.name}** (${formatSeasonRange(result.season)}).\n${describeCurrentSeason()}`);
+    return;
+  }
+
+  if (action === 'password') {
+    const parsed = parseSeasonPassword(interaction.options.getString('password'));
+    if (!parsed.valid) {
+      await interaction.editReply(parsed.error);
+      return;
+    }
+    const result = await updateSeasons((seasons) => planUpdateSeason(seasons, season.id, { cstvPassword: parsed.value }));
+    if (result.error) {
+      await interaction.editReply(`Nothing changed. ${result.error}`);
+      return;
+    }
+    await refreshSeasonCache();
+    // The password itself never goes in the audit log.
+    await appendAuditLog({ type: 'season_cstv_password_set', actorId: interaction.user.id, seasonId: season.id, cleared: !parsed.value }).catch(() => null);
+    await interaction.editReply(parsed.value
+      ? `Saved the CSTV password for **${season.name}**. It's added to every IP sent from now on (type **No** in the form's password box to skip it for one match).`
+      : `Removed the CSTV password for **${season.name}**. IPs are sent without one.`);
     return;
   }
 
@@ -5112,7 +5136,7 @@ async function handleStreamDeliveryOpen(interaction) {
     return;
   }
   const [, type, matchId] = interaction.customId.split(':');
-  const label = type === 'cstv' ? 'CSTV connect command' : 'CROSSFIRE Twitch link';
+  const label = type === 'cstv' ? 'Server IP:PORT' : 'CROSSFIRE Twitch link';
   const modal = new ModalBuilder()
     .setCustomId(`stream_delivery_submit:${type}:${matchId}`)
     .setTitle(type === 'cstv' ? 'Submit CSTV Connect' : 'Submit Twitch Link')
@@ -5120,10 +5144,21 @@ async function handleStreamDeliveryOpen(interaction) {
       new TextInputBuilder()
         .setCustomId('delivery')
         .setLabel(label)
-        .setPlaceholder(type === 'cstv' ? 'Enter any connection details or instructions' : 'Example: https://twitch.tv/crossfire')
+        .setPlaceholder(type === 'cstv' ? '66.206.17.130:27035' : 'Example: https://twitch.tv/crossfire')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ));
+  if (type === 'cstv') {
+    modal.addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('use_password')
+        .setLabel('Add the season password? (Yes/No)')
+        .setValue('Yes')
+        .setStyle(TextInputStyle.Short)
+        .setMaxLength(5)
+        .setRequired(false)
+    ));
+  }
   await interaction.showModal(modal);
 }
 
@@ -5133,7 +5168,10 @@ async function handleStreamDeliverySubmit(interaction) {
     return;
   }
   const [, type, matchId] = interaction.customId.split(':');
-  const delivery = validateStreamDelivery(type, interaction.fields.getTextInputValue('delivery'));
+  const raw = interaction.fields.getTextInputValue('delivery');
+  const delivery = type === 'cstv'
+    ? buildCstvConnect(raw, { password: activeSeason()?.cstvPassword || null, usePassword: wantsSeasonPassword(modalFieldValue(interaction, 'use_password') ?? 'Yes') })
+    : validateStreamDelivery(type, raw);
   if (!delivery.valid) {
     await interaction.reply({ content: delivery.error, ephemeral: true });
     return;
@@ -5144,8 +5182,26 @@ async function handleStreamDeliverySubmit(interaction) {
   await interaction.editReply([
     `Sent the ${type === 'cstv' ? 'CSTV connect' : 'Twitch link'} to ${result.delivered}/${result.casterCount} approved caster(s).`,
     result.requestIpPosted ? `Posted in <#${config.requestIpChannelId}>.` : null,
+    cstvPasswordNote(delivery),
     failedDmLine(result.failedCasterIds)
   ].filter(Boolean).join(' '));
+}
+
+// Reads an optional modal field without throwing when an older form did not have it.
+function modalFieldValue(interaction, customId) {
+  try {
+    return interaction.fields.getTextInputValue(customId);
+  } catch {
+    return null;
+  }
+}
+
+// Tells staff whether the season password went on the line, without showing it.
+function cstvPasswordNote(delivery) {
+  if (!delivery?.address) return null;
+  if (delivery.passwordAdded) return 'Season password added.';
+  if (delivery.passwordMissing) return 'No CSTV password is set for this season, so it went without one (`/cf season action:set CSTV password`).';
+  return 'Sent without the password.';
 }
 
 // DMs the connection details to every caster approved for the match: one DM per
@@ -5526,14 +5582,20 @@ async function handleSendIp(message, content) {
       : 'No approved caster requests were found for that FACEIT matchroom.');
     return;
   }
-  const delivery = validateStreamDelivery('custom', deliveryText);
+  // `nopw` at the end sends the address without the season password.
+  const noPassword = /(^|\s)nopw\s*$/i.test(deliveryText);
+  const delivery = buildCstvConnect(deliveryText.replace(/(^|\s+)nopw\s*$/i, ''), {
+    password: activeSeason()?.cstvPassword || null,
+    usePassword: !noPassword
+  });
   if (!parsed || !delivery.valid) {
-    await message.reply('Use `!sendip FACEIT_MATCHROOM_LINK MESSAGE` to send details now, for example `!sendip https://www.faceit.com/en/cs2/room/1-... connect 123.45.67.89:27020`, or `!sendip FACEIT_MATCHROOM_LINK` alone to repost the IP prompt.');
+    await message.reply(`Use \`!sendip FACEIT_MATCHROOM_LINK IP:PORT\` to send details now, for example \`!sendip https://www.faceit.com/en/cs2/room/1-... 123.45.67.89:27020\`. The season password is added; put \`nopw\` at the end to leave it off. \`!sendip FACEIT_MATCHROOM_LINK\` alone reposts the IP prompt.${parsed && !delivery.valid ? `\n${delivery.error}` : ''}`);
     return;
   }
   await message.delete().catch(() => null);
-  const result = await deliverStreamConnection(parsed.matchId, 'custom', delivery.value, message.author.id);
-  const postedLine = result.requestIpPosted ? ` Posted in <#${config.requestIpChannelId}>.` : '';
+  const result = await deliverStreamConnection(parsed.matchId, delivery.address ? 'cstv' : 'custom', delivery.value, message.author.id);
+  const passwordNote = cstvPasswordNote(delivery);
+  const postedLine = `${result.requestIpPosted ? ` Posted in <#${config.requestIpChannelId}>.` : ''}${passwordNote ? ` ${passwordNote}` : ''}`;
   if (!result.requests.length) {
     await message.channel.send(result.requestIpPosted
       ? `No approved casters for that FACEIT matchroom.${postedLine}`

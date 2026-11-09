@@ -201,12 +201,14 @@ export const commands = [
           { name: 'edit round dates', value: 'rounds' },
           { name: 'rename or change dates', value: 'edit' },
           { name: 'end season', value: 'end' },
-          { name: 'delete season', value: 'delete' }
+          { name: 'delete season', value: 'delete' },
+          { name: 'set CSTV password', value: 'password' }
         ))
         .addStringOption((option) => option.setName('season').setDescription('Season to change (defaults to the current one)').setRequired(false).setAutocomplete(true))
         .addStringOption((option) => option.setName('name').setDescription('Season name, e.g. Season 8').setRequired(false).setMaxLength(60))
         .addStringOption((option) => option.setName('start').setDescription('Start date, e.g. 1/10/2027').setRequired(false))
         .addStringOption((option) => option.setName('end').setDescription('End date, e.g. 3/15/2027').setRequired(false))
+        .addStringOption((option) => option.setName('password').setDescription('CSTV password added to every IP sent (none to remove)').setRequired(false).setMaxLength(64))
     )
     .addSubcommand((subcommand) =>
       subcommand
