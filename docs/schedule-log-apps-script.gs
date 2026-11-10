@@ -44,6 +44,10 @@
  *   "postCastForms"       looks up which stream request IDs have a response in the
  *                         post-cast stats form's response sheet (read-only). The bot uses
  *                         this to block casters who skipped the form for their last cast.
+ *   "casterApplications"  reads the Streaming Application form's response tab (read-only):
+ *                         the header row and every row after `afterRow`. Without `afterRow`
+ *                         it only returns where the tab ends, so the bot starts from there.
+ *                         The bot posts each new application in the stream request channel.
  *
  * Everything else in columns H–M is left for staff and is never touched.
  * After every write the tab is sorted by column A (date and time).
@@ -64,6 +68,12 @@ const SHEET_NAME = 'Game Schedules';
 // response tab after the first submission that includes it.
 const POST_CAST_SPREADSHEET_ID = '1rQGdrdrrbh94ZR_EL12uCqcQwHR6A4VR9SBDbjXGJZY';
 const POST_CAST_SHEET_NAME = 'Season 7';
+
+// Streaming Application form responses: the same spreadsheet, the tab with this gid (the number
+// after "gid=" in its URL), so renaming the tab doesn't break it.
+const APPLICATION_SPREADSHEET_ID = '1rQGdrdrrbh94ZR_EL12uCqcQwHR6A4VR9SBDbjXGJZY';
+const APPLICATION_SHEET_GID = 37125937;
+const APPLICATION_MAX_ROWS = 25;
 const POST_CAST_REQUEST_ID_HEADER = 'Request ID';
 
 // Crew availability tabs in this spreadsheet, read by the "availability" action.
@@ -111,6 +121,7 @@ function doPost(e) {
     }
     const action = body.action || 'schedule';
     if (action === 'postCastForms') return lookupPostCastForms(body.requestIds || []);
+    if (action === 'casterApplications') return readCasterApplications(body.afterRow);
     if (action === 'availability') return readAvailability();
     if (action === 'teamInfo') return readTeamInfo();
     if (action === 'teamInfoUpdate') return updateTeamInfo(body.team, body.fields || {});
@@ -421,6 +432,27 @@ function updateTeamInfo(team, fields) {
 
 // Which of the given request IDs have a post-cast form response. Read-only.
 // Answers { found: { "<requestId>": { submittedAt, row } } } for the ones that do.
+function readCasterApplications(afterRow) {
+  const sheet = SpreadsheetApp.openById(APPLICATION_SPREADSHEET_ID).getSheets()
+    .filter((tab) => tab.getSheetId() === APPLICATION_SHEET_GID)[0];
+  if (!sheet) return reply(500, { ok: false, error: 'application tab with gid ' + APPLICATION_SHEET_GID + ' not found' });
+  const lastRow = sheet.getLastRow();
+  const lastColumn = sheet.getLastColumn();
+  if (lastColumn < 1 || lastRow < 1) return reply(200, { ok: true, lastRow: lastRow, headers: [], rows: [] });
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0].map((header) => String(header));
+  const from = Number(afterRow);
+  if (!Number.isInteger(from) || from < 1) return reply(200, { ok: true, lastRow: lastRow, headers: headers, rows: [] });
+  const first = from + 1;
+  const count = Math.min(lastRow - from, APPLICATION_MAX_ROWS);
+  if (count <= 0) return reply(200, { ok: true, lastRow: lastRow, headers: headers, rows: [] });
+  const values = sheet.getRange(first, 1, count, lastColumn).getValues();
+  const rows = values.map((row, index) => ({
+    row: first + index,
+    values: row.map((cell) => (cell instanceof Date ? cell.toISOString() : String(cell)))
+  }));
+  return reply(200, { ok: true, lastRow: lastRow, headers: headers, rows: rows });
+}
+
 function lookupPostCastForms(requestIds) {
   const wanted = {};
   (requestIds || []).forEach((id) => {

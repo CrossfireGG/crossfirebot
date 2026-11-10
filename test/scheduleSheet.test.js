@@ -157,3 +157,24 @@ test('Apps Script sheet reports bad secrets, HTML pages, and network errors with
   const serverError = new AppsScriptScheduleSheet({ webhookUrl: 'https://x/exec', secret: 'k', fetchImpl: fakeFetch({ status: 500, body: 'boom' }).fetchImpl, log: quietLog });
   assert.match((await serverError.append({})).error, /HTTP 500: boom/);
 });
+
+test('Apps Script sheet reads new streaming applications after the last row seen', async () => {
+  const { fetchImpl, calls } = fakeFetch({ status: 200, body: '{"status":200,"ok":true,"lastRow":16,"headers":["Timestamp","Discord username"],"rows":[{"row":16,"values":["2026-11-11T02:42:00.000Z","Peluso33"]}]}' });
+  const sheet = new AppsScriptScheduleSheet({ webhookUrl: 'https://x/exec', secret: 's3cret', fetchImpl, log: quietLog });
+  const result = await sheet.readCasterApplications(15);
+  assert.deepEqual(result, {
+    ok: true, skipped: false, error: null,
+    headers: ['Timestamp', 'Discord username'],
+    rows: [{ row: 16, values: ['2026-11-11T02:42:00.000Z', 'Peluso33'] }],
+    lastRow: 16
+  });
+  const sent = JSON.parse(calls[0].init.body);
+  assert.equal(sent.action, 'casterApplications');
+  assert.equal(sent.afterRow, 15);
+
+  const old = new AppsScriptScheduleSheet({ webhookUrl: 'https://x/exec', secret: 'k', fetchImpl: fakeFetch({ status: 200, body: '{"status":400,"ok":false,"error":"unknown action: casterApplications"}' }).fetchImpl, log: quietLog });
+  assert.deepEqual(await old.readCasterApplications(15), { ok: false, skipped: false, error: 'unknown action: casterApplications', headers: [], rows: [], lastRow: null });
+
+  const logOnly = new LogOnlyScheduleSheet({ log: quietLog });
+  assert.equal((await logOnly.readCasterApplications(15)).skipped, true);
+});

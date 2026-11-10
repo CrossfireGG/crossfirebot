@@ -215,6 +215,11 @@ export function getConfig() {
     mainStreamFormUserIds: parseCsvValue(process.env.MAINSTREAM_FORM_USER_IDS || '252433882991820810,206446410042834945'),
     // Main stream matches before this moment never get the form (so old matches aren't posted at once).
     mainStreamFormSince: process.env.MAINSTREAM_FORM_SINCE || '2026-11-10T12:00:00Z',
+    // Streaming Application form: each new response is posted in this channel (#CommunityStreamRequest)
+    // pinging these people (BignTallMatt). The sheet link goes on the card.
+    casterApplicationChannelId: process.env.CASTER_APPLICATION_CHANNEL_ID || '1558684878743150693',
+    casterApplicationPingIds: parseCsvValue(process.env.CASTER_APPLICATION_PING_IDS || '206446410042834945'),
+    casterApplicationSheetUrl: process.env.CASTER_APPLICATION_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1rQGdrdrrbh94ZR_EL12uCqcQwHR6A4VR9SBDbjXGJZY/edit?gid=37125937#gid=37125937',
     // Optional: "live now" board channel. Empty = the Going live / End broadcast buttons are not offered.
     liveNowChannelId: process.env.LIVE_NOW_CHANNEL_ID || null,
     // Optional: where `/cf mainstream` posts connection details for the official broadcast.

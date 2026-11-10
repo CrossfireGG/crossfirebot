@@ -144,6 +144,10 @@ export class LogOnlyScheduleSheet {
     return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)' };
   }
 
+  async readCasterApplications() {
+    return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)', headers: [], rows: [], lastRow: null };
+  }
+
   // Without a sheet there is nothing to look in, so no form is ever confirmed here.
   async lookupPostCastForms(requestIds) {
     this.log.info?.(`Schedule sheet (log-only): cannot look up post-cast forms for ${(requestIds || []).join(', ')}`);
@@ -202,6 +206,19 @@ export class AppsScriptScheduleSheet {
     const { body, ...result } = await this.post('postCastForms', null, { requestIds });
     if (!result.ok) return { ...result, found: {} };
     return { ...result, found: body.found && typeof body.found === 'object' ? body.found : {} };
+  }
+
+  // Streaming Application responses after `afterRow`: { headers, rows: [{ row, values }], lastRow }.
+  // Without afterRow only lastRow comes back (where to start).
+  async readCasterApplications(afterRow = null) {
+    const { body, ...result } = await this.post('casterApplications', null, { afterRow });
+    if (!result.ok) return { ...result, headers: [], rows: [], lastRow: null };
+    return {
+      ...result,
+      headers: Array.isArray(body.headers) ? body.headers : [],
+      rows: Array.isArray(body.rows) ? body.rows : [],
+      lastRow: Number.isInteger(body.lastRow) ? body.lastRow : null
+    };
   }
 
   // The crew availability tabs: { tabs: [{ name, values, backgrounds }] }.

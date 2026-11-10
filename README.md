@@ -260,6 +260,10 @@ A staff nudge also counts as the automatic 48-hour nudge. Form DMs, forms found 
 - In `/cf forms` they are one **🎥 MainStream** row next to the casters, one line per day: pick it to see them, **Nudge** (posts a reminder in that channel pinging the same people, once an hour) or **Mark a form received**. **Nudge all** includes it.
 - The 48-hour automatic reminder and the 10-minute form sheet check work the same as for casts; a day's form coming in (or being marked received) ticks **Stats Collected?** on every match row of that day.
 
+### Streaming applications
+
+Every 5 minutes the bot checks the Streaming Application form's response tab (the "CF Streams & Streamers" spreadsheet, tab gid `37125937`, through the Apps Script `casterApplications` action) and posts each new application in `CASTER_APPLICATION_CHANNEL_ID` (#CommunityStreamRequest), pinging `CASTER_APPLICATION_PING_IDS` (BignTallMatt). The card shows the applicant's Discord (a mention when the username is found in the server), their type and only their section's answers (Caster/Streamer: channel, someone else's stream, sponsors, with a note when they list a sponsor; Org: org name, channel, who covers, contact; Broadcasting company: company, website, individuals, teams), whether they are returning (approved casts and post-cast forms in) or applying for the first time, when they submitted, and a link to their row on the sheet. Email addresses are never posted. The first check only records where the tab ends, so applications already on the sheet are not posted.
+
 ### Caster reminders
 
 - **30 minutes before game time** every approved caster gets a DM with the match time, Matchroom link, whether the connection details were sent, any co-casters, and the **Going live** button when the live board is on. It goes once per scheduled time, so a reschedule sends a fresh one. Casters approved inside those 30 minutes are skipped because they just got the approval DM. If the bot was down at the 30-minute mark, it still sends the reminder as long as the match has not started.

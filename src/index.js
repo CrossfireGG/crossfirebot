@@ -210,6 +210,7 @@ import {
 import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
 import { createFireCrownThrottle, isFireCrownMention } from './fireCrown.js';
+import { buildApplicationCard, parseApplication } from './casterApplications.js';
 import { buildRoundup, buildSocialCard, buildSocialResultCard, matchTopPlayer, normalizeHandle, teamSocials } from './socialInfo.js';
 import { buildPrepPack, compactBotVeto, compactFaceitVeto, compactMatchStats, faceitVetoUnderway, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, teamKey, vetoSummary } from './prepPack.js';
 import {
@@ -7033,6 +7034,71 @@ async function syncSheetStatsCollected(sync, now) {
   }
 }
 
+// --- Streaming applications -------------------------------------------------------------------
+// Every 5 minutes: new rows on the Streaming Application form's response tab are posted in
+// CASTER_APPLICATION_CHANNEL_ID pinging CASTER_APPLICATION_PING_IDS. The last row seen is kept in
+// sheet sync; the first run only records where the tab ends, so old applications aren't posted.
+const CASTER_APPLICATION_CHECK_MS = 5 * 60 * 1000;
+let lastCasterApplicationCheckAt = 0;
+
+async function postNewCasterApplications(now = Date.now()) {
+  if (!config.casterApplicationChannelId || scheduleSheet.mode !== 'apps-script') return;
+  if (now - lastCasterApplicationCheckAt < CASTER_APPLICATION_CHECK_MS) return;
+  lastCasterApplicationCheckAt = now;
+  const key = 'casterApplications';
+  const state = (await getSheetSync())[key] || {};
+  const lastSeen = Number.isInteger(state.lastRow) ? state.lastRow : null;
+  const result = await scheduleSheet.readCasterApplications(lastSeen);
+  if (!result.ok) {
+    if (state.error !== result.error) console.error(`[Applications] could not read the application sheet: ${result.error}`);
+    await updateSheetSync(key, { error: result.error, errorAt: new Date(now).toISOString() });
+    return;
+  }
+  if (lastSeen === null) {
+    await updateSheetSync(key, { lastRow: result.lastRow ?? 1, startedAt: new Date(now).toISOString(), error: null });
+    console.log(`[Applications] watching the application sheet from row ${result.lastRow ?? 1}.`);
+    return;
+  }
+  const channel = await client.channels.fetch(config.casterApplicationChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) {
+    console.warn('[Applications] CASTER_APPLICATION_CHANNEL_ID is not a channel the bot can post in.');
+    return;
+  }
+  let seen = lastSeen;
+  for (const entry of result.rows) {
+    if (!entry.values?.some((value) => String(value || '').trim())) {
+      seen = entry.row;
+      continue;
+    }
+    const app = parseApplication(result.headers, entry.values);
+    const memberId = app.discord ? await findMemberIdByName(channel.guild, app.discord).catch(() => null) : null;
+    let history = null;
+    if (memberId) {
+      const requests = await listStreamRequests({ requesterId: memberId });
+      const forms = selectFormCasts(requests, { since: config.postCastFormGateSince });
+      history = {
+        approved: requests.filter((request) => request.status === 'approved').length,
+        formsIn: forms.submitted.length,
+        formsTotal: forms.missing.length + forms.submitted.length
+      };
+    }
+    const card = buildApplicationCard(app, { memberId, history, sheetUrl: config.casterApplicationSheetUrl, rowNumber: entry.row });
+    const pings = config.casterApplicationPingIds.map((id) => `<@${id}>`).join(' ');
+    const sent = await channel.send({
+      content: pings || undefined,
+      embeds: [new EmbedBuilder().setTitle(card.title).setDescription(card.description).setColor(0x9146ff)],
+      allowedMentions: { parse: [], users: config.casterApplicationPingIds }
+    }).catch((error) => {
+      console.error(`[Applications] could not post row ${entry.row}: ${error.message || error}`);
+      return null;
+    });
+    if (!sent) break;
+    seen = entry.row;
+    await appendAuditLog({ type: 'caster_application_posted', row: entry.row, applicant: app.discord || null, memberId }).catch(() => null);
+  }
+  if (seen !== lastSeen) await updateSheetSync(key, { lastRow: seen, error: null, postedAt: new Date(now).toISOString() });
+}
+
 // Takes a withdrawn or revoked caster's link back off the match's row. Never throws.
 async function removeStreamLinkFromSheet(request, actorId = null) {
   if (!request?.streamUrl || !parseFaceitMatchRoomLink(request.faceitUrl)) return null;
@@ -7906,6 +7972,7 @@ async function runStreamOperationsTick(now = Date.now()) {
   await runSocialInfo(now).catch((error) => console.error('Social info failed:', error.message || error));
   await fillSeasonMatchStats().catch((error) => console.error('Season match stats fill failed:', error.message || error));
   await syncSheetResultsAndStats(now).catch((error) => console.error('Sheet results/stats sync failed:', error));
+  await postNewCasterApplications(now).catch((error) => console.error('Caster applications failed:', error));
   await syncCrewAvailability(now).catch((error) => console.error('Crew availability sync failed:', error));
   await sendCrewAvailabilityReminders(now).catch((error) => console.error('Crew availability reminders failed:', error));
   const active = (await listStreamRequests()).filter((request) =>
