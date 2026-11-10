@@ -10,7 +10,8 @@ import {
   selectFormCasts,
   staffNudgeCooldownUntil,
   MAINSTREAM_FORMS_ID,
-  mainStreamFormId,
+  mainStreamDayFormId,
+  groupMainStreamDays,
   isMainStreamFormId,
   mainStreamFormRequest,
   buildMainStreamFormMessage,
@@ -122,49 +123,75 @@ test('staff can nudge the same caster once an hour', () => {
   assert.equal(staffNudgeCooldownUntil([cast('a', '1', since, { postCastStaffNudgeAt: '2026-11-08T10:30:00Z' })], now), null);
 });
 
-test('main stream forms: one MainStream row, its own request ID, channel message with pings', () => {
-  assert.equal(mainStreamFormId('1-36be8795-1134-48a6-9d36-6a000d46e316'), 'MS-36BE8795');
-  assert.equal(isMainStreamFormId('MS-36BE8795'), true);
+test('main stream forms: one per stream day and channel, one MainStream row, channel message with pings', () => {
+  const primary = 'https://twitch.tv/playcrossfire';
+  const cs = 'https://twitch.tv/playcrossfirecs';
+  const cs2 = 'https://twitch.tv/playcrossfirecs2';
+  assert.equal(mainStreamDayFormId('2026-11-10', primary), 'MS-2026-11-10-playcrossfire');
+  assert.equal(mainStreamDayFormId('2026-11-10', cs2), 'MS-2026-11-10-playcrossfirecs2');
+  assert.equal(mainStreamDayFormId('2026-11-10', null), 'MS-2026-11-10');
+  assert.equal(isMainStreamFormId('MS-2026-11-10-playcrossfire'), true);
   assert.equal(isMainStreamFormId('SR-12'), false);
 
-  const coverage = {
-    matchId: '1-36be8795-1134-48a6-9d36-6a000d46e316',
-    matchup: 'Old Meta vs O Fire',
-    faceitUrl: 'https://www.faceit.com/en/cs2/room/1-36be8795-1134-48a6-9d36-6a000d46e316',
-    postCastForm: { id: 'MS-36BE8795', postCastReminderSentAt: '2026-11-10T04:00:00Z' }
-  };
-  assert.equal(mainStreamFormRequest({ ...coverage, postCastForm: null }), null, 'nothing until the form is posted');
-  const form = mainStreamFormRequest(coverage, { startIso: '2026-11-10T02:00:00Z', streamUrl: 'https://twitch.tv/playcrossfire' });
+  // All three channels live the same night: one form each. Two games on the main channel share
+  // one; a game the next day gets its own.
+  const at = (iso) => Date.parse(iso);
+  const days = groupMainStreamDays([
+    { matchId: 'm2', startMs: at('2026-11-11T02:00:00Z'), dateKey: '2026-11-10', streamUrl: primary, matchup: 'Holly Molly vs Old Meta', faceitUrl: 'https://faceit/m2' },
+    { matchId: 'm1', startMs: at('2026-11-11T00:00:00Z'), dateKey: '2026-11-10', streamUrl: primary, matchup: 'Orbit vs North Forge', faceitUrl: 'https://faceit/m1' },
+    { matchId: 'm3', startMs: at('2026-11-11T01:00:00Z'), dateKey: '2026-11-10', streamUrl: cs, matchup: 'A vs B', faceitUrl: 'https://faceit/m3' },
+    { matchId: 'm5', startMs: at('2026-11-11T01:30:00Z'), dateKey: '2026-11-10', streamUrl: cs2, matchup: 'E vs F', faceitUrl: 'https://faceit/m5' },
+    { matchId: 'm4', startMs: at('2026-11-12T01:00:00Z'), dateKey: '2026-11-11', streamUrl: primary, matchup: 'C vs D', faceitUrl: 'https://faceit/m4' }
+  ]);
+  assert.deepEqual(days.map((day) => `${day.id}: ${day.items.map((item) => item.matchId).join(',')}`), [
+    'MS-2026-11-10-playcrossfire: m1,m2',
+    'MS-2026-11-10-playcrossfirecs: m3',
+    'MS-2026-11-10-playcrossfirecs2: m5',
+    'MS-2026-11-11-playcrossfire: m4'
+  ]);
+  assert.equal(days[0].lastStartMs, at('2026-11-11T02:00:00Z'), 'the day is over 12 hours after its last game');
+
+  const form = mainStreamFormRequest({
+    id: 'MS-2026-11-10-playcrossfire',
+    dateKey: '2026-11-10',
+    streamUrl: primary,
+    startIso: '2026-11-11T00:00:00Z',
+    matchIds: ['m1', 'm2'],
+    matchups: ['Orbit vs North Forge', 'Holly Molly vs Old Meta'],
+    faceitUrls: ['https://faceit/m1', 'https://faceit/m2'],
+    postCastReminderSentAt: '2026-11-11T05:00:00Z'
+  });
+  assert.equal(mainStreamFormRequest({ id: 'MS-2026-11-09' }), null, 'nothing until the form is posted');
   assert.equal(form.requesterId, MAINSTREAM_FORMS_ID);
   assert.equal(form.requesterTag, 'MainStream');
   assert.equal(form.status, 'approved');
+  assert.equal(form.matchup, 'Orbit vs North Forge / Holly Molly vs Old Meta');
 
-  // /cf forms: the main stream form sits next to casters as one MainStream row.
+  // /cf forms: the day sits next to casters as one MainStream row.
   const requests = [cast('SR-1', 'u1', '2026-11-05T00:00:00Z'), form];
   const summaries = formsCasterSummaries(requests, { since });
   assert.deepEqual(summaries.map((row) => row.tag), ['casteru1', 'MainStream']);
   assert.match(buildFormsOverview(summaries), /❌ 🎥 \*\*MainStream\*\* · 1 missing/);
-  assert.equal(groupMissingForms(requests, { since }).find((group) => group.requesterId === MAINSTREAM_FORMS_ID).requests[0].id, 'MS-36BE8795');
+  assert.equal(groupMissingForms(requests, { since }).find((group) => group.requesterId === MAINSTREAM_FORMS_ID).requests[0].id, 'MS-2026-11-10-playcrossfire');
   const view = buildCasterFormsView(requests, { casterId: MAINSTREAM_FORMS_ID, since });
   assert.match(view.description, /^🎥 \*\*MainStream\*\* · \*\*0 of 1\*\* forms in/);
-  assert.match(view.description, /❌ \*\*Old Meta vs O Fire\*\*/);
+  assert.match(view.description, /❌ \*\*Orbit vs North Forge \/ Holly Molly vs Old Meta\*\*/);
 
-  // The pre-filled link uses the main stream URL and the match day.
+  // The pre-filled link: the day's request ID, the channel, the day (Eastern) and every game.
   const template = 'https://forms.example/viewform?usp=pp_url&entry.1={requestId}&entry.2={streamUrl}&entry.3={streamDate}&entry.4={matchup}';
-  const link = postCastFormLink(template, null, form, { timeZone: 'America/New_York' });
-  assert.equal(link, 'https://forms.example/viewform?usp=pp_url&entry.1=MS-36BE8795&entry.2=https%3A%2F%2Ftwitch.tv%2Fplaycrossfire&entry.3=2026-11-09&entry.4=Old%20Meta%20vs%20O%20Fire');
+  assert.equal(postCastFormLink(template, null, form, { timeZone: 'America/New_York' }),
+    'https://forms.example/viewform?usp=pp_url&entry.1=MS-2026-11-10-playcrossfire&entry.2=https%3A%2F%2Ftwitch.tv%2Fplaycrossfire&entry.3=2026-11-10&entry.4=Orbit%20vs%20North%20Forge%20%2F%20Holly%20Molly%20vs%20Old%20Meta');
 
-  // The channel post pings the main stream form people; reminders say so.
+  // The channel post: the day, its games, the link, then the pings.
   const formLink = (request) => `https://forms.example/${request.id}`;
-  assert.equal(buildMainStreamFormMessage([form], { formLink, userIds: ['111', '222'] }),
-    [
-      '📝 Main stream post-cast stats form (match details already filled in):',
-      '- **Old Meta vs O Fire** (request `MS-36BE8795`): <https://forms.example/MS-36BE8795>',
-      '<@111> <@222>'
-    ].join('\n'));
+  assert.equal(buildMainStreamFormMessage([form], { formLink, userIds: ['111', '222'] }), [
+    '📝 Main stream post-cast stats form (match details already filled in):',
+    '- <t:1794355200:D> · **Orbit vs North Forge / Holly Molly vs Old Meta** (request `MS-2026-11-10-playcrossfire`): <https://forms.example/MS-2026-11-10-playcrossfire>',
+    '<@111> <@222>'
+  ].join('\n'));
   assert.match(buildMainStreamFormMessage([form, form], { formLink, userIds: ['111'], reminder: true }), /^📝 Still waiting on 2 main stream post-cast stats forms:/);
 
-  // The 48-hour reminder applies to main stream forms like any cast.
-  assert.equal(isPostCastNudgeDue(form, Date.parse('2026-11-12T05:00:00Z'), { since }), true);
-  assert.equal(isPostCastNudgeDue({ ...form, postCastFormSubmittedAt: '2026-11-10T05:00:00Z' }, Date.parse('2026-11-12T05:00:00Z'), { since }), false);
+  // The 48-hour reminder applies like any cast.
+  assert.equal(isPostCastNudgeDue(form, Date.parse('2026-11-13T06:00:00Z'), { since }), true);
+  assert.equal(isPostCastNudgeDue({ ...form, postCastFormSubmittedAt: '2026-11-11T06:00:00Z' }, Date.parse('2026-11-13T06:00:00Z'), { since }), false);
 });

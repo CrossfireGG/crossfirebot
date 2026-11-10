@@ -1229,36 +1229,53 @@ export function formsCasterSummaries(requests, { since = null } = {}) {
 }
 
 // ---------- Main stream post-cast forms ----------
-// Main stream matches get the same post-cast stats form, filled in by the main stream team rather
-// than a caster. In /cf forms they are one "MainStream" row; their form and nudges are posted in a
-// staff channel pinging the people in MAINSTREAM_FORM_USER_IDS instead of DMing anyone.
+// Main stream days get the same post-cast stats form, filled in by the main stream team rather than
+// a caster: one form per stream day and channel, since Twitch only has numbers for the whole stream,
+// not per game. In /cf forms they are one "MainStream" row; the form and nudges are posted in a staff
+// channel pinging the people in MAINSTREAM_FORM_USER_IDS instead of DMing anyone.
 export const MAINSTREAM_FORMS_ID = 'mainstream';
 export const MAINSTREAM_FORMS_LABEL = 'MainStream';
 
-// "MS-1A2B3C4D": the Request ID the form is pre-filled with for a main stream match.
-export function mainStreamFormId(matchId) {
-  return `MS-${String(matchId || '').replace(/^1-/, '').replace(/[^a-z0-9]/gi, '').slice(0, 8).toUpperCase()}`;
+// The Request ID a main stream day's form is pre-filled with: the day and the channel, e.g.
+// "MS-2026-11-10-playcrossfire". Each official channel live that day gets its own form.
+export function mainStreamDayFormId(dateKey, streamUrl = null) {
+  const channel = streamUrl ? streamChannelName(streamUrl) : null;
+  return `MS-${dateKey}${channel ? `-${String(channel).replace(/^@/, '').toLowerCase()}` : ''}`;
+}
+
+// Main stream matches -> one entry per day and channel, games in start order.
+// items: [{ matchId, startMs, dateKey, streamUrl, matchup, faceitUrl, ... }]
+export function groupMainStreamDays(items) {
+  const days = new Map();
+  for (const item of [...(items || [])].sort((a, b) => a.startMs - b.startMs)) {
+    const id = mainStreamDayFormId(item.dateKey, item.streamUrl);
+    if (!days.has(id)) {
+      days.set(id, { id, dateKey: item.dateKey, streamUrl: item.streamUrl || null, items: [], firstStartMs: item.startMs, lastStartMs: item.startMs });
+    }
+    const day = days.get(id);
+    day.items.push(item);
+    day.lastStartMs = Math.max(day.lastStartMs, item.startMs);
+  }
+  return [...days.values()];
 }
 
 export function isMainStreamFormId(id) {
   return /^MS-/i.test(String(id || ''));
 }
 
-// A main stream match's form as a stream-request-shaped record, so the forms views, sheet checks
-// and nudges treat it like a cast. null until its form has been posted.
-export function mainStreamFormRequest(coverage, { startIso = null, streamUrl = null } = {}) {
-  const form = coverage?.postCastForm;
+// A main stream day's form as a stream-request-shaped record, so the forms views, sheet checks and
+// nudges treat it like a cast. The matchup lists the day's games ("A vs B / C vs D").
+export function mainStreamFormRequest(form) {
   if (!form?.id || !form.postCastReminderSentAt) return null;
   return {
     ...form,
     status: 'approved',
     requesterId: MAINSTREAM_FORMS_ID,
     requesterTag: MAINSTREAM_FORMS_LABEL,
-    matchId: coverage.matchId,
-    matchup: coverage.matchup || null,
-    faceitUrl: coverage.faceitUrl || null,
-    streamUrl: streamUrl || coverage.streamUrl || null,
-    faceitScheduledAtIso: startIso || coverage.faceitScheduledAtIso || null,
+    matchId: form.matchIds?.[0] || null,
+    matchup: (form.matchups || []).join(' / ') || null,
+    faceitUrl: form.faceitUrls?.[0] || null,
+    faceitScheduledAtIso: form.startIso || null,
     mainStream: true
   };
 }
@@ -1278,7 +1295,8 @@ export function buildMainStreamFormMessage(requests, { formLink = () => '', user
   const lines = [head];
   for (const request of requests) {
     const url = formLink(request);
-    lines.push(`- **${request.matchup || request.id}** (request \`${request.id}\`)${url ? `: <${url}>` : ''}`);
+    const day = request.startIso ? `${discordTimestamp(request.startIso, 'D')} · ` : '';
+    lines.push(`- ${day}**${request.matchup || request.id}** (request \`${request.id}\`)${url ? `: <${url}>` : ''}`);
   }
   const mentions = (userIds || []).map((id) => `<@${id}>`).join(' ');
   if (mentions) lines.push(mentions);

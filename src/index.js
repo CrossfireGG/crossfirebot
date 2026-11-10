@@ -89,7 +89,8 @@ import {
   saveMatchVetoes,
   incrementCounter,
   getCounter,
-  claimMainStreamForm,
+  listMainStreamForms,
+  createMainStreamForm,
   updateMainStreamForm,
   getTeamInfoCache,
   saveTeamInfoCache,
@@ -201,7 +202,7 @@ import {
   openMatchesDigestDue,
   UPCOMING_POST_FOOTER,
   MAINSTREAM_FORMS_ID,
-  mainStreamFormId,
+  groupMainStreamDays,
   isMainStreamFormId,
   mainStreamFormRequest,
   buildMainStreamFormMessage
@@ -4216,20 +4217,17 @@ function postCastFormLinkFor(request) {
 }
 
 // --- Main stream post-cast forms ---------------------------------------------------------------
-// Each main stream match gets the post-cast stats form too, posted in MAINSTREAM_FORM_CHANNEL_ID
-// pinging MAINSTREAM_FORM_USER_IDS when the match finishes (or 12 hours after its time). In
-// /cf forms they are one "MainStream" row; nudges are posted in the same channel.
+// One post-cast stats form per main stream day (and channel): Twitch only has numbers for the whole
+// stream. Posted in MAINSTREAM_FORM_CHANNEL_ID pinging MAINSTREAM_FORM_USER_IDS once that day's
+// matches are over. In /cf forms they are one "MainStream" row; nudges go to the same channel.
 
 function formsWhoText(id) {
   return id === MAINSTREAM_FORMS_ID ? 'MainStream' : `<@${id}>`;
 }
 
-// Main stream matches whose form has been posted, shaped like stream requests.
+// Main stream day forms, shaped like stream requests.
 async function mainStreamFormRequests() {
-  const startById = new Map((await crewBookings()).map((booking) => [booking.matchId, new Date(booking.startMs).toISOString()]));
-  return (await listMainStreamCoverage())
-    .map((coverage) => mainStreamFormRequest(coverage, { startIso: startById.get(coverage.matchId) || null, streamUrl: mainStreamUrlFor(coverage) }))
-    .filter(Boolean);
+  return (await listMainStreamForms()).map(mainStreamFormRequest).filter(Boolean);
 }
 
 // Stream requests plus main stream forms, for the forms views, nudges and sheet checks.
@@ -4242,10 +4240,8 @@ async function allFormRequests(filter = {}) {
 // Updates a cast's form fields, or a main stream match's.
 async function updateFormRecord(id, patch, allowedStatuses = undefined) {
   if (!isMainStreamFormId(id)) return updateStreamRequest(id, patch, allowedStatuses);
-  const coverage = (await listMainStreamCoverage()).find((entry) => entry.postCastForm?.id === id);
-  if (!coverage) return null;
-  const saved = await updateMainStreamForm(coverage.matchId, patch);
-  return saved ? mainStreamFormRequest(saved, { streamUrl: mainStreamUrlFor(saved) }) : null;
+  const saved = await updateMainStreamForm(id, patch);
+  return saved ? mainStreamFormRequest(saved) : null;
 }
 
 async function postMainStreamForm(requests, { reminder = false } = {}) {
@@ -4262,47 +4258,73 @@ async function postMainStreamForm(requests, { reminder = false } = {}) {
   return Boolean(message);
 }
 
-// A main stream match played this season before main stream forms existed: list it in /cf forms
-// (MainStream row) without posting anything or sending the automatic reminder. Cancelled matches
-// are left out. Staff mark the ones already done as received, or Nudge for one reminder.
-async function backfillMainStreamForm(matchId, startMs) {
-  const coverage = await getMainStreamCoverage(matchId);
-  if (Date.now() - (Date.parse(coverage?.postCastFormCheckedAt || '') || 0) < 5 * 60 * 1000) return false;
-  await saveMainStreamCoverage(matchId, { postCastFormCheckedAt: new Date().toISOString() });
-  const match = await faceit.getMatch(matchId).catch(() => null);
+// A main stream match's FACEIT state for its day's form: 'finished', 'canceled' or 'pending'. Asked
+// at most every 5 minutes per match once its time has come; a final answer is kept.
+async function mainStreamMatchState(coverage, startMs, now) {
+  if (['finished', 'canceled'].includes(coverage.postCastMatchState)) return coverage.postCastMatchState;
+  if (now < startMs || now - (Date.parse(coverage.postCastFormCheckedAt || '') || 0) < 5 * 60 * 1000) return 'pending';
+  const match = await faceit.getMatch(coverage.matchId).catch(() => null);
   const status = String(match?.status || '').toLowerCase();
-  if (!match) return false;
-  if (status.includes('cancel')) {
-    await saveMainStreamCoverage(matchId, { postCastFormSkipped: 'canceled' });
-    return false;
-  }
-  if (!status.includes('finished')) return false;
-  const claimed = await claimMainStreamForm(matchId, mainStreamFormId(matchId));
-  if (!claimed) return false;
-  const nowIso = new Date().toISOString();
-  await updateMainStreamForm(matchId, {
-    postCastReminderSentAt: new Date(startMs).toISOString(),
-    postCastReminderDelivery: 'backfilled',
-    postCastNudgeSentAt: nowIso,
-    postCastNudgeDelivery: 'skipped'
-  });
-  await appendAuditLog({ type: 'mainstream_post_cast_form_backfilled', matchId, requestId: claimed.postCastForm.id }).catch(() => null);
-  return true;
+  const state = status.includes('cancel') ? 'canceled' : status.includes('finished') ? 'finished' : 'pending';
+  await saveMainStreamCoverage(coverage.matchId, { postCastFormCheckedAt: new Date(now).toISOString(), ...(state === 'pending' ? {} : { postCastMatchState: state }) });
+  return state;
 }
 
-// Posts the form for one main stream match, once. Matches before MAINSTREAM_FORM_SINCE are skipped.
-async function sendMainStreamPostCastForm(matchId, { startMs = null } = {}) {
-  const coverage = await getMainStreamCoverage(matchId);
-  if (!coverage || coverage.postCastForm?.postCastReminderSentAt) return false;
-  const start = Number.isFinite(startMs) ? startMs : (await crewBookings()).find((booking) => booking.matchId === matchId)?.startMs;
-  if (!Number.isFinite(start) || start < (Date.parse(config.mainStreamFormSince || '') || 0)) return false;
-  const claimed = await claimMainStreamForm(matchId, mainStreamFormId(matchId));
-  if (!claimed) return false;
-  const request = mainStreamFormRequest(claimed, { startIso: new Date(start).toISOString(), streamUrl: mainStreamUrlFor(claimed) });
-  const sent = await postMainStreamForm([request]);
-  await updateMainStreamForm(matchId, { postCastReminderDelivery: sent ? 'delivered' : 'failed' });
-  await appendAuditLog({ type: 'mainstream_post_cast_form_sent', matchId, requestId: request.id, delivered: sent }).catch(() => null);
-  return true;
+// One post-cast form per main stream day and channel. It goes out once every main stream match
+// that day is finished or cancelled, or 12 hours after the day's last match time. Days this season
+// that ended before MAINSTREAM_FORM_SINCE are added to /cf forms quietly (no post, no automatic
+// reminder). Days where every match was cancelled get none.
+async function syncMainStreamDayForms(now = Date.now()) {
+  const sinceMs = Date.parse(config.mainStreamFormSince || '') || 0;
+  const seasonSinceMs = Date.parse(config.postCastFormGateSince || '') || 0;
+  const existing = new Set((await listMainStreamForms()).map((form) => form.id));
+  const items = (await crewBookings())
+    // Later games the same day count too (still pending), so the form waits for the whole night.
+    .filter(({ startMs }) => startMs >= seasonSinceMs && startMs <= now + 24 * 60 * 60 * 1000)
+    .map(({ coverage, startMs }) => ({
+      coverage,
+      startMs,
+      matchId: coverage.matchId,
+      dateKey: easternParts(startMs).dateKey,
+      streamUrl: mainStreamUrlFor(coverage),
+      matchup: coverage.matchup || coverage.matchId,
+      faceitUrl: coverage.faceitUrl || null
+    }));
+  for (const day of groupMainStreamDays(items)) {
+    if (existing.has(day.id)) continue;
+    const states = [];
+    for (const item of day.items) states.push(await mainStreamMatchState(item.coverage, item.startMs, now));
+    const overdue = now >= day.lastStartMs + 12 * 60 * 60 * 1000;
+    if (states.includes('pending') && !overdue) continue;
+    const played = day.items.filter((item, index) => states[index] !== 'canceled');
+    if (!played.length) continue;
+    const quiet = day.lastStartMs < sinceMs;
+    const nowIso = new Date(now).toISOString();
+    const startIso = new Date(played[0].startMs).toISOString();
+    // Forms already marked per match (before forms went per day) carry over.
+    const carried = played.every((item) => item.coverage.postCastForm?.postCastFormSubmittedAt);
+    const created = await createMainStreamForm({
+      id: day.id,
+      dateKey: day.dateKey,
+      streamUrl: day.streamUrl,
+      startIso,
+      matchIds: played.map((item) => item.matchId),
+      matchups: played.map((item) => item.matchup),
+      faceitUrls: played.map((item) => item.faceitUrl),
+      postCastReminderSentAt: quiet ? startIso : nowIso,
+      postCastReminderDelivery: quiet ? 'backfilled' : 'pending',
+      ...(quiet ? { postCastNudgeSentAt: nowIso, postCastNudgeDelivery: 'skipped' } : {}),
+      ...(carried ? { postCastFormSubmittedAt: nowIso, postCastFormWaivedAt: nowIso, postCastFormSource: 'staff', postCastFormNote: 'marked received per match before forms went per day' } : {})
+    });
+    if (!created) continue;
+    if (quiet || carried) {
+      await appendAuditLog({ type: 'mainstream_post_cast_form_backfilled', requestId: created.id, matchIds: created.matchIds }).catch(() => null);
+      continue;
+    }
+    const sent = await postMainStreamForm([mainStreamFormRequest(created)]);
+    await updateMainStreamForm(created.id, { postCastReminderDelivery: sent ? 'delivered' : 'failed' });
+    await appendAuditLog({ type: 'mainstream_post_cast_form_sent', requestId: created.id, matchIds: created.matchIds, delivered: sent }).catch(() => null);
+  }
 }
 
 // Decides whether a caster may open the request form. Blocks when their most recent
@@ -6031,7 +6053,6 @@ async function sendPostCastReminder(matchId, actorId = null) {
   for (const request of await listStreamRequests({ matchId, status: 'approved' })) {
     await sendPostCastForm(request, actorId);
   }
-  await sendMainStreamPostCastForm(matchId).catch((error) => console.error(`[Forms] main stream form for ${matchId} failed:`, error));
 }
 
 async function sendPostCastForm(request, actorId = null) {
@@ -6058,32 +6079,7 @@ async function sendOverduePostCastForms(now = Date.now()) {
     .filter((request) => isPostCastFormOverdue(request, { now, since: config.postCastFormGateSince }))
     .slice(0, 10);
   for (const request of overdue) await sendPostCastForm(request, null);
-  // Main stream matches: the form goes out when FACEIT shows the match finished (checked every 5
-  // minutes from the match time), or 12 hours after the match time if FACEIT never says so.
-  // Cancelled matches never get one.
-  const sinceMs = Date.parse(config.mainStreamFormSince || '') || 0;
-  const seasonSinceMs = Date.parse(config.postCastFormGateSince || '') || 0;
-  for (const { coverage, startMs } of await crewBookings()) {
-    if (coverage.postCastForm?.postCastReminderSentAt || coverage.postCastFormSkipped || now < startMs) continue;
-    // Played before MAINSTREAM_FORM_SINCE (this season): listed in /cf forms quietly, no post.
-    if (startMs < sinceMs) {
-      if (startMs >= seasonSinceMs) await backfillMainStreamForm(coverage.matchId, startMs).catch((error) => console.error(`[Forms] main stream backfill for ${coverage.matchId} failed:`, error));
-      continue;
-    }
-    let due = now >= startMs + 12 * 60 * 60 * 1000;
-    if (!due) {
-      if (now - (Date.parse(coverage.postCastFormCheckedAt || '') || 0) < 5 * 60 * 1000) continue;
-      await saveMainStreamCoverage(coverage.matchId, { postCastFormCheckedAt: new Date(now).toISOString() });
-      const match = await faceit.getMatch(coverage.matchId).catch(() => null);
-      const status = String(match?.status || '').toLowerCase();
-      if (status.includes('cancel')) {
-        await saveMainStreamCoverage(coverage.matchId, { postCastFormSkipped: 'canceled' });
-        continue;
-      }
-      due = status.includes('finished');
-    }
-    if (due) await sendMainStreamPostCastForm(coverage.matchId, { startMs }).catch((error) => console.error(`[Forms] main stream form for ${coverage.matchId} failed:`, error));
-  }
+  await syncMainStreamDayForms(now).catch((error) => console.error('[Forms] main stream day forms failed:', error));
 }
 
 function scheduleStatusEmbed({
@@ -7010,23 +7006,29 @@ async function syncSheetResults(sync, now) {
 
 async function syncSheetStatsCollected(sync, now) {
   const sinceMs = Date.parse(config.postCastFormGateSince || '') || 0;
+  // A main stream day's form ticks every match row of that day.
   const byMatch = new Map();
   for (const request of await allFormRequests()) {
-    if (!request.matchId || !request.faceitUrl || byMatch.has(request.matchId)) continue;
     if (!['received', 'waived'].includes(postCastFormState(request))) continue;
     if ((Date.parse(request.postCastReminderSentAt || '') || 0) < sinceMs) continue;
-    if (!sheetSyncDue(sync[`stats:${request.matchId}`], now)) continue;
-    byMatch.set(request.matchId, request);
+    const targets = request.mainStream
+      ? (request.matchIds || []).map((matchId, index) => ({ matchId, faceitUrl: request.faceitUrls?.[index] || null }))
+      : [{ matchId: request.matchId, faceitUrl: request.faceitUrl }];
+    for (const target of targets) {
+      if (!target.matchId || !target.faceitUrl || byMatch.has(target.matchId)) continue;
+      if (!sheetSyncDue(sync[`stats:${target.matchId}`], now)) continue;
+      byMatch.set(target.matchId, { ...target, requestId: request.id });
+    }
   }
-  for (const request of [...byMatch.values()].slice(0, 10)) {
-    const key = `stats:${request.matchId}`;
-    const written = await scheduleSheet.markStatsCollected({ faceitLink: request.faceitUrl, matchId: request.matchId, requestId: request.id });
+  for (const target of [...byMatch.values()].slice(0, 10)) {
+    const key = `stats:${target.matchId}`;
+    const written = await scheduleSheet.markStatsCollected({ faceitLink: target.faceitUrl, matchId: target.matchId, requestId: target.requestId });
     if (written.ok) {
-      await updateSheetSync(key, { doneAt: new Date(now).toISOString(), requestId: request.id });
-      await appendAuditLog({ type: 'sheet_stats_collected', matchId: request.matchId, requestId: request.id }).catch(() => null);
+      await updateSheetSync(key, { doneAt: new Date(now).toISOString(), requestId: target.requestId });
+      await appendAuditLog({ type: 'sheet_stats_collected', matchId: target.matchId, requestId: target.requestId }).catch(() => null);
     } else {
       await updateSheetSync(key, { nextCheckAt: laterIso(now, 6 * 60), error: written.error });
-      console.warn(`[Sheet] Stats Collected for ${request.matchId} not ticked: ${written.error}`);
+      console.warn(`[Sheet] Stats Collected for ${target.matchId} not ticked: ${written.error}`);
     }
   }
 }

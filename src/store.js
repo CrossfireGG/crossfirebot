@@ -41,7 +41,8 @@ function normalizeDb(db) {
     matchStats: db.matchStats || {},
     matchVetoes: db.matchVetoes || {},
     teamInfoCache: db.teamInfoCache || {},
-    counters: db.counters || {}
+    counters: db.counters || {},
+    mainStreamForms: db.mainStreamForms || {}
   };
 }
 
@@ -653,23 +654,28 @@ export async function listMainStreamCoverage() {
   return Object.values((await snapshot()).mainStreamCoverage || {});
 }
 
-// Main stream post-cast form, kept on the coverage record as `postCastForm` (same field names as a
-// stream request's form fields). Claimed once per match so the form is only posted once.
-export async function claimMainStreamForm(matchId, formId) {
+// Main stream post-cast forms: one per stream day and channel (Twitch only has numbers for the
+// whole stream), keyed by their request ID ("MS-2026-11-10"). Same form field names as a stream
+// request. Created once, so a day's form is only posted once.
+export async function listMainStreamForms() {
+  return Object.values((await snapshot()).mainStreamForms || {});
+}
+
+export async function createMainStreamForm(form) {
   return mutateDb((db) => {
-    const coverage = db.mainStreamCoverage[matchId];
-    if (!coverage || coverage.postCastForm?.postCastReminderSentAt) return null;
-    coverage.postCastForm = { ...(coverage.postCastForm || {}), id: formId, postCastReminderSentAt: new Date().toISOString() };
-    return { ...coverage };
+    db.mainStreamForms = db.mainStreamForms || {};
+    if (!form?.id || db.mainStreamForms[form.id]) return null;
+    db.mainStreamForms[form.id] = { ...form, createdAt: new Date().toISOString() };
+    return { ...db.mainStreamForms[form.id] };
   });
 }
 
-export async function updateMainStreamForm(matchId, patch) {
+export async function updateMainStreamForm(id, patch) {
   return mutateDb((db) => {
-    const coverage = db.mainStreamCoverage[matchId];
-    if (!coverage?.postCastForm) return null;
-    coverage.postCastForm = { ...coverage.postCastForm, ...patch };
-    return { ...coverage };
+    const form = db.mainStreamForms?.[id];
+    if (!form) return null;
+    db.mainStreamForms[id] = { ...form, ...patch };
+    return { ...db.mainStreamForms[id] };
   });
 }
 

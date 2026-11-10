@@ -253,11 +253,12 @@ Before it answers, the bot checks the form sheet for any missing forms in the li
 
 A staff nudge also counts as the automatic 48-hour nudge. Form DMs, forms found on the sheet and nudges are all recorded in `/cf auditlog`.
 
-**Main stream forms.** Every main stream match gets the same post-cast stats form, filled in by the main stream team instead of a caster:
+**Main stream forms.** Main stream days get the same post-cast stats form, filled in by the main stream team instead of a caster. It is **one form per day and channel** (playcrossfire, playcrossfirecs, playcrossfirecs2: each official channel live that day gets its own): Twitch only has numbers for the whole stream, not per game.
 
-- When FACEIT shows the match finished (checked every 5 minutes from the match time), or 12 hours after the match time if it never does, the bot posts the form in `MAINSTREAM_FORM_CHANNEL_ID` (default #CommunityStreamRequest), pinging `MAINSTREAM_FORM_USER_IDS` (default Crown and BignTallMatt). The link is pre-filled with a main stream request ID (`MS-` plus the start of the FACEIT match ID), the main stream URL, the match day and the matchup. Cancelled matches get none. Main stream matches played this season before `MAINSTREAM_FORM_SINCE` are listed in `/cf forms` under MainStream without anything being posted or the automatic reminder: mark the ones already done as received, or press Nudge for one reminder listing the rest.
-- In `/cf forms` they are one **🎥 MainStream** row next to the casters: pick it to see every main stream form, **Nudge** (posts a reminder in that channel pinging the same people, once an hour) or **Mark a form received**. **Nudge all** includes it.
-- The 48-hour automatic reminder, the 10-minute form sheet check and the **Stats Collected?** tick work the same as for casts.
+- Once every main stream match that day is finished or cancelled on FACEIT (each checked every 5 minutes from its time), or 12 hours after the day's last match time, the bot posts the form in `MAINSTREAM_FORM_CHANNEL_ID` (default #CommunityStreamRequest), pinging `MAINSTREAM_FORM_USER_IDS` (default Crown and BignTallMatt). The link is pre-filled with the request ID (`MS-2026-11-10-playcrossfire`: the day and the channel), the channel, the day and every game on that channel ("A vs B / C vs D"). Days where every match was cancelled get none.
+- Days this season that ended before `MAINSTREAM_FORM_SINCE` are listed in `/cf forms` without anything being posted or the automatic reminder: mark the ones already done as received, or press Nudge for one reminder listing the rest.
+- In `/cf forms` they are one **🎥 MainStream** row next to the casters, one line per day: pick it to see them, **Nudge** (posts a reminder in that channel pinging the same people, once an hour) or **Mark a form received**. **Nudge all** includes it.
+- The 48-hour automatic reminder and the 10-minute form sheet check work the same as for casts; a day's form coming in (or being marked received) ticks **Stats Collected?** on every match row of that day.
 
 ### Caster reminders
 
