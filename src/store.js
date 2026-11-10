@@ -653,6 +653,26 @@ export async function listMainStreamCoverage() {
   return Object.values((await snapshot()).mainStreamCoverage || {});
 }
 
+// Main stream post-cast form, kept on the coverage record as `postCastForm` (same field names as a
+// stream request's form fields). Claimed once per match so the form is only posted once.
+export async function claimMainStreamForm(matchId, formId) {
+  return mutateDb((db) => {
+    const coverage = db.mainStreamCoverage[matchId];
+    if (!coverage || coverage.postCastForm?.postCastReminderSentAt) return null;
+    coverage.postCastForm = { ...(coverage.postCastForm || {}), id: formId, postCastReminderSentAt: new Date().toISOString() };
+    return { ...coverage };
+  });
+}
+
+export async function updateMainStreamForm(matchId, patch) {
+  return mutateDb((db) => {
+    const coverage = db.mainStreamCoverage[matchId];
+    if (!coverage?.postCastForm) return null;
+    coverage.postCastForm = { ...coverage.postCastForm, ...patch };
+    return { ...coverage };
+  });
+}
+
 // Claims the match-time "Main Stream Connection Needed" prompt once per match.
 export async function claimMainStreamDeliveryPrompt(matchId) {
   return mutateDb((db) => {

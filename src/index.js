@@ -89,6 +89,8 @@ import {
   saveMatchVetoes,
   incrementCounter,
   getCounter,
+  claimMainStreamForm,
+  updateMainStreamForm,
   getTeamInfoCache,
   saveTeamInfoCache,
   claimMainStreamDeliveryPrompt,
@@ -197,7 +199,12 @@ import {
   selectOpenMatches,
   buildOpenMatchesView,
   openMatchesDigestDue,
-  UPCOMING_POST_FOOTER
+  UPCOMING_POST_FOOTER,
+  MAINSTREAM_FORMS_ID,
+  mainStreamFormId,
+  isMainStreamFormId,
+  mainStreamFormRequest,
+  buildMainStreamFormMessage
 } from './streamRequest.js';
 import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
@@ -3868,7 +3875,7 @@ async function checkFormsInSheet(requestIds, context) {
     for (const id of batch) {
       const hit = lookup.found?.[id];
       if (!hit) continue;
-      const updated = await updateStreamRequest(id, {
+      const updated = await updateFormRecord(id, {
         postCastFormSubmittedAt: hit.submittedAt || new Date().toISOString(),
         postCastFormSource: 'form'
       });
@@ -3882,7 +3889,7 @@ async function checkFormsInSheet(requestIds, context) {
 // Every cast still missing its form, grouped by caster, after checking the sheet.
 async function missingFormGroups(requesterId = null) {
   const since = config.postCastFormGateSince;
-  const load = async () => groupMissingForms(await listStreamRequests(requesterId ? { requesterId } : {}), { since });
+  const load = async () => groupMissingForms(await allFormRequests(requesterId ? { requesterId } : {}), { since });
   let groups = await load();
   const check = await checkFormsInSheet(groups.flatMap((group) => group.requests.map((request) => request.id)), 'the missing forms list');
   if (check.foundIds.length) groups = await load();
@@ -3901,12 +3908,12 @@ async function showForms(interaction) {
 async function loadFormRequests({ checkSheet = true, casterId = null } = {}) {
   const since = config.postCastFormGateSince;
   const filter = casterId ? { requesterId: casterId } : {};
-  let requests = await listStreamRequests(filter);
+  let requests = await allFormRequests(filter);
   let sheetCheckFailed = false;
   if (checkSheet) {
     const check = await checkFormsInSheet(selectFormCasts(requests, { since }).missing.map((request) => request.id), '/cf forms');
     sheetCheckFailed = check.failed;
-    if (check.foundIds.length) requests = await listStreamRequests(filter);
+    if (check.foundIds.length) requests = await allFormRequests(filter);
   }
   return { requests, since, sheetCheckFailed };
 }
@@ -4004,7 +4011,7 @@ async function handleFormsMarkReceived(interaction) {
     : await buildFormsPayload({ checkSheet: false }));
   await interaction.followUp({
     content: updated
-      ? `Marked the form for **${updated.matchup}** (<@${updated.requesterId}>) received.`
+      ? `Marked the form for **${updated.matchup}** (${formsWhoText(updated.requesterId)}) received.`
       : 'That cast could not be marked received. It may have changed; run `/cf forms` again.',
     ephemeral: true,
     allowedMentions: { parse: [] }
@@ -4014,14 +4021,16 @@ async function handleFormsMarkReceived(interaction) {
 // DMs one caster every form they still owe and records the nudge on each cast. A staff nudge also
 // counts as the automatic 48-hour one.
 async function sendStaffFormNudge(casterId, missing, actorId, { bulk = false } = {}) {
-  const sent = await dmStreamRequester(missing[0], buildStaffFormNudge(missing, {
-    formLink: postCastFormLinkFor,
-    gate: config.postCastFormGate
-  }));
+  const sent = casterId === MAINSTREAM_FORMS_ID
+    ? await postMainStreamForm(missing, { reminder: true })
+    : await dmStreamRequester(missing[0], buildStaffFormNudge(missing, {
+      formLink: postCastFormLinkFor,
+      gate: config.postCastFormGate
+    }));
   const now = new Date().toISOString();
   if (sent) {
     for (const request of missing) {
-      await updateStreamRequest(request.id, {
+      await updateFormRecord(request.id, {
         postCastStaffNudgeAt: now,
         postCastStaffNudgeBy: actorId,
         ...(request.postCastNudgeSentAt ? {} : { postCastNudgeSentAt: now, postCastNudgeDelivery: 'delivered' })
@@ -4049,16 +4058,23 @@ async function handleFormsNudgeButton(interaction) {
   const missing = groups.find((group) => group.requesterId === casterId)?.requests || [];
   let content;
   if (!missing.length) {
-    content = `<@${casterId}> has no missing forms now${arrived ? ` (${arrived} just showed up on the sheet)` : ''}. Nothing was sent.`;
+    content = `${formsWhoText(casterId)} has no missing forms now${arrived ? ` (${arrived} just showed up on the sheet)` : ''}. Nothing was sent.`;
   } else {
     const until = staffNudgeCooldownUntil(missing);
     if (until) {
-      content = `<@${casterId}> was already nudged by staff. You can nudge again ${discordTimestamp(new Date(until).toISOString(), 'R')}.`;
+      content = `${formsWhoText(casterId)} was already nudged by staff. You can nudge again ${discordTimestamp(new Date(until).toISOString(), 'R')}.`;
     } else {
       const sent = await sendStaffFormNudge(casterId, missing, interaction.user.id);
-      content = sent
-        ? `📨 DMed <@${casterId}> about ${missing.length} missing form(s): ${missing.map((request) => request.matchup || request.id).join(', ')}.`
-        : `⚠️ Could not DM <@${casterId}>. Their DMs are closed, so reach out another way.`;
+      const what = missing.map((request) => request.matchup || request.id).join(', ');
+      if (casterId === MAINSTREAM_FORMS_ID) {
+        content = sent
+          ? `📨 Posted a reminder for ${missing.length} main stream form(s) in <#${config.mainStreamFormChannelId}>: ${what}.`
+          : '⚠️ Could not post the main stream form reminder. Check MAINSTREAM_FORM_CHANNEL_ID and that the bot can post there.';
+      } else {
+        content = sent
+          ? `📨 DMed <@${casterId}> about ${missing.length} missing form(s): ${what}.`
+          : `⚠️ Could not DM <@${casterId}>. Their DMs are closed, so reach out another way.`;
+      }
     }
   }
   await interaction.editReply(await buildCasterFormsPayload(casterId, { checkSheet: false }));
@@ -4082,7 +4098,7 @@ async function handleFormsNudgeAll(interaction) {
     const delivered = await sendStaffFormNudge(group.requesterId, group.requests, interaction.user.id, { bulk: true });
     (delivered ? sent : failed).push(group);
   }
-  const mentions = (list) => list.map((group) => `<@${group.requesterId}>`).join(', ');
+  const mentions = (list) => list.map((group) => formsWhoText(group.requesterId)).join(', ');
   const forms = sent.reduce((sum, group) => sum + group.requests.length, 0);
   const lines = [
     groups.length ? null : 'Nobody owes a form right now. Nothing was sent.',
@@ -4158,12 +4174,12 @@ async function sendPreCastReminders(now = Date.now()) {
 // checked first; a form found there is recorded and no nudge goes out. When the sheet cannot be
 // checked, nobody is nudged and the check is retried an hour later.
 async function sendPostCastNudges(now = Date.now()) {
-  const due = (await listStreamRequests())
+  const due = (await allFormRequests())
     .filter((request) => isPostCastNudgeDue(request, now, { since: config.postCastFormGateSince }))
     .slice(0, 25);
   if (!due.length) return;
   const checkedAt = new Date(now).toISOString();
-  for (const request of due) await updateStreamRequest(request.id, { postCastNudgeCheckedAt: checkedAt }, ['approved']);
+  for (const request of due) await updateFormRecord(request.id, { postCastNudgeCheckedAt: checkedAt }, ['approved']);
   const lookup = await scheduleSheet.lookupPostCastForms(due.map((request) => request.id))
     .catch((error) => ({ ok: false, error: error?.message || String(error), found: {} }));
   if (!lookup.ok || lookup.skipped) {
@@ -4173,18 +4189,20 @@ async function sendPostCastNudges(now = Date.now()) {
   for (const request of due) {
     const hit = lookup.found?.[request.id];
     if (hit) {
-      await updateStreamRequest(request.id, {
+      await updateFormRecord(request.id, {
         postCastFormSubmittedAt: hit.submittedAt || checkedAt,
         postCastFormSource: 'form'
       }, ['approved']);
       await appendAuditLog({ type: 'stream_post_cast_form_received', matchId: request.matchId || null, requestId: request.id, source: 'sheet' });
       continue;
     }
-    const sent = await dmStreamRequester(request, buildPostCastNudge(request, {
-      formUrl: postCastFormLinkFor(request),
-      gate: config.postCastFormGate
-    }));
-    await updateStreamRequest(request.id, {
+    const sent = request.mainStream
+      ? await postMainStreamForm([request], { reminder: true })
+      : await dmStreamRequester(request, buildPostCastNudge(request, {
+        formUrl: postCastFormLinkFor(request),
+        gate: config.postCastFormGate
+      }));
+    await updateFormRecord(request.id, {
       postCastNudgeSentAt: checkedAt,
       postCastNudgeDelivery: sent ? 'delivered' : 'failed'
     }, ['approved']);
@@ -4195,6 +4213,68 @@ async function sendPostCastNudges(now = Date.now()) {
 
 function postCastFormLinkFor(request) {
   return postCastFormLink(config.postCastFormPrefillUrl, config.postCastFormUrl, request, { timeZone: config.defaultTimezone });
+}
+
+// --- Main stream post-cast forms ---------------------------------------------------------------
+// Each main stream match gets the post-cast stats form too, posted in MAINSTREAM_FORM_CHANNEL_ID
+// pinging MAINSTREAM_FORM_USER_IDS when the match finishes (or 12 hours after its time). In
+// /cf forms they are one "MainStream" row; nudges are posted in the same channel.
+
+function formsWhoText(id) {
+  return id === MAINSTREAM_FORMS_ID ? 'MainStream' : `<@${id}>`;
+}
+
+// Main stream matches whose form has been posted, shaped like stream requests.
+async function mainStreamFormRequests() {
+  const startById = new Map((await crewBookings()).map((booking) => [booking.matchId, new Date(booking.startMs).toISOString()]));
+  return (await listMainStreamCoverage())
+    .map((coverage) => mainStreamFormRequest(coverage, { startIso: startById.get(coverage.matchId) || null, streamUrl: mainStreamUrlFor(coverage) }))
+    .filter(Boolean);
+}
+
+// Stream requests plus main stream forms, for the forms views, nudges and sheet checks.
+async function allFormRequests(filter = {}) {
+  if (filter.requesterId === MAINSTREAM_FORMS_ID) return mainStreamFormRequests();
+  const requests = await listStreamRequests(filter);
+  return filter.requesterId ? requests : [...requests, ...await mainStreamFormRequests()];
+}
+
+// Updates a cast's form fields, or a main stream match's.
+async function updateFormRecord(id, patch, allowedStatuses = undefined) {
+  if (!isMainStreamFormId(id)) return updateStreamRequest(id, patch, allowedStatuses);
+  const coverage = (await listMainStreamCoverage()).find((entry) => entry.postCastForm?.id === id);
+  if (!coverage) return null;
+  const saved = await updateMainStreamForm(coverage.matchId, patch);
+  return saved ? mainStreamFormRequest(saved, { streamUrl: mainStreamUrlFor(saved) }) : null;
+}
+
+async function postMainStreamForm(requests, { reminder = false } = {}) {
+  const channel = config.mainStreamFormChannelId ? await client.channels.fetch(config.mainStreamFormChannelId).catch(() => null) : null;
+  if (!channel?.isTextBased?.()) {
+    console.warn('[Forms] main stream form not posted: set MAINSTREAM_FORM_CHANNEL_ID (or STREAM_REQUEST_CHANNEL_ID) to a channel the bot can post in.');
+    return false;
+  }
+  if (!config.mainStreamFormUserIds.length) console.warn('[Forms] MAINSTREAM_FORM_USER_IDS is empty, so nobody is pinged for the main stream form.');
+  const message = await channel.send({
+    content: buildMainStreamFormMessage(requests, { formLink: postCastFormLinkFor, userIds: config.mainStreamFormUserIds, reminder }),
+    allowedMentions: { parse: [], users: config.mainStreamFormUserIds }
+  }).catch(() => null);
+  return Boolean(message);
+}
+
+// Posts the form for one main stream match, once. Matches before MAINSTREAM_FORM_SINCE are skipped.
+async function sendMainStreamPostCastForm(matchId, { startMs = null } = {}) {
+  const coverage = await getMainStreamCoverage(matchId);
+  if (!coverage || coverage.postCastForm?.postCastReminderSentAt) return false;
+  const start = Number.isFinite(startMs) ? startMs : (await crewBookings()).find((booking) => booking.matchId === matchId)?.startMs;
+  if (!Number.isFinite(start) || start < (Date.parse(config.mainStreamFormSince || '') || 0)) return false;
+  const claimed = await claimMainStreamForm(matchId, mainStreamFormId(matchId));
+  if (!claimed) return false;
+  const request = mainStreamFormRequest(claimed, { startIso: new Date(start).toISOString(), streamUrl: mainStreamUrlFor(claimed) });
+  const sent = await postMainStreamForm([request]);
+  await updateMainStreamForm(matchId, { postCastReminderDelivery: sent ? 'delivered' : 'failed' });
+  await appendAuditLog({ type: 'mainstream_post_cast_form_sent', matchId, requestId: request.id, delivered: sent }).catch(() => null);
+  return true;
 }
 
 // Decides whether a caster may open the request form. Blocks when their most recent
@@ -5890,6 +5970,19 @@ async function handleStreamRetryButton(interaction) {
 // Marks one cast's post-cast form received (sent without its request ID, or otherwise handled).
 async function markPostCastFormReceived(requestId, actorId, note = null) {
   const now = new Date().toISOString();
+  if (isMainStreamFormId(requestId)) {
+    const existing = (await mainStreamFormRequests()).find((entry) => entry.id === requestId);
+    if (!existing) return null;
+    const updated = await updateFormRecord(requestId, {
+      postCastFormSubmittedAt: existing.postCastFormSubmittedAt || now,
+      postCastFormWaivedAt: now,
+      postCastFormWaivedBy: actorId,
+      postCastFormSource: 'staff',
+      postCastFormNote: note || existing.postCastFormNote || null
+    });
+    if (updated) await appendAuditLog({ type: 'stream_post_cast_form_waived', actorId, matchId: updated.matchId, requestId });
+    return updated;
+  }
   const request = await getStreamRequest(requestId);
   if (!request) return null;
   const updated = await updateStreamRequest(requestId, {
@@ -5910,6 +6003,7 @@ async function sendPostCastReminder(matchId, actorId = null) {
   for (const request of await listStreamRequests({ matchId, status: 'approved' })) {
     await sendPostCastForm(request, actorId);
   }
+  await sendMainStreamPostCastForm(matchId).catch((error) => console.error(`[Forms] main stream form for ${matchId} failed:`, error));
 }
 
 async function sendPostCastForm(request, actorId = null) {
@@ -5936,6 +6030,26 @@ async function sendOverduePostCastForms(now = Date.now()) {
     .filter((request) => isPostCastFormOverdue(request, { now, since: config.postCastFormGateSince }))
     .slice(0, 10);
   for (const request of overdue) await sendPostCastForm(request, null);
+  // Main stream matches: the form goes out when FACEIT shows the match finished (checked every 5
+  // minutes from the match time), or 12 hours after the match time if FACEIT never says so.
+  // Cancelled matches never get one.
+  const sinceMs = Date.parse(config.mainStreamFormSince || '') || 0;
+  for (const { coverage, startMs } of await crewBookings()) {
+    if (coverage.postCastForm?.postCastReminderSentAt || coverage.postCastFormSkipped || startMs < sinceMs || now < startMs) continue;
+    let due = now >= startMs + 12 * 60 * 60 * 1000;
+    if (!due) {
+      if (now - (Date.parse(coverage.postCastFormCheckedAt || '') || 0) < 5 * 60 * 1000) continue;
+      await saveMainStreamCoverage(coverage.matchId, { postCastFormCheckedAt: new Date(now).toISOString() });
+      const match = await faceit.getMatch(coverage.matchId).catch(() => null);
+      const status = String(match?.status || '').toLowerCase();
+      if (status.includes('cancel')) {
+        await saveMainStreamCoverage(coverage.matchId, { postCastFormSkipped: 'canceled' });
+        continue;
+      }
+      due = status.includes('finished');
+    }
+    if (due) await sendMainStreamPostCastForm(coverage.matchId, { startMs }).catch((error) => console.error(`[Forms] main stream form for ${coverage.matchId} failed:`, error));
+  }
 }
 
 function scheduleStatusEmbed({
@@ -6805,7 +6919,7 @@ async function syncSheetResultsAndStats(now = Date.now()) {
 const POST_CAST_REFRESH_DAYS = 14;
 async function refreshRecentPostCastForms(now = Date.now()) {
   const sinceMs = Math.max(Date.parse(config.postCastFormGateSince || '') || 0, now - POST_CAST_REFRESH_DAYS * 24 * 60 * 60 * 1000);
-  const ids = (await listStreamRequests())
+  const ids = (await allFormRequests())
     .filter((request) => request.status === 'approved'
       && postCastFormState(request) === 'missing'
       && (Date.parse(request.postCastReminderSentAt || '') || 0) >= sinceMs)
@@ -6863,7 +6977,7 @@ async function syncSheetResults(sync, now) {
 async function syncSheetStatsCollected(sync, now) {
   const sinceMs = Date.parse(config.postCastFormGateSince || '') || 0;
   const byMatch = new Map();
-  for (const request of await listStreamRequests()) {
+  for (const request of await allFormRequests()) {
     if (!request.matchId || !request.faceitUrl || byMatch.has(request.matchId)) continue;
     if (!['received', 'waived'].includes(postCastFormState(request))) continue;
     if ((Date.parse(request.postCastReminderSentAt || '') || 0) < sinceMs) continue;

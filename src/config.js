@@ -209,6 +209,12 @@ export function getConfig() {
     vetoAdvantageTeam: process.env.VETO_ADVANTAGE_TEAM || null,
     vetoStaffChannelId: process.env.VETO_STAFF_CHANNEL_ID || process.env.ADMIN_SCHEDULE_CHANNEL_ID || null,
     streamRequestChannelId: process.env.STREAM_REQUEST_CHANNEL_ID || null,
+    // Main stream post-cast forms: posted (and nudged) in this channel, pinging these people.
+    // Defaults: #CommunityStreamRequest; Crown and BignTallMatt.
+    mainStreamFormChannelId: process.env.MAINSTREAM_FORM_CHANNEL_ID || '1558684878743150693',
+    mainStreamFormUserIds: parseCsvValue(process.env.MAINSTREAM_FORM_USER_IDS || '252433882991820810,206446410042834945'),
+    // Main stream matches before this moment never get the form (so old matches aren't posted at once).
+    mainStreamFormSince: process.env.MAINSTREAM_FORM_SINCE || '2026-11-10T12:00:00Z',
     // Optional: "live now" board channel. Empty = the Going live / End broadcast buttons are not offered.
     liveNowChannelId: process.env.LIVE_NOW_CHANNEL_ID || null,
     // Optional: where `/cf mainstream` posts connection details for the official broadcast.

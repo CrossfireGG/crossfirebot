@@ -1228,6 +1228,63 @@ export function formsCasterSummaries(requests, { since = null } = {}) {
     }));
 }
 
+// ---------- Main stream post-cast forms ----------
+// Main stream matches get the same post-cast stats form, filled in by the main stream team rather
+// than a caster. In /cf forms they are one "MainStream" row; their form and nudges are posted in a
+// staff channel pinging the people in MAINSTREAM_FORM_USER_IDS instead of DMing anyone.
+export const MAINSTREAM_FORMS_ID = 'mainstream';
+export const MAINSTREAM_FORMS_LABEL = 'MainStream';
+
+// "MS-1A2B3C4D": the Request ID the form is pre-filled with for a main stream match.
+export function mainStreamFormId(matchId) {
+  return `MS-${String(matchId || '').replace(/^1-/, '').replace(/[^a-z0-9]/gi, '').slice(0, 8).toUpperCase()}`;
+}
+
+export function isMainStreamFormId(id) {
+  return /^MS-/i.test(String(id || ''));
+}
+
+// A main stream match's form as a stream-request-shaped record, so the forms views, sheet checks
+// and nudges treat it like a cast. null until its form has been posted.
+export function mainStreamFormRequest(coverage, { startIso = null, streamUrl = null } = {}) {
+  const form = coverage?.postCastForm;
+  if (!form?.id || !form.postCastReminderSentAt) return null;
+  return {
+    ...form,
+    status: 'approved',
+    requesterId: MAINSTREAM_FORMS_ID,
+    requesterTag: MAINSTREAM_FORMS_LABEL,
+    matchId: coverage.matchId,
+    matchup: coverage.matchup || null,
+    faceitUrl: coverage.faceitUrl || null,
+    streamUrl: streamUrl || coverage.streamUrl || null,
+    faceitScheduledAtIso: startIso || coverage.faceitScheduledAtIso || null,
+    mainStream: true
+  };
+}
+
+// Who a /cf forms row is about: a caster mention, or the MainStream row.
+export function formsWho(id) {
+  return id === MAINSTREAM_FORMS_ID ? `🎥 **${MAINSTREAM_FORMS_LABEL}**` : `<@${id}>`;
+}
+
+// The channel post for main stream forms: the form itself after the match, or a reminder.
+export function buildMainStreamFormMessage(requests, { formLink = () => '', userIds = [], reminder = false } = {}) {
+  const head = reminder
+    ? (requests.length === 1
+      ? '📝 Still waiting on the main stream post-cast stats form:'
+      : `📝 Still waiting on ${requests.length} main stream post-cast stats forms:`)
+    : '📝 Main stream post-cast stats form (match details already filled in):';
+  const lines = [head];
+  for (const request of requests) {
+    const url = formLink(request);
+    lines.push(`- **${request.matchup || request.id}** (request \`${request.id}\`)${url ? `: <${url}>` : ''}`);
+  }
+  const mentions = (userIds || []).map((id) => `<@${id}>`).join(' ');
+  if (mentions) lines.push(mentions);
+  return lines.join('\n').slice(0, 2000);
+}
+
 // The `/cf forms` main view: the totals, then one line per caster who owes forms.
 export function buildFormsOverview(summaries, { sheetCheckFailed = false, maxLines = FORMS_MAX_LINES } = {}) {
   if (!summaries?.length) return 'No casts have been sent the post-cast form yet.';
@@ -1238,7 +1295,7 @@ export function buildFormsOverview(summaries, { sheetCheckFailed = false, maxLin
   if (owing.length) {
     lines.push('**Owes forms**');
     for (const row of owing.slice(0, maxLines)) {
-      lines.push(`❌ <@${row.id}> · ${row.missing} missing · ${row.rate}% in`);
+      lines.push(`❌ ${formsWho(row.id)} · ${row.missing} missing · ${row.rate}% in`);
     }
     if (owing.length > maxLines) lines.push(`…and ${owing.length - maxLines} more`);
   } else {
@@ -1257,10 +1314,10 @@ export function buildCasterFormsView(requests, { casterId, since = null, now = D
   const { missing, submitted } = selectFormCasts(own, { since });
   const total = missing.length + submitted.length;
   if (!total) {
-    return { description: `<@${casterId}> has not been sent any post-cast forms yet.`, missing: [], cooldownUntil: null };
+    return { description: `${formsWho(casterId)} has not been sent any post-cast forms yet.`, missing: [], cooldownUntil: null };
   }
   const day = (request) => discordTimestamp(castTimeIso(request) || request.postCastReminderSentAt, 'D');
-  const lines = [`<@${casterId}> · **${submitted.length} of ${total}** forms in (${Math.round((submitted.length / total) * 100)}%)`, ''];
+  const lines = [`${formsWho(casterId)} · **${submitted.length} of ${total}** forms in (${Math.round((submitted.length / total) * 100)}%)`, ''];
   lines.push('**Missing**');
   if (!missing.length) lines.push('✅ Nothing missing.');
   for (const request of missing.slice(0, FORMS_MAX_LINES)) {

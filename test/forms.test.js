@@ -8,7 +8,14 @@ import {
   formsCasterSummaries,
   groupMissingForms,
   selectFormCasts,
-  staffNudgeCooldownUntil
+  staffNudgeCooldownUntil,
+  MAINSTREAM_FORMS_ID,
+  mainStreamFormId,
+  isMainStreamFormId,
+  mainStreamFormRequest,
+  buildMainStreamFormMessage,
+  postCastFormLink,
+  isPostCastNudgeDue
 } from '../src/streamRequest.js';
 
 const since = '2026-11-02T00:00:00Z';
@@ -113,4 +120,51 @@ test('staff can nudge the same caster once an hour', () => {
   assert.equal(staffNudgeCooldownUntil([cast('a', '1', since)], now), null);
   assert.equal(staffNudgeCooldownUntil([cast('a', '1', since, { postCastStaffNudgeAt: '2026-11-08T11:30:00Z' })], now), Date.parse('2026-11-08T12:30:00Z'));
   assert.equal(staffNudgeCooldownUntil([cast('a', '1', since, { postCastStaffNudgeAt: '2026-11-08T10:30:00Z' })], now), null);
+});
+
+test('main stream forms: one MainStream row, its own request ID, channel message with pings', () => {
+  assert.equal(mainStreamFormId('1-36be8795-1134-48a6-9d36-6a000d46e316'), 'MS-36BE8795');
+  assert.equal(isMainStreamFormId('MS-36BE8795'), true);
+  assert.equal(isMainStreamFormId('SR-12'), false);
+
+  const coverage = {
+    matchId: '1-36be8795-1134-48a6-9d36-6a000d46e316',
+    matchup: 'Old Meta vs O Fire',
+    faceitUrl: 'https://www.faceit.com/en/cs2/room/1-36be8795-1134-48a6-9d36-6a000d46e316',
+    postCastForm: { id: 'MS-36BE8795', postCastReminderSentAt: '2026-11-10T04:00:00Z' }
+  };
+  assert.equal(mainStreamFormRequest({ ...coverage, postCastForm: null }), null, 'nothing until the form is posted');
+  const form = mainStreamFormRequest(coverage, { startIso: '2026-11-10T02:00:00Z', streamUrl: 'https://twitch.tv/playcrossfire' });
+  assert.equal(form.requesterId, MAINSTREAM_FORMS_ID);
+  assert.equal(form.requesterTag, 'MainStream');
+  assert.equal(form.status, 'approved');
+
+  // /cf forms: the main stream form sits next to casters as one MainStream row.
+  const requests = [cast('SR-1', 'u1', '2026-11-05T00:00:00Z'), form];
+  const summaries = formsCasterSummaries(requests, { since });
+  assert.deepEqual(summaries.map((row) => row.tag), ['casteru1', 'MainStream']);
+  assert.match(buildFormsOverview(summaries), /❌ 🎥 \*\*MainStream\*\* · 1 missing/);
+  assert.equal(groupMissingForms(requests, { since }).find((group) => group.requesterId === MAINSTREAM_FORMS_ID).requests[0].id, 'MS-36BE8795');
+  const view = buildCasterFormsView(requests, { casterId: MAINSTREAM_FORMS_ID, since });
+  assert.match(view.description, /^🎥 \*\*MainStream\*\* · \*\*0 of 1\*\* forms in/);
+  assert.match(view.description, /❌ \*\*Old Meta vs O Fire\*\*/);
+
+  // The pre-filled link uses the main stream URL and the match day.
+  const template = 'https://forms.example/viewform?usp=pp_url&entry.1={requestId}&entry.2={streamUrl}&entry.3={streamDate}&entry.4={matchup}';
+  const link = postCastFormLink(template, null, form, { timeZone: 'America/New_York' });
+  assert.equal(link, 'https://forms.example/viewform?usp=pp_url&entry.1=MS-36BE8795&entry.2=https%3A%2F%2Ftwitch.tv%2Fplaycrossfire&entry.3=2026-11-09&entry.4=Old%20Meta%20vs%20O%20Fire');
+
+  // The channel post pings the main stream form people; reminders say so.
+  const formLink = (request) => `https://forms.example/${request.id}`;
+  assert.equal(buildMainStreamFormMessage([form], { formLink, userIds: ['111', '222'] }),
+    [
+      '📝 Main stream post-cast stats form (match details already filled in):',
+      '- **Old Meta vs O Fire** (request `MS-36BE8795`): <https://forms.example/MS-36BE8795>',
+      '<@111> <@222>'
+    ].join('\n'));
+  assert.match(buildMainStreamFormMessage([form, form], { formLink, userIds: ['111'], reminder: true }), /^📝 Still waiting on 2 main stream post-cast stats forms:/);
+
+  // The 48-hour reminder applies to main stream forms like any cast.
+  assert.equal(isPostCastNudgeDue(form, Date.parse('2026-11-12T05:00:00Z'), { since }), true);
+  assert.equal(isPostCastNudgeDue({ ...form, postCastFormSubmittedAt: '2026-11-10T05:00:00Z' }, Date.parse('2026-11-12T05:00:00Z'), { since }), false);
 });
