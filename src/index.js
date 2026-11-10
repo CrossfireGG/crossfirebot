@@ -199,7 +199,7 @@ import {
 } from './streamRequest.js';
 import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
-import { buildRoundup, buildSocialCard, buildWeekAhead, buildWeekRecap, matchTopPlayer, normalizeHandle, teamSocials, weekTopPlayer } from './socialInfo.js';
+import { buildRoundup, buildSocialCard, matchTopPlayer, normalizeHandle, teamSocials } from './socialInfo.js';
 import { buildPrepPack, compactBotVeto, compactFaceitVeto, compactMatchStats, faceitVetoUnderway, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, teamKey, vetoSummary } from './prepPack.js';
 import {
   STAT_ROLES,
@@ -9374,7 +9374,6 @@ async function handleTeamNotesAutocomplete(interaction) {
 // - SOCIAL_CARD_LEAD_MINUTES (2 hours) before each main stream match: a card with time, stream,
 //   crew, round, team tags, storylines, players to watch and maps; "LIVE NOW" at the start; the
 //   final result and top player when FACEIT finishes it;
-// - Mondays at SOCIAL_POST_TIME: this week on stream, and last week's streamed results.
 // Team X handles come from the Team Info tab (X column).
 
 const SOCIAL_REFRESH_MS = 5 * 60 * 1000;
@@ -9472,37 +9471,6 @@ async function runSocialInfo(now = Date.now()) {
     skipIfEmpty: true,
     empty: !tonight.main.length && !tonight.community.length
   });
-
-  // Mondays: this week and last week.
-  if (weekdayIndex(dateKey) === 0) {
-    const sync = await getSheetSync();
-    if (!sync[`social:week:${dateKey}`]?.messageId) {
-      const thisWeek = await streamedMatchesBetween(dateKey, addDaysToKey(dateKey, 6));
-      await postOrEditSocial(`social:week:${dateKey}`, buildWeekAhead({ weekStartMs: now, items: [...thisWeek.main, ...thisWeek.community] }), { color: 0x4a86e8 });
-      const lastMonday = addDaysToKey(dateKey, -7);
-      const lastWeek = await streamedMatchesBetween(lastMonday, addDaysToKey(dateKey, -1));
-      const seasonMatches = await loadSeasonMatches().catch(() => []);
-      const ids = [...lastWeek.main, ...lastWeek.community].map((match) => match.matchId).filter(Boolean);
-      const statsById = await statsForMatches(ids, { fetchLimit: 30 });
-      const results = [];
-      for (const item of [...lastWeek.main, ...lastWeek.community]) {
-        const match = seasonMatches.find((candidate) => candidate.id === item.matchId);
-        if (!match || !/finished/i.test(String(match.status || ''))) continue;
-        const result = buildMatchResult(match, null);
-        // Map scores from the stored stats, winner's score first.
-        const winnerKey = teamKey(result?.winner || '');
-        const maps = (statsById.get(match.id)?.maps || []).map((map) => {
-          const winner = map.teams.find((team) => teamKey(team.name) === winnerKey) || map.teams[0];
-          const loser = map.teams.find((team) => team !== winner) || map.teams[1];
-          return `${map.map} ${winner.score}-${loser.score}`;
-        });
-        const base = result?.text?.replace(/\s*\(.*\)$/, '') || `${match.teamA} vs ${match.teamB}`;
-        results.push({ startMs: item.startMs, kind: item.kind, text: `${base}${maps.length ? ` (${maps.join(', ')})` : ''}` });
-      }
-      const topPlayer = weekTopPlayer(ids.map((id) => statsById.get(id)).filter(Boolean));
-      await postOrEditSocial(`social:recap:${dateKey}`, buildWeekRecap({ weekStartMs: Date.parse(`${lastMonday}T17:00:00Z`), results, topPlayer }), { color: 0xf1c40f });
-    }
-  }
 }
 
 // One card per main stream match: posted SOCIAL_CARD_LEAD_MINUTES before, "LIVE NOW" at the start,

@@ -375,7 +375,6 @@ Facts for the Social Media team to write their own posts, in `SOCIAL_CHANNEL_ID`
 
 - **Daily at `SOCIAL_POST_TIME` (4 PM ET): "Tonight on stream".** Main stream games with time, both teams (with their X handles), the stream and the production crew (casters, producer, observer), then every community-cast game tonight with its caster channels (co-casts together). Posted once something is on stream that day; edited when a crew, cast or time changes.
 - **`SOCIAL_CARD_LEAD_MINUTES` (2 hours) before each main stream match: "Social info".** Time in ET and CT, stream, crew, round, team tags ("none on file" when missing), storylines and players to watch from the prep pack, and maps (filled in when they lock). A "🔴 LIVE NOW" line is added at the start, and the final result with map scores and the match's top player (most kills) when FACEIT finishes it.
-- **Mondays at the same time:** "This week on stream" (every main stream and community-cast game this week, by day) and "Last week on stream" (last Monday-Sunday's streamed results and the top performer by K/D, at least 2 maps).
 
 Team X handles come from an **X** column on the Team Info tab (a handle like `@team` or an x.com link); `/crossfire teamnotes team: x:` sets it. They are left out of the prep pack notes and links.
 

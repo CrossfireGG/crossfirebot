@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeHandle, teamSocials, buildRoundup, buildSocialCard, buildWeekAhead, buildWeekRecap, matchTopPlayer, weekTopPlayer } from '../src/socialInfo.js';
+import { normalizeHandle, teamSocials, buildRoundup, buildSocialCard, matchTopPlayer } from '../src/socialInfo.js';
 import { parseTeamInfoRows, buildPrepPack } from '../src/prepPack.js';
 
 const NINE_30 = Date.UTC(2026, 10, 13, 2, 30); // Thu Nov 12, 9:30 PM ET
@@ -71,19 +71,10 @@ test('the main stream social card: before, live, final', () => {
   assert.match(done, /\*\*Top player:\*\* Zeph \(Celestial Esports\), 62 K · 40 D · 101 ADR/);
 });
 
-test('weekly cards and top players', () => {
-  const ahead = buildWeekAhead({ weekStartMs: NINE_30, items: [
-    { startMs: NINE_30, teamA: 'A', teamB: 'B', socialsA: {}, socialsB: {}, kind: 'main', streamUrl: 'https://twitch.tv/playcrossfire' },
-    { startMs: EIGHT, teamA: 'C', teamB: 'D', socialsA: {}, socialsB: {}, kind: 'community', casts: [{ url: 'https://twitch.tv/az19999' }] }
-  ] }).description;
-  assert.match(ahead, /\*\*Thu, Nov 12\*\*\n8:00 PM ET · C vs D · 🎙️ \[twitch\.tv\/az19999\][^\n]*\n9:30 PM ET · A vs B · 🎥 main stream/);
+test('a match\'s top player', () => {
   const stats = { maps: [
     { map: 'Mirage', teams: [{ name: 'A', players: [{ playerId: 'p1', nickname: 'Zeph', kills: 25, deaths: 10, adr: 100 }] }, { name: 'B', players: [{ playerId: 'p2', nickname: 'Delta', kills: 20, deaths: 20, adr: 80 }] }] },
     { map: 'Nuke', teams: [{ name: 'A', players: [{ playerId: 'p1', nickname: 'Zeph', kills: 15, deaths: 15, adr: 70 }] }, { name: 'B', players: [{ playerId: 'p2', nickname: 'Delta', kills: 30, deaths: 12, adr: 110 }] }] }
   ] };
   assert.equal(matchTopPlayer(stats).nickname, 'Delta');
-  assert.equal(weekTopPlayer([stats]).nickname, 'Zeph', 'best K/D over the week');
-  const recap = buildWeekRecap({ weekStartMs: NINE_30, results: [{ startMs: NINE_30, kind: 'main', text: 'A won 2-0 (Mirage 13-9, Nuke 13-5)' }], topPlayer: weekTopPlayer([stats]) }).description;
-  assert.match(recap, /\*\*🎥 Main stream\*\*\nThu, Nov 12 · A won 2-0/);
-  assert.match(recap, /\*\*Top performer:\*\* Zeph \(A\), 1\.60 K\/D, 85 ADR over 2 maps/);
 });
