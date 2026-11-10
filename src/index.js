@@ -4262,6 +4262,34 @@ async function postMainStreamForm(requests, { reminder = false } = {}) {
   return Boolean(message);
 }
 
+// A main stream match played this season before main stream forms existed: list it in /cf forms
+// (MainStream row) without posting anything or sending the automatic reminder. Cancelled matches
+// are left out. Staff mark the ones already done as received, or Nudge for one reminder.
+async function backfillMainStreamForm(matchId, startMs) {
+  const coverage = await getMainStreamCoverage(matchId);
+  if (Date.now() - (Date.parse(coverage?.postCastFormCheckedAt || '') || 0) < 5 * 60 * 1000) return false;
+  await saveMainStreamCoverage(matchId, { postCastFormCheckedAt: new Date().toISOString() });
+  const match = await faceit.getMatch(matchId).catch(() => null);
+  const status = String(match?.status || '').toLowerCase();
+  if (!match) return false;
+  if (status.includes('cancel')) {
+    await saveMainStreamCoverage(matchId, { postCastFormSkipped: 'canceled' });
+    return false;
+  }
+  if (!status.includes('finished')) return false;
+  const claimed = await claimMainStreamForm(matchId, mainStreamFormId(matchId));
+  if (!claimed) return false;
+  const nowIso = new Date().toISOString();
+  await updateMainStreamForm(matchId, {
+    postCastReminderSentAt: new Date(startMs).toISOString(),
+    postCastReminderDelivery: 'backfilled',
+    postCastNudgeSentAt: nowIso,
+    postCastNudgeDelivery: 'skipped'
+  });
+  await appendAuditLog({ type: 'mainstream_post_cast_form_backfilled', matchId, requestId: claimed.postCastForm.id }).catch(() => null);
+  return true;
+}
+
 // Posts the form for one main stream match, once. Matches before MAINSTREAM_FORM_SINCE are skipped.
 async function sendMainStreamPostCastForm(matchId, { startMs = null } = {}) {
   const coverage = await getMainStreamCoverage(matchId);
@@ -6034,8 +6062,14 @@ async function sendOverduePostCastForms(now = Date.now()) {
   // minutes from the match time), or 12 hours after the match time if FACEIT never says so.
   // Cancelled matches never get one.
   const sinceMs = Date.parse(config.mainStreamFormSince || '') || 0;
+  const seasonSinceMs = Date.parse(config.postCastFormGateSince || '') || 0;
   for (const { coverage, startMs } of await crewBookings()) {
-    if (coverage.postCastForm?.postCastReminderSentAt || coverage.postCastFormSkipped || startMs < sinceMs || now < startMs) continue;
+    if (coverage.postCastForm?.postCastReminderSentAt || coverage.postCastFormSkipped || now < startMs) continue;
+    // Played before MAINSTREAM_FORM_SINCE (this season): listed in /cf forms quietly, no post.
+    if (startMs < sinceMs) {
+      if (startMs >= seasonSinceMs) await backfillMainStreamForm(coverage.matchId, startMs).catch((error) => console.error(`[Forms] main stream backfill for ${coverage.matchId} failed:`, error));
+      continue;
+    }
     let due = now >= startMs + 12 * 60 * 60 * 1000;
     if (!due) {
       if (now - (Date.parse(coverage.postCastFormCheckedAt || '') || 0) < 5 * 60 * 1000) continue;
