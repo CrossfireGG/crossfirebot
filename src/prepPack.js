@@ -254,8 +254,87 @@ export function whatsAtStake(match) {
   return null;
 }
 
-// Map list from the bot's veto (playoffs) or FACEIT's vote (group stage).
-export function vetoSummary({ veto = null, match = null } = {}) {
+// FACEIT's veto history for a match -> { actions: [{ map, action: 'ban' | 'pick' | 'decider',
+// teamId, teamName, random }] } in veto order. The last map left over is the decider (nobody picks
+// it). Returns { actions: [] } when FACEIT has no map veto for the match.
+export function compactFaceitVeto(payload, match) {
+  const ticket = (payload?.tickets || []).find((entry) => entry?.entity_type === 'map');
+  const entities = [...(ticket?.entities || [])].sort((x, y) => Number(x.round) - Number(y.round));
+  const lastRound = Math.max(0, ...entities.map((entity) => Number(entity.round) || 0));
+  const sides = Object.fromEntries(factions(match).map((faction) => [faction.side, faction]));
+  return {
+    actions: entities
+      .filter((entity) => entity?.guid && ['drop', 'pick'].includes(entity.status))
+      .map((entity) => {
+        const decider = entity.status === 'pick' && Number(entity.round) === lastRound && entities.length > 1;
+        const side = decider ? null : sides[entity.selected_by] || null;
+        return {
+          map: entity.guid,
+          action: decider ? 'decider' : entity.status === 'drop' ? 'ban' : 'pick',
+          teamId: side?.faction_id || null,
+          teamName: side?.name || null,
+          random: Boolean(entity.random)
+        };
+      })
+  };
+}
+
+// The bot's own (playoff) veto in the same shape, for ban rates.
+export function compactBotVeto(veto) {
+  if (veto?.status !== 'complete') return null;
+  const name = (side) => (side === 'teamA' ? veto.teamA : veto.teamB);
+  return {
+    actions: [
+      ...(veto.actions || []).map((entry) => ({ map: entry.map, action: entry.action === 'pick' ? 'pick' : 'ban', teamId: null, teamName: name(entry.team), random: false })),
+      ...(veto.final?.decider ? [{ map: veto.final.decider, action: 'decider', teamId: null, teamName: null, random: false }] : [])
+    ]
+  };
+}
+
+function actionByTeam(action, team) {
+  if (team.id && action.teamId) return action.teamId === team.id;
+  return Boolean(action.teamName) && teamKey(action.teamName) === teamKey(team.name);
+}
+
+// How often a team banned each map this season, over the finished matches we have a veto for:
+// { vetoes, bans: [{ map, count }] (most banned first), firstBans: [{ map, count }] }.
+export function teamBanRates(team, seasonMatches, vetoById, { excludeMatchId = null } = {}) {
+  const bans = new Map();
+  const firstBans = new Map();
+  let vetoes = 0;
+  for (const match of seasonMatches || []) {
+    if (match.id === excludeMatchId || !isFinished(match) || !factions(match).some((faction) => sameTeam(faction, team))) continue;
+    const mine = (vetoById?.get?.(match.id)?.actions || []).filter((action) => action.action === 'ban' && actionByTeam(action, team));
+    if (!mine.length) continue;
+    vetoes += 1;
+    for (const map of new Set(mine.map((action) => prettyMapName(action.map)))) bans.set(map, (bans.get(map) || 0) + 1);
+    const first = prettyMapName(mine[0].map);
+    firstBans.set(first, (firstBans.get(first) || 0) + 1);
+  }
+  const ranked = (counts) => [...counts].map(([map, count]) => ({ map, count })).sort((x, y) => y.count - x.count || x.map.localeCompare(y.map));
+  return { vetoes, bans: ranked(bans), firstBans: ranked(firstBans) };
+}
+
+// The team's most common first ban; ties are all listed ("Dust2 / Mirage (1 of 2 each)").
+function firstBanLine(rates) {
+  const top = rates.firstBans.filter((entry) => entry.count === rates.firstBans[0]?.count);
+  if (!top.length) return null;
+  return `First ban: ${top.map((entry) => entry.map).join(' / ')} (${top[0].count} of ${rates.vetoes}${top.length > 1 ? ' each' : ''})`;
+}
+
+function banRateField(rates) {
+  if (!rates?.vetoes) return null;
+  const pct = (count) => `${Math.round((count / rates.vetoes) * 100)}%`;
+  const lines = [
+    rates.bans.map((entry) => `${entry.map} **${pct(entry.count)}** (${entry.count}/${rates.vetoes})`).join(' · '),
+    firstBanLine(rates)
+  ].filter(Boolean);
+  return { name: `🚫 Ban rate (${rates.vetoes} veto${rates.vetoes === 1 ? '' : 'es'})`, value: lines.join('\n').slice(0, 1024) };
+}
+
+// Map list from the bot's veto (playoffs) or FACEIT's vote (group stage). `faceitVeto` (from
+// compactFaceitVeto) adds who picked each map and the bans.
+export function vetoSummary({ veto = null, match = null, faceitVeto = null } = {}) {
   if (veto?.status === 'complete' && veto.final) {
     const teamName = (side) => (side === 'teamA' ? veto.teamA : veto.teamB);
     const picks = veto.actions.filter((action) => action.action === 'pick');
@@ -263,22 +342,77 @@ export function vetoSummary({ veto = null, match = null } = {}) {
     if (veto.final.decider) maps.push({ map: veto.final.decider, note: 'decider' });
     if (veto.final.awardedMap) maps.unshift({ map: veto.final.awardedMap, note: `awarded to ${veto.final.startingScore?.replace(/^1-0\s*/, '') || 'upper bracket team'}` });
     const bans = veto.actions.filter((action) => action.action === 'ban').map((action) => `${prettyMapName(action.map)} (${teamName(action.team)})`);
-    return { state: 'done', maps: maps.map((entry) => ({ ...entry, map: prettyMapName(entry.map) })), bans };
+    const order = [
+      ...(veto.final.awardedMap ? [{ kind: 'awarded', map: veto.final.awardedMap, team: veto.final.startingScore?.replace(/^1-0\s*/, '') || 'upper bracket team' }] : []),
+      ...veto.actions.map((action) => ({ kind: action.action === 'pick' ? 'pick' : 'ban', map: action.map, team: teamName(action.team) })),
+      ...(veto.final.decider ? [{ kind: 'decider', map: veto.final.decider }] : [])
+    ];
+    return { state: 'done', maps: maps.map((entry) => ({ ...entry, map: prettyMapName(entry.map) })), bans, order: numberOrder(order) };
   }
   if (veto && ['active', 'choosing_first_action'].includes(veto.status)) {
     const teamName = (side) => (side === 'teamA' ? veto.teamA : veto.teamB);
     const progress = (veto.actions || []).map((action) => `${action.action === 'pick' ? 'Pick' : 'Ban'}: ${prettyMapName(action.map)} (${teamName(action.team)})`);
     return { state: 'in progress', maps: [], bans: [], progress };
   }
-  const picked = match?.raw?.voting?.map?.pick || [];
-  if (picked.length) return { state: 'done', maps: picked.map((map) => ({ map: prettyMapName(map), note: null })), bans: [] };
+  // FACEIT's picks only count once its veto is over (CONFIGURING, READY, ONGOING, ...); while
+  // the room is still voting, a half-finished pick list would read as the final maps.
+  const status = faceitStatus(match);
+  if (FACEIT_VETO_RUNNING.has(status)) return { state: 'in progress', maps: [], bans: [], progress: [], faceitVeto: true };
+  const picked = FACEIT_PRE_VETO.has(status) ? [] : match?.raw?.voting?.map?.pick || [];
+  if (picked.length) {
+    const actions = faceitVeto?.actions || [];
+    const chosen = actions.filter((action) => action.action !== 'ban');
+    // Only trust the veto history when it agrees with FACEIT's final maps.
+    if (chosen.length === picked.length && chosen.every((action, index) => action.map === picked[index])) {
+      const note = (action) => (action.action === 'decider' ? 'decider' : `${action.teamName || 'team'} pick${action.random ? ' (random)' : ''}`);
+      return {
+        state: 'done',
+        maps: chosen.map((action) => ({ map: prettyMapName(action.map), note: note(action) })),
+        bans: actions.filter((action) => action.action === 'ban').map((action) => `${prettyMapName(action.map)} (${action.teamName || 'team'}${action.random ? ', random' : ''})`),
+        order: numberOrder(actions.map((action) => ({ kind: action.action, map: action.map, team: action.teamName || 'team', random: action.random })))
+      };
+    }
+    return { state: 'done', maps: picked.map((map) => ({ map: prettyMapName(map), note: null })), bans: [] };
+  }
   return { state: 'not yet', maps: [], bans: [] };
+}
+
+// Veto steps in the order they happened, each played map numbered (Map 1, Map 2, ...).
+function numberOrder(steps) {
+  let mapNumber = 0;
+  return steps.map((step) => ({ ...step, map: prettyMapName(step.map), mapNumber: step.kind === 'ban' ? null : (mapNumber += 1) }));
+}
+
+// The whole veto, one line per step:
+//   Anubis · O Fire ban
+//   **Mirage** · O Fire pick → Map 1
+//   **Dust2** · decider (left over) → Map 3
+export function vetoOrderLines(vetoInfo) {
+  return (vetoInfo?.order || []).map((step) => {
+    const random = step.random ? ' (random)' : '';
+    if (step.kind === 'ban') return `${step.map} · ${step.team} ban${random}`;
+    if (step.kind === 'pick') return `**${step.map}** · ${step.team} pick${random} → Map ${step.mapNumber}`;
+    if (step.kind === 'awarded') return `**${step.map}** · awarded to ${step.team} → Map ${step.mapNumber}`;
+    return `**${step.map}** · decider (left over) → Map ${step.mapNumber}`;
+  });
+}
+
+const FACEIT_PRE_VETO = new Set(['SCHEDULED', 'CHECK_IN']);
+const FACEIT_VETO_RUNNING = new Set(['VOTING']);
+
+function faceitStatus(match) {
+  return String(match?.raw?.status || match?.status || '').toUpperCase();
+}
+
+// The FACEIT room has gone live but its maps are not locked yet: worth checking more often.
+export function faceitVetoUnderway(match) {
+  return FACEIT_VETO_RUNNING.has(faceitStatus(match));
 }
 
 // What changes the pack: the two lineups and the maps.
 export function prepSignature(match, vetoInfo) {
   const rosters = factions(match).map((faction) => (faction.roster || []).map((player) => player.player_id).sort().join(','));
-  return `${rosters.join('|')}#${(vetoInfo?.maps || []).map((entry) => entry.map).join(',')}#${(vetoInfo?.progress || []).length}`;
+  return `${rosters.join('|')}#${(vetoInfo?.maps || []).map((entry) => entry.map).join(',')}#${(vetoInfo?.progress || []).length}${vetoInfo?.faceitVeto ? 'f' : ''}`;
 }
 
 function teamTalkingPoints(name, season, rosterNow) {
@@ -300,9 +434,9 @@ function rosterLine(faction, season) {
   if (!roster.length) return 'Not posted yet.';
   const hasHistory = season.results.length > 0;
   return roster.map((player) => {
-    const captain = player.player_id && player.player_id === faction.leader ? '👑 ' : '';
+    const captain = player.player_id && player.player_id === faction.leader ? ' (C)' : '';
     const standIn = hasHistory && !season.rosterSeen.has(player.player_id) ? ' · stand-in' : '';
-    return `${captain}${player.nickname}${standIn}`;
+    return `${player.nickname}${captain}${standIn}`;
   }).join('\n');
 }
 
@@ -328,7 +462,7 @@ function linkOrder(header) {
   return index < 0 ? order.length : index;
 }
 
-// "Celestial 4-1 · last: W 13-7 vs X · ⭐ Zeph 1.52 K/D, 104 ADR here" (or "first time on this map").
+// "Celestial 4-1 · last: W 13-7 vs X · best: Zeph 1.52 K/D, 104 ADR here" (or "first time on this map").
 function teamOnMapLine(name, season, mapName, rosterNow) {
   const record = season.mapPool.find((map) => map.map === mapName);
   if (!record) return `**${name}**: first time on ${mapName} this season`;
@@ -339,7 +473,7 @@ function teamOnMapLine(name, season, mapName, rosterNow) {
     .filter((player) => !rosterNow?.size || rosterNow.has(player.playerId))
     .map((player) => ({ ...player, kd: player.deaths ? player.kills / player.deaths : player.kills, adr: player.maps ? player.adrTotal / player.maps : 0 }))
     .sort((a, b) => b.kd - a.kd)[0];
-  const bestText = best ? ` · ⭐ ${best.nickname} ${best.kd.toFixed(2)} K/D, ${Math.round(best.adr)} ADR here` : '';
+  const bestText = best ? ` · best: ${best.nickname} ${best.kd.toFixed(2)} K/D, ${Math.round(best.adr)} ADR here` : '';
   return `**${name}** ${record.won}-${record.lost}${lastText}${bestText}`;
 }
 
@@ -348,9 +482,9 @@ function mapLine(map) {
 }
 
 // The team card.
-function teamCard(faction, season, info, standing, seasonName = 'Season') {
+function teamCard(faction, season, info, standing, seasonName = 'Season', banRates = null) {
   const fields = [];
-  fields.push({ name: 'Roster', value: rosterLine(faction, season).slice(0, 1024), inline: true });
+  fields.push({ name: '👥 Roster', value: rosterLine(faction, season).slice(0, 1024), inline: true });
   const record = season.results.length
     ? [
       `Matches **${season.wins}-${season.losses}** · Maps **${season.mapRecord.won}-${season.mapRecord.lost}**`,
@@ -361,24 +495,26 @@ function teamCard(faction, season, info, standing, seasonName = 'Season') {
       season.closest ? `Closest map: ${season.closest.score} on ${season.closest.map} vs ${season.closest.opponent}` : null
     ].filter(Boolean).join('\n')
     : ['First match of the season.', standing].filter(Boolean).join('\n');
-  fields.push({ name: 'Record', value: record.slice(0, 1024), inline: true });
+  fields.push({ name: '📊 Record', value: record.slice(0, 1024), inline: true });
   if (season.results.length) {
     const shown = season.results.slice(-8).reverse();
     const more = season.results.length - shown.length;
     fields.push({
-      name: seasonName,
-      value: (shown.map((result) => `${result.won ? '✅' : '❌'} ${linked(`${result.series} vs ${result.opponent}`, result.url)} · ${shortDate(result.timeMs)}${result.maps.length ? `\n  ${result.maps.map(mapLine).join(', ')}` : ''}`).join('\n') + (more > 0 ? `\n…and ${more} earlier` : '')).slice(0, 1024)
+      name: `📅 ${seasonName}`,
+      value: (shown.map((result) => `${result.won ? '**W**' : '**L**'} ${linked(`${result.series} vs ${result.opponent}`, result.url)} · ${shortDate(result.timeMs)}${result.maps.length ? `\n  ${result.maps.map(mapLine).join(', ')}` : ''}`).join('\n') + (more > 0 ? `\n…and ${more} earlier` : '')).slice(0, 1024)
     });
   }
   if (season.mapPool.length) {
-    fields.push({ name: 'Map pool', value: season.mapPool.map((map) => `${map.map} ${map.won}-${map.lost}`).join(' · ').slice(0, 1024) });
+    fields.push({ name: '🗺️ Map pool', value: season.mapPool.map((map) => `${map.map} ${map.won}-${map.lost}`).join(' · ').slice(0, 1024) });
   }
+  const banField = banRateField(banRates);
+  if (banField) fields.push(banField);
   const rosterNow = new Set((faction.roster || []).map((player) => player.player_id));
   const top = season.players.filter((player) => player.maps >= 1 && (!rosterNow.size || rosterNow.has(player.playerId))).slice(0, 3);
   if (top.length) {
     fields.push({
-      name: 'Top players',
-      value: top.map((player, index) => `${index === 0 ? '⭐ ' : ''}${player.nickname}: ${player.kills} K · ${player.deaths} D · ${player.kd.toFixed(2)} K/D · ${Math.round(player.adr)} ADR · ${Math.round(player.hs)}% HS (${player.maps} map${player.maps === 1 ? '' : 's'})`).join('\n').slice(0, 1024)
+      name: '⭐ Top players',
+      value: top.map((player) => `${player.nickname}: ${player.kills} K · ${player.deaths} D · ${player.kd.toFixed(2)} K/D · ${Math.round(player.adr)} ADR · ${Math.round(player.hs)}% HS (${player.maps} map${player.maps === 1 ? '' : 's'})`).join('\n').slice(0, 1024)
     });
   }
   const links = [
@@ -388,14 +524,14 @@ function teamCard(faction, season, info, standing, seasonName = 'Season') {
       .sort(([a], [b]) => linkOrder(a) - linkOrder(b))
       .map(([label, url]) => `[${linkLabel(label)}](${url})`)
   ].filter(Boolean);
-  return { title: faction.name, description: links.length ? `🔗 ${links.join(' · ')}` : null, fields };
+  return { title: `🛡️ ${faction.name}`, description: links.length ? links.join(' · ') : null, fields };
 }
 
 // A team's notes from the Team Info tab, posted as their own reply. null when there are none.
 export function teamNotesCard(name, info) {
   const lines = [
-    info?.pronunciation ? `🗣️ Say it: **${info.pronunciation}**` : null,
-    info?.notes ? `📝 ${info.notes}` : null,
+    info?.pronunciation ? `Say it: **${info.pronunciation}**` : null,
+    info?.notes || null,
     ...Object.entries(info?.extra || {}).filter(([label]) => !isSocialColumn(label)).map(([label, value]) => `**${label}:** ${value}`)
   ].filter(Boolean);
   return lines.length ? { title: `📝 ${name} notes`, description: lines.join('\n').slice(0, 4000), fields: [] } : null;
@@ -406,8 +542,10 @@ export function buildPrepPack({
   match,
   seasonMatches = [],
   statsById = new Map(),
+  vetoById = new Map(),
   teamInfo = [],
   veto = null,
+  faceitVeto = null,
   streamHistory = [],
   startIso = null,
   streamUrl = null,
@@ -425,7 +563,7 @@ export function buildPrepPack({
     const index = standings.findIndex((row) => (team.id && row.id === team.id) || teamKey(row.name) === teamKey(team.name));
     return index >= 0 ? `${ordinal(index + 1)} in Group ${String(match.group).replace(/^Group\s+/i, '')} (${standings[index].wins}-${standings[index].losses})` : null;
   };
-  const vetoInfo = vetoSummary({ veto, match });
+  const vetoInfo = vetoSummary({ veto, match, faceitVeto });
   const h2h = seasonA.results.filter((result) => (teamB.id && result.opponentId === teamB.id) || teamKey(result.opponent) === teamKey(teamB.name));
 
   const rosterA = new Set((a.roster || []).map((player) => player.player_id));
@@ -453,16 +591,20 @@ export function buildPrepPack({
     if (meetings.length) {
       lines.push(`H2H here: ${meetings.map(({ result, map }) => linked(`${map.for > map.against ? teamA.name : teamB.name} won ${Math.max(map.for, map.against)}-${Math.min(map.for, map.against)}`, result.url)).join(', ')}`);
     }
-    return { name: `Map ${index + 1} · ${entry.map}${entry.note ? ` (${entry.note})` : ''}`, value: lines.join('\n').slice(0, 1024) };
+    return { name: `📍 Map ${index + 1} · ${entry.map}${entry.note ? ` (${entry.note})` : ''}`, value: lines.join('\n').slice(0, 1024) };
   });
   // Just the picks and bans; the per-map breakdown goes in its own card at the end.
-  const mapsValue = vetoInfo.maps.length
+  const mapsValue = vetoInfo.order?.length
+    ? vetoOrderLines(vetoInfo).join('\n')
+    : vetoInfo.maps.length
     ? [
       ...vetoInfo.maps.map((entry, index) => `**${index + 1}. ${entry.map}**${entry.note ? ` · ${entry.note}` : ''}`),
       vetoInfo.bans.length ? `Bans: ${vetoInfo.bans.join(' · ')}` : null
     ].filter(Boolean).join('\n')
     : vetoInfo.state === 'in progress'
-      ? [...(vetoInfo.progress || []), (vetoInfo.progress || []).length ? 'Veto in progress…' : 'Veto starting…'].join('\n')
+      ? (vetoInfo.faceitVeto
+        ? 'Veto in progress on FACEIT…'
+        : [...(vetoInfo.progress || []), (vetoInfo.progress || []).length ? 'Veto in progress…' : 'Veto starting…'].join('\n'))
       : 'Veto not done yet. This updates when it is.';
   const links = [
     match.faceitUrl ? `[FACEIT room](${match.faceitUrl})` : null,
@@ -473,15 +615,15 @@ export function buildPrepPack({
     title: `🎙️ Prep · ${teamA.name} vs ${teamB.name}`,
     description: [stamp, [match.round, match.group ? `Group ${String(match.group).replace(/^Group\s+/i, '')}` : null].filter(Boolean).join(' · ') || null, links || null].filter(Boolean).join('\n'),
     fields: [
-      whatsAtStake(match) ? { name: "What's at stake", value: whatsAtStake(match) } : null,
+      whatsAtStake(match) ? { name: "🏆 What's at stake", value: whatsAtStake(match) } : null,
       { name: vetoInfo.maps.length ? '🗺️ Maps locked' : '🗺️ Maps', value: mapsValue.slice(0, 1024) },
       {
-        name: 'H2H',
+        name: '⚔️ H2H',
         value: h2h.length
           ? h2h.map((result) => `${linked(`${result.won ? teamA.name : teamB.name} won ${result.won ? result.series : result.series.split('-').reverse().join('-')}`, result.url)} · ${shortDate(result.timeMs)}${result.maps.length ? ` (${result.maps.map((map) => (result.won ? mapLine(map) : `${map.map} ${map.against}-${map.for}`)).join(', ')})` : ''}`).join('\n').slice(0, 1024)
           : 'First meeting this season.'
       },
-      { name: 'Talking points', value: talkingPoints.map((point) => `• ${point}`).join('\n').slice(0, 1024) }
+      { name: '💬 Talking points', value: talkingPoints.map((point) => `• ${point}`).join('\n').slice(0, 1024) }
     ].filter(Boolean)
   };
   // Posted as its own reply once the maps are locked.
@@ -493,8 +635,8 @@ export function buildPrepPack({
   return {
     embeds: [
       matchCard,
-      teamCard(a, seasonA, infoA, standingFor(teamA), seasonName),
-      teamCard(b, seasonB, infoB, standingFor(teamB), seasonName)
+      teamCard(a, seasonA, infoA, standingFor(teamA), seasonName, teamBanRates(teamA, seasonMatches, vetoById, { excludeMatchId: match.id })),
+      teamCard(b, seasonB, infoB, standingFor(teamB), seasonName, teamBanRates(teamB, seasonMatches, vetoById, { excludeMatchId: match.id }))
     ],
     mapFacts: mapFactsCard,
     notes: [teamNotesCard(a.name, infoA), teamNotesCard(b.name, infoB)].filter(Boolean),
@@ -514,6 +656,8 @@ export function buildPrepPack({
     signature: prepSignature(match, vetoInfo),
     vetoState: vetoInfo.state,
     maps: vetoInfo.maps.map((entry) => entry.map),
+    bans: vetoInfo.bans,
+    vetoOrder: vetoOrderLines(vetoInfo),
     talkingPoints
   };
 }

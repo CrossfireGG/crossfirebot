@@ -39,6 +39,7 @@ function normalizeDb(db) {
     crewAvailability: db.crewAvailability || {},
     crewHistory: db.crewHistory || {},
     matchStats: db.matchStats || {},
+    matchVetoes: db.matchVetoes || {},
     teamInfoCache: db.teamInfoCache || {}
   };
 }
@@ -785,6 +786,20 @@ export async function saveMatchStats(entries) {
     db.matchStats = db.matchStats || {};
     for (const [matchId, stats] of Object.entries(entries || {})) db.matchStats[matchId] = stats;
     return Object.keys(db.matchStats).length;
+  });
+}
+
+// FACEIT map vetoes of finished matches (compact; final once a match is over). A match FACEIT has
+// no veto for is stored as { actions: [] } so it is not asked for again.
+export async function getMatchVetoCache() {
+  return (await snapshot()).matchVetoes || {};
+}
+
+export async function saveMatchVetoes(entries) {
+  return mutateDb((db) => {
+    db.matchVetoes = db.matchVetoes || {};
+    for (const [matchId, veto] of Object.entries(entries || {})) db.matchVetoes[matchId] = veto;
+    return Object.keys(db.matchVetoes).length;
   });
 }
 

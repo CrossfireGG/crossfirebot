@@ -99,7 +99,7 @@ test('the caster view shows their rate, missing forms with request IDs and recen
 
 test('the staff nudge DM lists every missing form with its own link', () => {
   const owed = groupMissingForms(requests, { since })[0].requests;
-  const text = buildStaffFormNudge(owed, { formLink: (id) => `https://forms.example/?id=${id}`, gate: true });
+  const text = buildStaffFormNudge(owed, { formLink: (request) => `https://forms.example/?id=${request.id}`, gate: true });
   assert.match(text, /^📝 Tournament Operations is still waiting on 2 post-cast stats forms from you:/);
   assert.match(text, /- \*\*b1 vs X\*\* \(request b1\): https:\/\/forms\.example\/\?id=b1/);
   assert.match(text, /next stream request is blocked/);

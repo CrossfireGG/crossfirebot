@@ -59,7 +59,7 @@ test('connectionStatusLine covers not sent, delivered and closed DMs', () => {
 });
 
 test('the view lists upcoming and past casts with a form link only for the missing one', () => {
-  const view = buildMyCastsView(requests, { requesterId: me, now: NOW, formLink: (id) => `https://forms.example/?id=${id}` });
+  const view = buildMyCastsView(requests, { requesterId: me, now: NOW, formLink: (request) => `https://forms.example/?id=${request.id}` });
   assert.equal(view.upcomingCount, 3);
   assert.equal(view.pastCount, 3);
   assert.deepEqual(view.missingForms, [{ id: 'past-missing', matchup: 'Missing vs Form', url: 'https://forms.example/?id=past-missing' }]);
@@ -90,7 +90,7 @@ test('the view caps long lists and handles a caster with no casts', () => {
     faceitScheduledAtIso: new Date(NOW - (index + 1) * 86_400_000).toISOString(),
     postCastReminderSentAt: new Date(NOW - (index + 1) * 86_400_000).toISOString()
   }));
-  const view = buildMyCastsView(many, { requesterId: me, now: NOW, formLink: (id) => `https://f/${id}` });
+  const view = buildMyCastsView(many, { requesterId: me, now: NOW, formLink: (request) => `https://f/${request.id}` });
   assert.equal(view.missingForms.length, 10);
   assert.match(view.description, /Showing your 10 most recent of 13 past casts\./);
   assert.match(view.description, /\*\*Upcoming\*\*\nNothing scheduled/);

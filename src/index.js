@@ -85,6 +85,8 @@ import {
   saveCrewHistory,
   getMatchStatsCache,
   saveMatchStats,
+  getMatchVetoCache,
+  saveMatchVetoes,
   getTeamInfoCache,
   saveTeamInfoCache,
   claimMainStreamDeliveryPrompt,
@@ -198,7 +200,7 @@ import {
 import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
 import { buildRoundup, buildSocialCard, buildWeekAhead, buildWeekRecap, matchTopPlayer, normalizeHandle, teamSocials, weekTopPlayer } from './socialInfo.js';
-import { buildPrepPack, compactMatchStats, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, teamKey, vetoSummary } from './prepPack.js';
+import { buildPrepPack, compactBotVeto, compactFaceitVeto, compactMatchStats, faceitVetoUnderway, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, teamKey, vetoSummary } from './prepPack.js';
 import {
   STAT_ROLES,
   STAT_ROLE_LABELS,
@@ -244,6 +246,7 @@ const scl = new SclClient(config.sclApiKey);
 const sclMessageUpdateQueues = new Map();
 let webhookServer = null;
 let operationsTimer = null;
+let prepTimer = null;
 
 const PENDING_SCHEDULE_TOPIC_PREFIX = 'Pending schedule:';
 const EMBED_COLORS = {
@@ -406,6 +409,13 @@ client.once(Events.ClientReady, async () => {
       runOperationsTick().catch((error) => console.error('Operations tick failed:', error));
     }, 60_000);
     operationsTimer.unref?.();
+  }
+  // Prep packs get their own faster timer so a FACEIT veto's maps show up within 30 seconds.
+  if (!prepTimer) {
+    prepTimer = setInterval(() => {
+      runPrepPacks().catch((error) => console.error('Prep packs failed:', error));
+    }, PREP_VETO_RECHECK_MS);
+    prepTimer.unref?.();
   }
 });
 
@@ -4148,7 +4158,7 @@ async function sendPostCastNudges(now = Date.now()) {
       continue;
     }
     const sent = await dmStreamRequester(request, buildPostCastNudge(request, {
-      formUrl: postCastFormLinkFor(request.id),
+      formUrl: postCastFormLinkFor(request),
       gate: config.postCastFormGate
     }));
     await updateStreamRequest(request.id, {
@@ -4160,8 +4170,8 @@ async function sendPostCastNudges(now = Date.now()) {
   }
 }
 
-function postCastFormLinkFor(requestId) {
-  return postCastFormLink(config.postCastFormPrefillUrl, config.postCastFormUrl, requestId);
+function postCastFormLinkFor(request) {
+  return postCastFormLink(config.postCastFormPrefillUrl, config.postCastFormUrl, request, { timeZone: config.defaultTimezone });
 }
 
 // Decides whether a caster may open the request form. Blocks when their most recent
@@ -4194,7 +4204,7 @@ async function checkPostCastFormGate(requesterId) {
     note: null,
     message: [
       `⛔ Before you can request another stream, please submit the post-cast stats form for your last cast, **${outstanding.matchup}** (request ${outstanding.id}).`,
-      `Form, with your request ID already filled in: ${postCastFormLinkFor(outstanding.id)}`,
+      `Form, with your cast details already filled in: ${postCastFormLinkFor(outstanding)}`,
       'Once it is submitted, try again. If you already sent the form without the request ID, ask staff to mark it received.'
     ].join('\n')
   };
@@ -5883,8 +5893,8 @@ async function sendPostCastForm(request, actorId = null) {
   const claimed = await claimPostCastReminder(request.id);
   if (!claimed) return false;
   const sent = await notifyStreamRequester(claimed, [
-    `Thanks for covering **${claimed.matchup}** for Crossfire! Please fill out the post-cast stats form (your request ID ${claimed.id} is already filled in):`,
-    postCastFormLinkFor(claimed.id),
+    `Thanks for covering **${claimed.matchup}** for Crossfire! Please fill out the post-cast stats form (request ${claimed.id}; your cast details are already filled in):`,
+    postCastFormLinkFor(claimed),
     config.postCastFormGate ? 'Your next stream request is blocked until this form is in.' : null
   ].filter(Boolean).join('\n'));
   await updateStreamRequest(claimed.id, {
@@ -7700,7 +7710,7 @@ async function runStreamOperationsTick(now = Date.now()) {
   await sendOverduePostCastForms(now).catch((error) => console.error('Overdue post-cast forms failed:', error));
   await postOpenMatchesDigest(now).catch((error) => console.error('Daily open matches post failed:', error));
   await sendDueMainStreamPrompts(now).catch((error) => console.error('Main stream connection prompts failed:', error));
-  await postDuePrepPacks(now).catch((error) => console.error('Prep packs failed:', error));
+  await runPrepPacks(now).catch((error) => console.error('Prep packs failed:', error));
   await syncTeamInfo(now).catch((error) => console.error('Team Info sync failed:', error));
   await runSocialInfo(now).catch((error) => console.error('Social info failed:', error.message || error));
   await fillSeasonMatchStats().catch((error) => console.error('Season match stats fill failed:', error.message || error));
@@ -8929,8 +8939,9 @@ async function sendScheduleStaffAlert(stored, content) {
 // filled in the background). Team links and notes come from the "Team Info" tab.
 
 // Lineups and maps are checked every minute (one FACEIT call); the pack is rebuilt only on a change.
+// From the match time (or as soon as FACEIT shows the veto running) until the maps are in, every 30s.
 const PREP_RECHECK_MS = 60 * 1000;
-const VETO_LATE_WARNING_MS = 10 * 60 * 1000;
+const PREP_VETO_RECHECK_MS = 30 * 1000;
 const PREP_UPDATE_UNTIL_MS = 2 * 60 * 60 * 1000;
 const SEASON_MATCHES_TTL_MS = 10 * 60 * 1000;
 const TEAM_INFO_SYNC_MS = 30 * 60 * 1000;
@@ -8977,13 +8988,52 @@ async function statsForMatches(matchIds, { fetchLimit = 20 } = {}) {
   return found;
 }
 
-// Background: a few finished season matches' stats per minute, so prep packs are quick.
+// FACEIT map vetoes for these finished matches: stored ones, plus up to `fetchLimit` fetched now.
+// A playoff match the bot ran the veto for uses that veto when FACEIT has none.
+async function vetoesForMatches(matches, { fetchLimit = 20 } = {}) {
+  const cache = await getMatchVetoCache();
+  const found = new Map();
+  const fetched = {};
+  let fetches = 0;
+  for (const match of matches) {
+    if (!match?.id || found.has(match.id)) continue;
+    let entry = cache[match.id];
+    if (!entry && fetches < fetchLimit) {
+      fetches += 1;
+      const payload = await faceit.getMatchVeto(match.id).catch(() => undefined);
+      if (payload !== undefined) {
+        entry = compactFaceitVeto(payload, match);
+        fetched[match.id] = entry;
+      }
+    }
+    if (!entry?.actions?.length) {
+      const botVeto = compactBotVeto(await getVeto(match.id).catch(() => null));
+      if (botVeto?.actions?.length) entry = botVeto;
+    }
+    if (entry?.actions?.length) found.set(match.id, entry);
+  }
+  if (Object.keys(fetched).length) await saveMatchVetoes(fetched);
+  return found;
+}
+
+// Background: a few finished season matches' stats and vetoes per minute, so prep packs are quick.
 async function fillSeasonMatchStats() {
   if (!faceit || !config.faceitApiKey) return;
   const matches = await loadSeasonMatches();
+  const finished = matches.filter((match) => /finished/i.test(String(match.status || '')));
   const cache = await getMatchStatsCache();
-  const missing = matches.filter((match) => /finished/i.test(String(match.status || '')) && !cache[match.id]).map((match) => match.id);
+  const missing = finished.filter((match) => !cache[match.id]).map((match) => match.id);
   if (missing.length) await statsForMatches(missing.slice(0, 5), { fetchLimit: 5 });
+  const vetoCache = await getMatchVetoCache();
+  const missingVetoes = finished.filter((match) => !vetoCache[match.id]);
+  if (missingVetoes.length) await vetoesForMatches(missingVetoes.slice(0, 5), { fetchLimit: 5 });
+}
+
+// The current match's FACEIT veto (bans and who picked what), once its maps are locked.
+async function currentFaceitVeto(match) {
+  if (!match?.raw?.voting?.map?.pick?.length || faceitVetoUnderway(match)) return null;
+  const payload = await faceit.getMatchVeto(match.id).catch(() => null);
+  return payload ? compactFaceitVeto(payload, match) : null;
 }
 
 async function syncTeamInfo(now = Date.now(), { force = false } = {}) {
@@ -9023,6 +9073,7 @@ async function buildPrepForMatch(matchId) {
   const group = match.group;
   const groupMatches = group ? seasonMatches.filter((candidate) => candidate.group === group && /finished/i.test(String(candidate.status || ''))) : [];
   const statsById = await statsForMatches([...relevant, ...groupMatches].map((candidate) => candidate.id));
+  const vetoById = await vetoesForMatches(relevant);
   const coverage = await getMainStreamCoverage(matchId);
   const stored = await getStoredMatch(matchId);
   // A prep pack always uses a fresh Team Info read when the last one is over 5 minutes old or failed.
@@ -9035,8 +9086,10 @@ async function buildPrepForMatch(matchId) {
     match,
     seasonMatches: seasonMatches.some((candidate) => candidate.id === match.id) ? seasonMatches : [...seasonMatches, match],
     statsById,
+    vetoById,
     teamInfo,
     veto: await getVeto(matchId).catch(() => null),
+    faceitVeto: await currentFaceitVeto(match),
     streamHistory: await mainStreamHistory(),
     startIso: await approvedScheduleIso(matchId) || getFaceitScheduledAtIso(match),
     seasonName: (statsSeason() || activeSeason())?.name || 'Season',
@@ -9086,11 +9139,27 @@ function prepChangeNote(previousSignature, nextSignature, vetoState) {
   return changes.length ? `🔄 **Updated <t:${Math.floor(Date.now() / 1000)}:R>: ${changes.join(' and ')}.**` : null;
 }
 
+// The operations tick and the 30-second prep timer both call this; a run still in progress makes
+// the other skip, so a post or a "maps locked" reply can't go out twice.
+let prepPacksRunning = false;
+async function runPrepPacks(now = Date.now()) {
+  if (prepPacksRunning) return;
+  prepPacksRunning = true;
+  try {
+    await postDuePrepPacks(now);
+  } finally {
+    prepPacksRunning = false;
+  }
+}
+
 async function postDuePrepPacks(now = Date.now()) {
   if (!config.prepChannelId || !config.faceitApiKey) return;
   const leadMs = config.prepLeadMinutes * 60 * 1000;
   for (const { coverage, startMs } of await crewBookings()) {
     if (now < startMs - leadMs || now > startMs + PREP_UPDATE_UNTIL_MS) continue;
+    const crewIds = [...new Set([...(coverage.crew?.casters || []), coverage.crew?.producer, coverage.crew?.observer].filter(Boolean))];
+
+    // The basic pack goes up PREP_LEAD_MINUTES before the start and pings only the casters.
     if (!coverage.prepMessageId) {
       if (now > startMs + 15 * 60 * 1000) continue;
       const channel = await client.channels.fetch(config.prepChannelId).catch(() => null);
@@ -9112,25 +9181,29 @@ async function postDuePrepPacks(now = Date.now()) {
         await channel.send({ embeds: prepEmbeds({ embeds: [card] }, { footer: false }), reply: { messageReference: message.id, failIfNotExists: false }, allowedMentions: { parse: [], repliedUser: false } }).catch(() => null);
       }
       await saveMainStreamCoverage(coverage.matchId, { prepChannelId: channel.id, prepMessageId: message.id, prepSignature: pack.signature, prepCheckedAt: new Date(now).toISOString() });
-      if (pack.mapFacts) {
-        const crewIds = [...new Set([...(casters), coverage.crew?.producer, coverage.crew?.observer].filter(Boolean))];
-        await replyToPrep({ ...coverage, prepChannelId: channel.id, prepMessageId: message.id }, mapsLockedText(coverage, pack, false), crewIds, [pack.mapFacts]);
+      // Maps already locked (e.g. a playoff veto done early): the crew gets the maps ping now.
+      if (pack.maps.length) {
+        await replyToPrep({ ...coverage, prepChannelId: channel.id, prepMessageId: message.id }, mapsLockedText(coverage, pack, false), crewIds, pack.mapFacts ? [pack.mapFacts] : []);
       }
       await appendAuditLog({ type: 'prep_pack_posted', matchId: coverage.matchId }).catch(() => null);
       continue;
     }
-    if (now - (Date.parse(coverage.prepCheckedAt || '') || 0) < PREP_RECHECK_MS) continue;
-    await saveMainStreamCoverage(coverage.matchId, { prepCheckedAt: new Date(now).toISOString() });
+
+    // Every minute, and every 30 seconds from the match time (or once FACEIT shows the veto
+    // running) until the maps are in.
+    const mapsIn = Boolean(String(coverage.prepSignature || '').split('#')[1]);
+    const waitingOnVeto = !mapsIn && (now >= startMs || coverage.prepVetoUnderway);
+    const recheckMs = waitingOnVeto ? PREP_VETO_RECHECK_MS : PREP_RECHECK_MS;
+    // A couple of seconds of slack so timer jitter doesn't push a check to the next run.
+    if (now - (Date.parse(coverage.prepCheckedAt || '') || 0) < recheckMs - 2000) continue;
     const current = await faceit.getMatch(coverage.matchId).catch(() => null);
+    await saveMainStreamCoverage(coverage.matchId, {
+      prepCheckedAt: new Date(now).toISOString(),
+      ...(current ? { prepVetoUnderway: faceitVetoUnderway(current) } : {})
+    });
     if (!current) continue;
     const veto = await getVeto(coverage.matchId).catch(() => null);
     const quick = vetoSummary({ veto, match: current });
-    const crewIds = [...new Set([...(coverage.crew?.casters || []), coverage.crew?.producer, coverage.crew?.observer].filter(Boolean))];
-    // No maps 10 minutes before the start: warn the producer once.
-    if (!quick.maps.length && now >= startMs - VETO_LATE_WARNING_MS && now < startMs && !coverage.vetoLateWarnedAt) {
-      await replyToPrep(coverage, `⏳ No maps yet for **${coverage.matchup}** and it starts ${discordTimestamp(new Date(startMs).toISOString(), 'R')}. The veto isn't done.`, [coverage.crew?.producer].filter(Boolean));
-      await saveMainStreamCoverage(coverage.matchId, { vetoLateWarnedAt: new Date(now).toISOString() });
-    }
     if (prepSignature(current, quick) === coverage.prepSignature) continue;
     const pack = await buildPrepForMatch(coverage.matchId).catch(() => null);
     if (!pack || pack.signature === coverage.prepSignature) continue;
@@ -9140,7 +9213,8 @@ async function postDuePrepPacks(now = Date.now()) {
     await message.edit({ embeds: prepEmbeds(pack, { note: prepChangeNote(coverage.prepSignature, pack.signature, pack.vetoState) }) }).catch(() => null);
     const mapsBefore = String(coverage.prepSignature || '').split('#')[1] || '';
     const mapsNow = pack.maps.join(',');
-    // Editing a post notifies nobody, so the maps locking (or changing) gets a reply that pings the crew.
+    // Editing a post notifies nobody, so the maps locking (or changing) gets a reply that pings the
+    // whole crew: casters, producer and observer. This is the producer's and observer's first ping.
     if (pack.maps.length && mapsNow !== mapsBefore) {
       await replyToPrep(coverage, mapsLockedText(coverage, pack, Boolean(mapsBefore)), crewIds, pack.mapFacts ? [pack.mapFacts] : []);
       await appendAuditLog({ type: 'prep_maps_locked', matchId: coverage.matchId, maps: pack.maps }).catch(() => null);
@@ -9150,7 +9224,14 @@ async function postDuePrepPacks(now = Date.now()) {
 }
 
 function mapsLockedText(coverage, pack, changed) {
-  return `🗺️ ${changed ? 'Maps changed' : 'Maps locked'} for **${coverage.matchup}**: ${pack.maps.map((map, index) => `${index + 1}. ${map}`).join(' · ')}`;
+  // The full veto in order when we have it; otherwise just the maps.
+  if (pack.vetoOrder?.length) {
+    return [`🗺️ ${changed ? 'Maps changed' : 'Maps locked'} for **${coverage.matchup}**`, ...pack.vetoOrder].join('\n');
+  }
+  return [
+    `🗺️ ${changed ? 'Maps changed' : 'Maps locked'} for **${coverage.matchup}**: ${pack.maps.map((map, index) => `${index + 1}. ${map}`).join(' · ')}`,
+    pack.bans?.length ? `Bans: ${pack.bans.join(' · ')}` : null
+  ].filter(Boolean).join('\n');
 }
 
 async function replyToPrep(coverage, content, userIds = [], cards = []) {

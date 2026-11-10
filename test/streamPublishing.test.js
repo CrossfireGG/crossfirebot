@@ -54,6 +54,34 @@ test('post-cast form links pre-fill the request ID when the template allows it',
   assert.equal(postCastFormLink(template, null, null), template);
 });
 
+test('post-cast form links pre-fill the stream page, date and matchup the bot knows', () => {
+  const template = 'https://docs.google.com/forms/d/e/abc/viewform?usp=pp_url'
+    + '&entry.1={requestId}&entry.2={streamUrl}&entry.3={streamDate}&entry.4={matchup}';
+  const request = {
+    id: 'SR-7',
+    streamUrl: 'https://www.twitch.tv/caster',
+    matchup: 'Team A vs Team B',
+    faceitScheduledAtIso: '2026-11-08T02:30:00Z',
+    liveStartedAt: null
+  };
+  // 02:30 UTC is still the evening before in New York.
+  assert.equal(
+    postCastFormLink(template, 'https://forms.gle/x', request, { timeZone: 'America/New_York' }),
+    'https://docs.google.com/forms/d/e/abc/viewform?usp=pp_url'
+      + '&entry.1=SR-7&entry.2=https%3A%2F%2Fwww.twitch.tv%2Fcaster&entry.3=2026-11-07&entry.4=Team%20A%20vs%20Team%20B'
+  );
+  // The day they actually went live wins over the scheduled day.
+  assert.match(
+    postCastFormLink(template, null, { ...request, liveStartedAt: '2026-11-09T20:00:00Z' }, { timeZone: 'America/New_York' }),
+    /entry\.3=2026-11-09/
+  );
+  // Unknown values are left off rather than sent as placeholders; a bad time zone falls back to UTC.
+  assert.equal(
+    postCastFormLink(template, null, { id: 'SR-8', faceitScheduledAtIso: '2026-11-08T02:30:00Z' }, { timeZone: 'Not/AZone' }),
+    'https://docs.google.com/forms/d/e/abc/viewform?usp=pp_url&entry.1=SR-8&entry.3=2026-11-08'
+  );
+});
+
 test('only the most recent finished cast without a form response blocks a caster', () => {
   const me = 'caster-1';
   const requests = [

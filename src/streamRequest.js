@@ -185,13 +185,50 @@ export function normalizeWithdrawalReason(raw) {
   return text.length > MAX_WITHDRAWAL_REASON_LENGTH ? `${text.slice(0, MAX_WITHDRAWAL_REASON_LENGTH - 1)}…` : text;
 }
 
-// The post-cast form link for one cast, with the Request ID question pre-filled when the
-// configured prefill URL has a {requestId} placeholder.
-export function postCastFormLink(prefillUrl, fallbackUrl, requestId) {
-  if (prefillUrl && requestId && prefillUrl.includes('{requestId}')) {
-    return prefillUrl.replace('{requestId}', encodeURIComponent(String(requestId)));
+// The calendar day (YYYY-MM-DD, the format Google Forms pre-fills dates with) of an
+// instant in the given time zone, or '' when the instant is missing or invalid.
+function formDate(iso, timeZone) {
+  const ms = Date.parse(iso || '');
+  if (!Number.isFinite(ms)) return '';
+  const format = (zone) => new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+  try {
+    return format(timeZone || 'UTC');
+  } catch {
+    return format('UTC');
   }
-  return fallbackUrl || prefillUrl || '';
+}
+
+// What the bot already knows for the post-cast stats form. The stream date is the day the
+// caster actually went live, falling back to the scheduled match day.
+export function postCastFormValues(request, { timeZone = 'UTC' } = {}) {
+  return {
+    requestId: String(request?.id || ''),
+    streamUrl: String(request?.streamUrl || ''),
+    streamDate: formDate(request?.liveStartedAt || castTimeIso(request), timeZone),
+    matchup: String(request?.matchup || '')
+  };
+}
+
+// The post-cast form link for one cast. The prefill URL's {requestId}, {streamUrl},
+// {streamDate} and {matchup} placeholders are filled from the request; a question whose
+// value is unknown is left off so the caster sees it blank instead of a placeholder.
+// Without a request ID (or a {requestId} placeholder) the plain form URL is used.
+// `request` may also be a bare request ID.
+export function postCastFormLink(prefillUrl, fallbackUrl, request, { timeZone = 'UTC' } = {}) {
+  const values = postCastFormValues(typeof request === 'object' && request ? request : { id: request }, { timeZone });
+  if (!prefillUrl || !values.requestId || !prefillUrl.includes('{requestId}')) {
+    return fallbackUrl || prefillUrl || '';
+  }
+  const queryAt = prefillUrl.indexOf('?');
+  if (queryAt < 0) return prefillUrl.replace('{requestId}', encodeURIComponent(values.requestId));
+  const base = prefillUrl.slice(0, queryAt + 1);
+  const params = prefillUrl.slice(queryAt + 1).split('&').flatMap((param) => {
+    const placeholder = param.match(/=\{(\w+)\}$/);
+    if (!placeholder) return [param];
+    const value = values[placeholder[1]];
+    return value ? [param.replace(`{${placeholder[1]}}`, encodeURIComponent(value))] : [];
+  });
+  return base + params.join('&');
 }
 
 // The caster's most recent finished cast (reminder sent) that still has no form response.
@@ -823,7 +860,7 @@ const FORM_STATE_TEXT = {
   not_required: 'no form needed'
 };
 
-// The `/request mine` reply. `formLink(requestId)` builds the pre-filled form URL.
+// The `/request mine` reply. `formLink(request)` builds the pre-filled form URL.
 export function buildMyCastsView(requests, { requesterId, now = Date.now(), formLink = () => '', formCheckFailed = false, limit = MY_CASTS_LIMIT, stats = null } = {}) {
   const { upcoming, past } = splitMyCasts(requests, { requesterId, now });
   if (!upcoming.length && !past.length) {
@@ -854,13 +891,13 @@ export function buildMyCastsView(requests, { requesterId, now = Date.now(), form
   for (const request of shownPast) {
     const state = postCastFormState(request);
     const day = discordTimestamp(castTimeIso(request) || request.postCastReminderSentAt, 'D');
-    const url = state === 'missing' ? formLink(request.id) : '';
+    const url = state === 'missing' ? formLink(request) : '';
     if (state === 'missing' && url) missingForms.push({ id: request.id, matchup: request.matchup || request.id, url });
     const hint = state === 'missing' && !url ? ' (ask staff for the form link)' : '';
     lines.push(`${FORM_STATE_ICONS[state]} **${request.matchup || request.id}**${day ? ` · ${day}` : ''} · ${FORM_STATE_TEXT[state]}${hint}`);
   }
   if (past.length > limit) lines.push(`Showing your ${limit} most recent of ${past.length} past casts.`);
-  if (missingForms.length) lines.push('', 'Use the buttons below to fill in each missing form. Your request ID is already filled in.');
+  if (missingForms.length) lines.push('', 'Use the buttons below to fill in each missing form. Your cast details are already filled in.');
   if (formCheckFailed) lines.push('', '⚠️ I could not reach the form sheet just now, so a form you sent recently may still show ❌.');
   return { description: lines.join('\n'), missingForms, upcomingCount: upcoming.length, pastCount: past.length };
 }
@@ -1116,7 +1153,7 @@ export function isPostCastNudgeDue(request, now = Date.now(), { since = null } =
 export function buildPostCastNudge(request, { formUrl = '', gate = false } = {}) {
   return [
     `📝 Reminder: we still do not have your post-cast stats form for **${request.matchup || request.id}** (request ${request.id}).`,
-    formUrl ? `Form, with your request ID already filled in: ${formUrl}` : 'Ask staff for the form link.',
+    formUrl ? `Form, with your cast details already filled in: ${formUrl}` : 'Ask staff for the form link.',
     gate ? 'Your next stream request is blocked until this form is in.' : null,
     'If you already sent it without the request ID, ask staff to mark it received.'
   ].filter(Boolean).join('\n');
@@ -1257,11 +1294,11 @@ export function buildStaffFormNudge(requests, { formLink = () => '', gate = fals
       : `📝 Tournament Operations is still waiting on ${requests.length} post-cast stats forms from you:`
   ];
   for (const request of requests) {
-    const url = formLink(request.id);
+    const url = formLink(request);
     lines.push(`- **${request.matchup || request.id}** (request ${request.id})${url ? `: ${url}` : ''}`);
   }
   if (gate) lines.push('Your next stream request is blocked until these are in.');
-  lines.push('Each link has your request ID filled in. If you already sent a form without it, ask staff to mark it received.');
+  lines.push('Each link has your request ID and cast details filled in. If you already sent a form without the request ID, ask staff to mark it received.');
   return lines.join('\n');
 }
 

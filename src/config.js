@@ -272,9 +272,11 @@ export function getConfig() {
     streamGuidelinesUrl: process.env.STREAM_GUIDELINES_URL || null,
     streamGuidelinesText: process.env.STREAM_GUIDELINES_TEXT || 'Follow all CROSSFIRE co-streaming rules and do not restream the official broadcast without explicit permission.',
     postCastFormUrl: process.env.POST_CAST_FORM_URL || 'https://forms.gle/6zwVr2ArfFngGQ2NA',
-    // Same form with the "Request ID" question pre-filled; {requestId} is replaced per cast.
+    // Same form pre-filled per cast: {requestId}, {streamUrl}, {streamDate} (YYYY-MM-DD in
+    // DEFAULT_TIMEZONE) and {matchup} are replaced; questions with no known value are left blank.
     postCastFormPrefillUrl: process.env.POST_CAST_FORM_PREFILL_URL
-      || 'https://docs.google.com/forms/d/e/1FAIpQLSe32Ix7mieBvNJ4bZ4bajf4wmMCulwQVY02droPomaS2ssgQQ/viewform?usp=pp_url&entry.104948941={requestId}',
+      || 'https://docs.google.com/forms/d/e/1FAIpQLSe32Ix7mieBvNJ4bZ4bajf4wmMCulwQVY02droPomaS2ssgQQ/viewform?usp=pp_url'
+        + '&entry.104948941={requestId}&entry.532463285={streamUrl}&entry.131165552={streamDate}&entry.286036985={matchup}',
     // Block new stream requests until the caster's last finished cast has a form response.
     postCastFormGate: process.env.POST_CAST_FORM_GATE !== 'false',
     // Casts that finished before this moment never block anyone (the form had no Request ID then).

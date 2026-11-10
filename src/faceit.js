@@ -37,6 +37,19 @@ export class FaceitClient {
     return normalizeMatch(raw, source || sourceForMatch(raw, this.sources) || raw.source || { type: 'match', id: matchId, name: '' });
   }
 
+  // The map veto of a match: every ban and pick and which faction made it, from FACEIT's public
+  // veto history (what the match room shows; the Data API only has the final picks). Raw payload
+  // ({ tickets: [...] }), or null when FACEIT has none for the match.
+  async getMatchVeto(matchId) {
+    const response = await fetch(`https://api.faceit.com/democracy/v1/match/${encodeURIComponent(matchId)}/history`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(15000)
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`FACEIT veto history ${response.status}`);
+    return (await response.json())?.payload || null;
+  }
+
   // Per-map stats of a finished match (map names and final round scores). Raw FACEIT payload.
   async getMatchStats(matchId) {
     return this.request(`/matches/${encodeURIComponent(matchId)}/stats`);
