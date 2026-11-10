@@ -201,6 +201,7 @@ import {
 } from './streamRequest.js';
 import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
+import { isFireCrownMention } from './fireCrown.js';
 import { buildRoundup, buildSocialCard, buildSocialResultCard, matchTopPlayer, normalizeHandle, teamSocials } from './socialInfo.js';
 import { buildPrepPack, compactBotVeto, compactFaceitVeto, compactMatchStats, faceitVetoUnderway, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, teamKey, vetoSummary } from './prepPack.js';
 import {
@@ -1267,10 +1268,11 @@ client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot || !message.guild) return;
 
     const content = message.content.trim();
-    if (!content.startsWith('!')) return;
 
-    // !FireCrown: the bot says #FireCrown and the running total goes up. !FireCrownCount: the total.
-    if (/^!firecrown$/i.test(content)) {
+    // #FireCrown anywhere in a message, or !FireCrown on its own: the bot says #FireCrown and the
+    // running total goes up. !FireCrownCount: the total. (Bots are ignored above, so the bot's own
+    // #FireCrown never triggers itself.)
+    if (/^!firecrown$/i.test(content) || isFireCrownMention(content)) {
       await incrementCounter('fireCrown');
       await message.channel.send({ content: '#FireCrown', allowedMentions: { parse: [] } });
       return;
@@ -1280,6 +1282,8 @@ client.on(Events.MessageCreate, async (message) => {
       await message.channel.send({ content: `#FireCrown count: **${total}**`, allowedMentions: { parse: [] } });
       return;
     }
+
+    if (!content.startsWith('!')) return;
 
     if (content.toLowerCase().startsWith('!schedule')) {
       await handleTextScheduleProposal(message, content, 'schedule');
