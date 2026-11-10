@@ -225,6 +225,14 @@ export function getConfig() {
     mainStreamFormSince: process.env.MAINSTREAM_FORM_SINCE || '2026-11-10T12:00:00Z',
     // Streaming Application form: each new response is posted in this channel (#CommunityStreamRequest)
     // pinging these people (BignTallMatt). The sheet link goes on the card.
+    // /roster-change: the roster sheet (Crossfire Player Tracking > Roster Tracking) and where
+    // admins are told to update FACEIT (Roster Change Requests), pinging these roles.
+    rosterSpreadsheetId: process.env.ROSTER_SPREADSHEET_ID || '1zgbcvzSqo3hxsH20PH51y2xrODODNnUfGMgLrJGinng',
+    rosterSheetName: process.env.ROSTER_SHEET_NAME || 'Roster Tracking',
+    rosterChangeChannelId: process.env.ROSTER_CHANGE_CHANNEL_ID || '1569823541858410507',
+    // Twitter, FACEIT and HLTV are written as hyperlinks showing this text (the tab uses "…").
+    rosterLinkLabel: process.env.ROSTER_LINK_LABEL || '…',
+    rosterChangePingRoleIds: parseCsvValue(process.env.ROSTER_CHANGE_PING_ROLE_IDS || process.env.ADMIN_ALERT_ROLE_IDS || ''),
     casterApplicationChannelId: process.env.CASTER_APPLICATION_CHANNEL_ID || '1558684878743150693',
     casterApplicationPingIds: parseCsvValue(process.env.CASTER_APPLICATION_PING_IDS || '206446410042834945'),
     casterApplicationSheetUrl: process.env.CASTER_APPLICATION_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1rQGdrdrrbh94ZR_EL12uCqcQwHR6A4VR9SBDbjXGJZY/edit?gid=37125937#gid=37125937',

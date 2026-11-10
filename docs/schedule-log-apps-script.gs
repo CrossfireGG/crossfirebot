@@ -48,6 +48,14 @@
  *                         the header row and every row after `afterRow`. Without `afterRow`
  *                         it only returns where the tab ends, so the bot starts from there.
  *                         The bot posts each new application in the stream request channel.
+ *   "rosterTeam"          reads one team's block on the roster tab (read-only): the
+ *                         spreadsheet and tab come from the bot (`spreadsheetId`, `sheetName`).
+ *                         Finds the team by FACEIT team ID (its Team Info FACEIT link), name, or
+ *                         its captain (Discord username or IGN in the Captain cell).
+ *   "rosterChange"        writes a /roster-change: the new player into the target slot (the old
+ *                         player moved to the first empty sub slot first when `mode` is "sub"),
+ *                         plus a line in a "CHANGES" column if the tab has one. Refuses if the
+ *                         slot changed since the captain read it.
  *
  * Everything else in columns H–M is left for staff and is never touched.
  * After every write the tab is sorted by column A (date and time).
@@ -122,6 +130,8 @@ function doPost(e) {
     const action = body.action || 'schedule';
     if (action === 'postCastForms') return lookupPostCastForms(body.requestIds || []);
     if (action === 'casterApplications') return readCasterApplications(body.afterRow);
+    if (action === 'rosterTeam') return readRosterTeam(body);
+    if (action === 'rosterChange') return writeRosterChange(body);
     if (action === 'availability') return readAvailability();
     if (action === 'teamInfo') return readTeamInfo();
     if (action === 'teamInfoUpdate') return updateTeamInfo(body.team, body.fields || {});
@@ -451,6 +461,150 @@ function readCasterApplications(afterRow) {
     values: row.map((cell) => (cell instanceof Date ? cell.toISOString() : String(cell)))
   }));
   return reply(200, { ok: true, lastRow: lastRow, headers: headers, rows: rows });
+}
+
+// ---- Roster tab (/roster-change) ----
+// "Roster Tracking" tab: each team is an 11-row block.
+//   row 1: (blank) | Team | Captian | Twitter | FACEIT | HLTV | VRS | Abbreviation | Logo
+//   row 2: "Team Info" | team name | captain | X | FACEIT team link | HLTV | VRS | abbreviation | logo
+//   row 3: "Player Info" | IGN | Discord | Twitter | FACEIT | HLTV | Nationality | SteamID64 | Full Name
+//   rows 4-11: Starter 1-5, Sub 1-2, Coach, with the player columns of row 3 (B-I).
+// The team is found by its FACEIT team link, its name, or its captain (Discord username or IGN).
+// A change log line is only written if row 1 has a column headed "CHANGES".
+const ROSTER_FIELDS = ['alias', 'discord', 'twitter', 'faceit', 'hltv', 'nationality', 'steamId', 'fullName'];
+// Written as hyperlinks: the bot's label ("…" by default, like the tab) with the URL behind it.
+const ROSTER_LINK_FIELDS = ['twitter', 'faceit', 'hltv'];
+const ROSTER_FIRST_FIELD_COLUMN = 2; // B
+const ROSTER_SLOT_ROWS = 8; // Starter 1-5, Sub 1-2, Coach
+
+function rosterSheet(body) {
+  if (!body.spreadsheetId || !body.sheetName) return null;
+  return SpreadsheetApp.openById(body.spreadsheetId).getSheetByName(body.sheetName);
+}
+
+function rosterKey(text) {
+  return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function rosterTeamId(url) {
+  const match = String(url || '').match(/(?:team-home|teams)\/([0-9a-f-]{36})/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function readRosterBlocks(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 1) return [];
+  const width = ROSTER_FIRST_FIELD_COLUMN + ROSTER_FIELDS.length - 1;
+  const values = sheet.getRange(1, 1, lastRow, width).getValues();
+  // The team FACEIT cell shows "faceit.com/..." with the real link behind it: read the link.
+  const linkRange = sheet.getRange(1, 5, lastRow, 1);
+  const links = typeof linkRange.getRichTextValues === 'function' ? linkRange.getRichTextValues() : [];
+  const linkAt = (i) => {
+    const rich = links[i] && links[i][0];
+    return (rich && typeof rich.getLinkUrl === 'function' && rich.getLinkUrl()) || '';
+  };
+  const blocks = [];
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][0]).trim().toLowerCase() !== 'team info') continue;
+    const slots = [];
+    for (let k = 2; k < 2 + ROSTER_SLOT_ROWS && i + k < values.length; k++) {
+      const row = values[i + k];
+      const label = String(row[0]).trim().replace(/:$/, '');
+      if (!/^(starter|sub|coach)/i.test(label)) continue;
+      const slot = { label: label, row: i + k + 1 };
+      ROSTER_FIELDS.forEach((field, index) => { slot[field] = String(row[ROSTER_FIRST_FIELD_COLUMN - 1 + index]).trim(); });
+      slots.push(slot);
+    }
+    blocks.push({
+      teamName: String(values[i][1]).trim(),
+      captain: String(values[i][2]).trim(),
+      faceitUrl: linkAt(i) || String(values[i][4]).trim(),
+      headerRow: i + 1, // the "Team Info" row
+      slots: slots
+    });
+  }
+  return blocks;
+}
+
+// The captain cell may hold a Discord username or an IGN.
+function isRosterCaptain(block, username) {
+  const who = String(username || '').replace(/^@/, '').trim().toLowerCase();
+  const captain = String(block.captain || '').replace(/^@/, '').trim().toLowerCase();
+  if (!who || !captain) return false;
+  if (captain === who) return true;
+  return block.slots.some((slot) => String(slot.discord).replace(/^@/, '').trim().toLowerCase() === who
+    && String(slot.alias).trim().toLowerCase() === captain);
+}
+
+function readRosterTeam(body) {
+  const sheet = rosterSheet(body);
+  if (!sheet) return reply(500, { ok: false, error: 'roster tab "' + body.sheetName + '" not found' });
+  const blocks = readRosterBlocks(sheet);
+  const id = String(body.faceitTeamId || '').toLowerCase();
+  const name = rosterKey(body.teamName);
+  let team = null;
+  if (id) team = blocks.filter((block) => rosterTeamId(block.faceitUrl) === id)[0] || null;
+  if (!team && name) team = blocks.filter((block) => rosterKey(block.teamName) === name)[0] || null;
+  if (!team && body.captainDiscord) team = blocks.filter((block) => isRosterCaptain(block, body.captainDiscord))[0] || null;
+  if (team) team.isCaptain = Boolean(body.captainDiscord) && isRosterCaptain(team, body.captainDiscord);
+  return reply(200, { ok: true, team: team });
+}
+
+function writeRosterChange(body) {
+  const sheet = rosterSheet(body);
+  if (!sheet) return reply(500, { ok: false, error: 'roster tab "' + body.sheetName + '" not found' });
+  const headerRow = Number(body.headerRow);
+  const targetRow = Number(body.targetRow);
+  const player = body.player || {};
+  if (!Number.isInteger(headerRow) || !Number.isInteger(targetRow)) return reply(400, { ok: false, error: 'headerRow and targetRow are required' });
+  const block = readRosterBlocks(sheet).filter((entry) => entry.headerRow === headerRow)[0];
+  if (!block || rosterKey(block.teamName) !== rosterKey(body.teamName)) {
+    return reply(409, { ok: false, error: 'the team block moved on the sheet; run /roster-change again' });
+  }
+  const target = block.slots.filter((slot) => slot.row === targetRow)[0];
+  if (!target || /^coach/i.test(target.label)) return reply(409, { ok: false, error: 'that slot is not a starter or sub slot of ' + block.teamName });
+  if (rosterKey(target.alias) !== rosterKey(body.expectedAlias)) {
+    return reply(409, { ok: false, error: target.label + ' changed on the sheet since you opened it; run /roster-change again' });
+  }
+  const width = ROSTER_FIELDS.length;
+  let movedTo = null;
+  if (body.mode === 'sub') {
+    const free = block.slots.filter((slot) => /^sub/i.test(slot.label) && !String(slot.alias).trim() && !String(slot.fullName).trim())[0];
+    if (!free) return reply(409, { ok: false, error: 'both sub slots are full' });
+    // copyTo keeps the moved player's hyperlinks (setValues would keep only the labels).
+    sheet.getRange(targetRow, ROSTER_FIRST_FIELD_COLUMN, 1, width).copyTo(sheet.getRange(free.row, ROSTER_FIRST_FIELD_COLUMN, 1, width));
+    movedTo = free.label;
+  }
+  sheet.getRange(targetRow, ROSTER_FIRST_FIELD_COLUMN, 1, width).setValues([ROSTER_FIELDS.map((field) => String(player[field] || ''))]);
+  const linkLabel = String(body.linkLabel || '…');
+  ROSTER_LINK_FIELDS.forEach((field) => {
+    const url = String(player[field] || '').trim();
+    if (!/^https?:\/\//i.test(url)) return;
+    const link = SpreadsheetApp.newRichTextValue().setText(linkLabel).setLinkUrl(url).build();
+    sheet.getRange(targetRow, ROSTER_FIRST_FIELD_COLUMN + ROSTER_FIELDS.indexOf(field)).setRichTextValue(link);
+  });
+  const changesColumn = body.logLine ? findColumnByHeaderContaining(sheet, 'changes') : 0;
+  if (changesColumn) {
+    // Under the last line of the CHANGES log.
+    const last = Math.max(sheet.getLastRow(), 2);
+    const log = sheet.getRange(2, changesColumn, last - 1, 1).getValues();
+    let at = 2;
+    for (let i = log.length - 1; i >= 0; i--) {
+      if (String(log[i][0]).trim()) { at = i + 3; break; }
+    }
+    sheet.getRange(at, changesColumn).setValue(String(body.logLine));
+  }
+  return reply(200, { ok: true, row: targetRow, movedTo: movedTo, logged: Boolean(changesColumn) });
+}
+
+function findColumnByHeaderContaining(sheet, text) {
+  const lastColumn = sheet.getLastColumn();
+  if (lastColumn < 1) return 0;
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  for (let i = 0; i < headers.length; i++) {
+    if (String(headers[i]).toLowerCase().indexOf(text) >= 0) return i + 1;
+  }
+  return 0;
 }
 
 function lookupPostCastForms(requestIds) {

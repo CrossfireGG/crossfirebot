@@ -148,6 +148,14 @@ export class LogOnlyScheduleSheet {
     return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)', headers: [], rows: [], lastRow: null };
   }
 
+  async readRosterTeam() {
+    return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)', team: null };
+  }
+
+  async writeRosterChange() {
+    return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)' };
+  }
+
   // Without a sheet there is nothing to look in, so no form is ever confirmed here.
   async lookupPostCastForms(requestIds) {
     this.log.info?.(`Schedule sheet (log-only): cannot look up post-cast forms for ${(requestIds || []).join(', ')}`);
@@ -219,6 +227,21 @@ export class AppsScriptScheduleSheet {
       rows: Array.isArray(body.rows) ? body.rows : [],
       lastRow: Number.isInteger(body.lastRow) ? body.lastRow : null
     };
+  }
+
+  // One team's block on the player tracking tab: { team: { teamName, headerRow, faceitUrl, slots } | null }.
+  // query: { spreadsheetId, sheetName, faceitTeamId?, teamName?, captainDiscord? }
+  async readRosterTeam(query) {
+    const { body, ...result } = await this.post('rosterTeam', null, query);
+    if (!result.ok) return { ...result, team: null };
+    return { ...result, team: body.team && typeof body.team === 'object' ? body.team : null };
+  }
+
+  // Writes a roster change: { spreadsheetId, sheetName, teamName, headerRow, targetRow, expectedAlias, mode, player, logLine }.
+  async writeRosterChange(change) {
+    const { body, ...result } = await this.post('rosterChange', null, change);
+    if (!result.ok) return result;
+    return { ...result, row: body.row ?? null, movedTo: body.movedTo || null };
   }
 
   // The crew availability tabs: { tabs: [{ name, values, backgrounds }] }.

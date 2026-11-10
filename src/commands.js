@@ -286,6 +286,14 @@ export const commands = [
     .addSubcommand((subcommand) => subcommand.setName('cancel').setDescription('Cancel a pending request or withdraw from a cast you were approved for')
       .addStringOption((option) => option.setName('request_id').setDescription('Pick one of your active requests').setRequired(true).setAutocomplete(true))),
   new SlashCommandBuilder()
+    .setName('roster-change')
+    .setDescription('Captains: add a player to your roster (removing a player or moving one to sub)')
+    .addStringOption((option) => option.setName('nationality').setDescription('The new player\'s nationality').setRequired(true).setMaxLength(60))
+    .addUserOption((option) => option.setName('player').setDescription('The new player (if they are in this server)').setRequired(false))
+    .addStringOption((option) => option.setName('player_id').setDescription('Their Discord ID (17-20 digits) if they are not in this server').setRequired(false).setMaxLength(25))
+    .addStringOption((option) => option.setName('twitter').setDescription('Optional: their Twitter/X (link or @handle)').setRequired(false).setMaxLength(100))
+    .addStringOption((option) => option.setName('team').setDescription('Staff only: the team to change').setRequired(false).setMaxLength(100)),
+  new SlashCommandBuilder()
     .setName('crossfire')
     .setDescription('CROSSFIRE match and operations information')
     .addSubcommand((subcommand) => subcommand.setName('upcoming').setDescription('Show upcoming approved matches'))
