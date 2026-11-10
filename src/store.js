@@ -40,7 +40,8 @@ function normalizeDb(db) {
     crewHistory: db.crewHistory || {},
     matchStats: db.matchStats || {},
     matchVetoes: db.matchVetoes || {},
-    teamInfoCache: db.teamInfoCache || {}
+    teamInfoCache: db.teamInfoCache || {},
+    counters: db.counters || {}
   };
 }
 
@@ -801,6 +802,19 @@ export async function saveMatchVetoes(entries) {
     for (const [matchId, veto] of Object.entries(entries || {})) db.matchVetoes[matchId] = veto;
     return Object.keys(db.matchVetoes).length;
   });
+}
+
+// Named running totals (e.g. how many times !FireCrown was used). Returns the new total.
+export async function incrementCounter(name) {
+  return mutateDb((db) => {
+    db.counters = db.counters || {};
+    db.counters[name] = Number(db.counters[name] || 0) + 1;
+    return db.counters[name];
+  });
+}
+
+export async function getCounter(name) {
+  return Number((await snapshot()).counters?.[name] || 0);
 }
 
 // The Team Info tab as last read: { syncedAt, teams, error }.

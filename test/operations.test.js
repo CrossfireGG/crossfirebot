@@ -326,6 +326,18 @@ test('persistent decisions are serialized and survive a fresh module load', asyn
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
+test('the #FireCrown count goes up once per use and survives a restart', async () => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crossfire-counter-'));
+  process.env.BOT_DATA_PATH = path.join(tempDir, 'bot-data.json');
+  const storeA = await import(`../src/store.js?counter-a=${Date.now()}`);
+  assert.equal(await storeA.getCounter('fireCrown'), 0);
+  const totals = await Promise.all([storeA.incrementCounter('fireCrown'), storeA.incrementCounter('fireCrown'), storeA.incrementCounter('fireCrown')]);
+  assert.deepEqual(totals.sort(), [1, 2, 3], 'uses at the same moment are each counted');
+  const storeB = await import(`../src/store.js?counter-b=${Date.now()}`);
+  assert.equal(await storeB.getCounter('fireCrown'), 3);
+  await fs.rm(tempDir, { recursive: true, force: true });
+});
+
 test('relinking an existing channel migrates persistent match state to the new FACEIT ID', async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crossfire-relink-'));
   process.env.BOT_DATA_PATH = path.join(tempDir, 'bot-data.json');

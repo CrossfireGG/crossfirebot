@@ -154,6 +154,7 @@ Inside each match channel:
 - `!accept` lets a member from the other team accept it.
 - `!decline` lets a member from the other team decline it.
 - `!cancel` lets the original proposer withdraw an open proposal before acceptance; authorized staff can also cancel it.
+- `!FireCrown` (any channel, anyone) makes the bot say `#FireCrown` and adds one to the running total; `!FireCrownCount` shows the total. Not case sensitive; the total is kept in the data store.
 - Users with a role in `SCHEDULE_OVERRIDE_ROLE_IDS` can run `!schedule` without both teams accepting, but the request still requires admin approval.
 - `!admin reason here` or `!calladmin reason here` alerts admins with the match channel and FACEIT link.
 - Old schedule buttons are disabled. Scheduling is command-only inside match rooms.
@@ -374,7 +375,8 @@ The date and time are the approved match time as Discord timestamps, so everyone
 Facts for the Social Media team to write their own posts, in `SOCIAL_CHANNEL_ID`, with no pings:
 
 - **Daily at `SOCIAL_POST_TIME` (4 PM ET): "Tonight on stream".** Main stream games with time, both teams (with their X handles), the stream and the production crew (casters, producer, observer), then every community-cast game tonight with its caster channels (co-casts together). Posted once something is on stream that day; edited when a crew, cast or time changes.
-- **`SOCIAL_CARD_LEAD_MINUTES` (2 hours) before each main stream match: "Social info".** Time in ET and CT, stream, crew, round, team tags ("none on file" when missing), storylines and players to watch from the prep pack, and maps (filled in when they lock). A "🔴 LIVE NOW" line is added at the start, and the final result with map scores and the match's top player (most kills) when FACEIT finishes it.
+- **`SOCIAL_CARD_LEAD_MINUTES` (2 hours) before each main stream match: "Social info" (before-game post).** Time in ET and CT, stream, crew, round, team tags ("none on file" when missing), what's at stake, form (each team's record, streak and group place), head to head this season (or "First meeting this season"), storylines and players to watch from the prep pack, and maps (filled in when they lock). What's at stake for a group match plays out every result of the group's remaining games with the top `GROUP_ADVANCE_COUNT` (2) going through: "Elimination match." when a loss knocks a team out, "a win sends them through", "already through" / "can't advance anymore", and, in a team's last group game, "a loss leaves them relying on other results or tiebreaks" (ties on wins count as undecided). The prep pack's What's at stake shows the same. A "🔴 LIVE NOW" line is added at the start and taken off when the match ends.
+- **When FACEIT finishes the match: "Final" (after-game post).** Its own message, as a reply to the before-game post: the result, each map's score, the match's top player (most kills), both teams' X tags and the stream.
 
 Team X handles come from an **X** column on the Team Info tab (a handle like `@team` or an x.com link); `/crossfire teamnotes team: x:` sets it. They are left out of the prep pack notes and links.
 

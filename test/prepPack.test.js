@@ -15,6 +15,7 @@ import {
   compactBotVeto,
   teamBanRates,
   vetoOrderLines,
+  groupStakes,
   buildPrepPack
 } from '../src/prepPack.js';
 
@@ -187,6 +188,46 @@ test('ban rates: how often each team banned each map, and its usual first ban', 
   assert.equal(field.name, '🚫 Ban rate (2 vetoes)');
   assert.equal(field.value, 'Mirage **100%** (2/2) · Inferno **50%** (1/2) · Train **50%** (1/2)\nFirst ban: Mirage (2 of 2)');
   assert.equal(pack.embeds[2].fields.find((entry) => entry.name.startsWith('🚫 Ban rate')).name, '🚫 Ban rate (1 veto)');
+});
+
+test('group stakes with the top 2 going through: round 3 from 2-0, 1-1, 1-1, 0-2', () => {
+  const W = ['tw', 'Wolves', []];
+  const X = ['tx', 'Xenon', []];
+  const Y = ['ty', 'Yeti', []];
+  const Z = ['tz', 'Zest', []];
+  const win = (id, one, two, day) => match(id, one, two, { winner: 'faction1', score: { faction1: 2, faction2: 0 }, day, group: 'F' });
+  const played = [
+    win('g1', W, X, 2), win('g2', Y, Z, 2), // round 1: Wolves and Yeti win
+    win('g3', W, Y, 3), win('g4', X, Z, 3) // round 2: Wolves 2-0, Xenon 1-1, Yeti 1-1, Zest 0-2
+  ];
+  const decider = match('g5', X, Y, { status: 'SCHEDULED', day: 4, group: 'F' });
+  const other = match('g6', W, Z, { status: 'SCHEDULED', day: 4, group: 'F' });
+  const season = [...played, decider, other];
+
+  // 1-1 vs 1-1: the winner is through, the loser is out.
+  assert.deepEqual(groupStakes(decider, season, new Map()), [
+    '**Elimination match.**',
+    'Top 2 in Group F advance.',
+    'Xenon: a win sends them through; a loss knocks them out.',
+    'Yeti: a win sends them through; a loss knocks them out.'
+  ]);
+  // 2-0 vs 0-2: Wolves are through whatever happens, Zest are out.
+  assert.deepEqual(groupStakes(other, season, new Map()), ['Top 2 in Group F advance.', 'Wolves is already through.', "Zest can't advance anymore."]);
+  // Round 1: nothing is decided yet, so just the format.
+  const upcoming = (id, one, two) => match(id, one, two, { status: 'SCHEDULED', day: 1, group: 'F' });
+  const schedule = [upcoming('s1', W, X), upcoming('s2', Y, Z), upcoming('s3', W, Y), upcoming('s4', X, Z), upcoming('s5', W, Z), upcoming('s6', X, Y)];
+  assert.deepEqual(groupStakes(schedule[0], schedule, new Map()), ['Top 2 in Group F advance.']);
+  // Not a group match: nothing.
+  assert.deepEqual(groupStakes({ ...decider, group: null }, season, new Map()), []);
+  // The prep pack's "What's at stake" and the social facts use it.
+  const pack = buildPrepPack({ match: decider, seasonMatches: season, now: Date.UTC(2026, 10, 10) });
+  assert.match(pack.embeds[0].fields.find((field) => field.name === "🏆 What's at stake").value, /^\*\*Elimination match\.\*\*\nTop 2 in Group F advance\./);
+  assert.deepEqual(pack.social.stakes.slice(0, 2), ['**Elimination match.**', 'Top 2 in Group F advance.']);
+  assert.deepEqual(pack.social.form.map((team) => `${team.name} ${team.wins}-${team.losses} ${team.streak} ${team.standing}`), [
+    'Xenon 1-1 W1 2nd in Group F (1-1)',
+    'Yeti 1-1 L1 3rd in Group F (1-1)'
+  ]);
+  assert.deepEqual(pack.social.h2h, []);
 });
 
 test('FACEIT picks only count as the maps once the room is past its veto', () => {

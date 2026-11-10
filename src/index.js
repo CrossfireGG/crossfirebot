@@ -87,6 +87,8 @@ import {
   saveMatchStats,
   getMatchVetoCache,
   saveMatchVetoes,
+  incrementCounter,
+  getCounter,
   getTeamInfoCache,
   saveTeamInfoCache,
   claimMainStreamDeliveryPrompt,
@@ -199,7 +201,7 @@ import {
 } from './streamRequest.js';
 import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
-import { buildRoundup, buildSocialCard, matchTopPlayer, normalizeHandle, teamSocials } from './socialInfo.js';
+import { buildRoundup, buildSocialCard, buildSocialResultCard, matchTopPlayer, normalizeHandle, teamSocials } from './socialInfo.js';
 import { buildPrepPack, compactBotVeto, compactFaceitVeto, compactMatchStats, faceitVetoUnderway, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, teamKey, vetoSummary } from './prepPack.js';
 import {
   STAT_ROLES,
@@ -1266,6 +1268,18 @@ client.on(Events.MessageCreate, async (message) => {
 
     const content = message.content.trim();
     if (!content.startsWith('!')) return;
+
+    // !FireCrown: the bot says #FireCrown and the running total goes up. !FireCrownCount: the total.
+    if (/^!firecrown$/i.test(content)) {
+      await incrementCounter('fireCrown');
+      await message.channel.send({ content: '#FireCrown', allowedMentions: { parse: [] } });
+      return;
+    }
+    if (/^!firecrowncount$/i.test(content)) {
+      const total = await getCounter('fireCrown');
+      await message.channel.send({ content: `#FireCrown count: **${total}**`, allowedMentions: { parse: [] } });
+      return;
+    }
 
     if (content.toLowerCase().startsWith('!schedule')) {
       await handleTextScheduleProposal(message, content, 'schedule');
@@ -9093,6 +9107,7 @@ async function buildPrepForMatch(matchId) {
     streamHistory: await mainStreamHistory(),
     startIso: await approvedScheduleIso(matchId) || getFaceitScheduledAtIso(match),
     seasonName: (statsSeason() || activeSeason())?.name || 'Season',
+    groupAdvance: config.groupAdvanceCount,
     streamUrl: coverage ? mainStreamUrlFor(coverage) : null,
     matchChannelId: stored?.discord?.channelId || null
   });
@@ -9432,7 +9447,7 @@ async function socialChannel() {
   return channel?.isTextBased?.() ? channel : null;
 }
 
-async function postOrEditSocial(key, card, { color, skipIfEmpty = false, empty = false } = {}) {
+async function postOrEditSocial(key, card, { color, skipIfEmpty = false, empty = false, replyTo = null } = {}) {
   const sync = await getSheetSync();
   const entry = sync[key] || {};
   const hash = `${card.title}\n${card.description}`;
@@ -9448,8 +9463,13 @@ async function postOrEditSocial(key, card, { color, skipIfEmpty = false, empty =
       return;
     }
   }
-  const message = await channel.send({ embeds: [socialEmbed(card, color)], allowedMentions: { parse: [] } }).catch(() => null);
+  const message = await channel.send({
+    embeds: [socialEmbed(card, color)],
+    reply: replyTo ? { messageReference: replyTo, failIfNotExists: false } : undefined,
+    allowedMentions: { parse: [], repliedUser: false }
+  }).catch(() => null);
   if (message) await updateSheetSync(key, { messageId: message.id, channelId: channel.id, hash, postedAt: new Date().toISOString() });
+  return message;
 }
 
 let lastSocialRefreshAt = 0;
@@ -9511,24 +9531,36 @@ async function refreshSocialCards(now = Date.now()) {
       continue;
     }
     const teams = await socialTeams();
+    const socialsA = teamSocials(findTeamInfo(teams, teamA));
+    const socialsB = teamSocials(findTeamInfo(teams, teamB));
+    const finished = state === 'done' && Boolean(result);
+    // Before-game post: facts, LIVE NOW while it's on, plain facts again once it's over.
+    const cardState = finished ? 'over' : state === 'done' ? 'live' : state;
     const card = buildSocialCard({
       startMs,
       teamA,
       teamB,
-      socialsA: teamSocials(findTeamInfo(teams, teamA)),
-      socialsB: teamSocials(findTeamInfo(teams, teamB)),
+      socialsA,
+      socialsB,
       streamUrl: mainStreamUrlFor(coverage),
       crew: coverage.crew || {},
       round: facts.round,
       group: facts.group,
       storylines: facts.storylines,
       stars: facts.stars,
+      stakes: facts.stakes || [],
+      form: facts.form || null,
+      h2h: facts.h2h || null,
       maps,
-      state: state === 'done' && !result ? 'live' : state,
-      result,
-      topPlayer
+      state: cardState
     });
-    await postOrEditSocial(`social:card:${coverage.matchId}`, card, { color: state === 'done' ? 0xf1c40f : state === 'live' ? 0xe74c3c : 0xe91e63 });
+    await postOrEditSocial(`social:card:${coverage.matchId}`, card, { color: cardState === 'live' ? 0xe74c3c : 0xe91e63 });
+    // After-game post: its own message, as a reply to the before-game one.
+    if (finished) {
+      const before = (await getSheetSync())[`social:card:${coverage.matchId}`];
+      const resultCard = buildSocialResultCard({ teamA, teamB, socialsA, socialsB, streamUrl: mainStreamUrlFor(coverage), result, topPlayer });
+      await postOrEditSocial(`social:result:${coverage.matchId}`, resultCard, { color: 0xf1c40f, replyTo: before?.messageId || null });
+    }
     if (state !== coverage.socialState || (state === 'done' && result)) {
       await saveMainStreamCoverage(coverage.matchId, { socialState: state, ...(state === 'done' && result ? { socialDone: true } : {}) });
     }

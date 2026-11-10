@@ -125,7 +125,8 @@ export function matchTopPlayer(stats) {
   return best ? { ...best, adr: best.maps ? best.adrTotal / best.maps : 0 } : null;
 }
 
-// The detailed card for one main stream match, 2 hours before. `state`: 'upcoming' | 'live' | 'done'.
+// The before-game card for one main stream match, 2 hours before. `state`: 'upcoming' | 'live'
+// (adds LIVE NOW) | 'over' (back to plain facts once the match ends; the result is its own post).
 export function buildSocialCard({
   startMs,
   teamA,
@@ -139,13 +140,13 @@ export function buildSocialCard({
   storylines = [],
   stars = [],
   maps = [],
-  state = 'upcoming',
-  result = null,
-  topPlayer = null
+  stakes = [],
+  form = null,
+  h2h = null,
+  state = 'upcoming'
 }) {
   const lines = [];
   if (state === 'live') lines.push('🔴 **LIVE NOW**', '');
-  if (state === 'done' && result) lines.push(`🏆 **Final: ${result}**`, '');
   lines.push(
     `**When:** ${dayLabel(startMs)} · ${timeEtCt(startMs)}`,
     streamUrl ? `**Stream:** ${linkTo(streamUrl)}` : null,
@@ -156,14 +157,45 @@ export function buildSocialCard({
     `${teamA}: ${socialsA.x || 'none on file'}`,
     `${teamB}: ${socialsB.x || 'none on file'}`
   );
-  if (storylines.length) lines.push('', '**Storylines**', ...storylines.slice(0, 4).map((line) => `• ${line}`));
+  if (stakes?.length) lines.push('', "**What's at stake**", ...stakes);
+  if (form?.length) {
+    lines.push('', '**Form**', ...form.map((team) => (team.wins + team.losses
+      ? `${team.name}: ${team.wins}-${team.losses}${team.streak ? ` · ${team.streak} streak` : ''}${team.standing ? ` · ${team.standing}` : ''}`
+      : `${team.name}: first match of the season`)));
+  }
+  if (Array.isArray(h2h)) lines.push('', '**Head to head**', ...(h2h.length ? h2h : ['First meeting this season.']));
+  // Rematch / first-meeting lines are covered by Head to head above.
+  const extra = storylines.filter((line) => !Array.isArray(h2h) || !/^(Rematch:|First meeting)/.test(line));
+  if (extra.length) lines.push('', '**Storylines**', ...extra.slice(0, 4).map((line) => `• ${line}`));
   if (stars.length) lines.push('', '**Players to watch**', ...stars.map((star) => `${star.team}: ${star.nickname}, ${star.kd.toFixed(2)} K/D, ${Math.round(star.adr)} ADR`));
   lines.push('', `**Maps:** ${maps.length ? maps.join(' → ') : 'not locked yet'}`);
-  if (state === 'done' && topPlayer) {
-    lines.push(`**Top player:** ${topPlayer.nickname} (${topPlayer.team}), ${topPlayer.kills} K · ${topPlayer.deaths} D · ${Math.round(topPlayer.adr)} ADR`);
-  }
   return {
     title: `📣 Social info · ${teamA} vs ${teamB}`,
+    description: lines.filter((line) => line !== null).join('\n').slice(0, 4000)
+  };
+}
+
+// The after-game post for one main stream match, sent as its own message once FACEIT finishes it.
+// `result` is the match result text: "Celestial Esports won 2-1 (Mirage 13-9, Nuke 14-16, Ancient 13-11)".
+export function buildSocialResultCard({ teamA, teamB, socialsA = {}, socialsB = {}, streamUrl = null, result, topPlayer = null }) {
+  const [, headline = result, detail = ''] = String(result || '').match(/^(.*?)\s*\((.*)\)$/) || [];
+  const maps = detail ? detail.split(/,\s*/) : [];
+  const lines = [
+    `**Final:** ${headline}`,
+    maps.length ? '' : null,
+    maps.length ? '**Maps**' : null,
+    ...maps,
+    topPlayer ? '' : null,
+    topPlayer ? `**Top player:** ${topPlayer.nickname} (${topPlayer.team}), ${topPlayer.kills} K · ${topPlayer.deaths} D · ${Math.round(topPlayer.adr)} ADR` : null,
+    '',
+    '**X tags**',
+    `${teamA}: ${socialsA.x || 'none on file'}`,
+    `${teamB}: ${socialsB.x || 'none on file'}`,
+    streamUrl ? '' : null,
+    streamUrl ? `**Stream:** ${linkTo(streamUrl)}` : null
+  ];
+  return {
+    title: `🏆 Final · ${teamA} vs ${teamB}`,
     description: lines.filter((line) => line !== null).join('\n').slice(0, 4000)
   };
 }

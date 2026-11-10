@@ -254,6 +254,79 @@ export function whatsAtStake(match) {
   return null;
 }
 
+// What a group match means for both teams when the top `advance` of the group go through. Plays out
+// every result of the group's remaining matches (tonight's included) and reports what is certain:
+//   **Elimination match.** / Top 2 in Group F advance. / X: a win sends them through; a loss knocks them out.
+// A tie on wins counts as undecided (tiebreaks). [] when the match isn't a group match.
+export function groupStakes(match, seasonMatches, statsById, { advance = 2 } = {}) {
+  if (!match?.group || !(advance > 0) || isFinished(match)) return [];
+  const keyOf = (faction) => faction.faction_id || teamKey(faction.name);
+  const live = (candidate) => !/cancel|abort/i.test(String(candidate.status || ''));
+  const groupMatches = (seasonMatches || []).filter((candidate) => candidate.group === match.group && candidate.id !== match.id && live(candidate));
+  const names = new Map();
+  for (const candidate of [match, ...groupMatches]) for (const faction of factions(candidate)) names.set(keyOf(faction), faction.name);
+  if (names.size <= advance) return [];
+  const wins = new Map([...names.keys()].map((key) => [key, 0]));
+  for (const row of groupStandings(match.group, groupMatches, statsById)) {
+    const key = row.id || teamKey(row.name);
+    if (wins.has(key)) wins.set(key, row.wins);
+  }
+  const tonight = factions(match).map(keyOf);
+  const remaining = [tonight, ...groupMatches.filter((candidate) => !isFinished(candidate)).map((candidate) => factions(candidate).map(keyOf))];
+  if (remaining.length > 12) return [];
+  const outcomes = [];
+  for (let mask = 0; mask < 2 ** remaining.length; mask += 1) {
+    const final = new Map(wins);
+    remaining.forEach(([x, y], index) => {
+      const winner = mask & (1 << index) ? y : x;
+      final.set(winner, final.get(winner) + 1);
+    });
+    const place = new Map();
+    for (const [key, total] of final) {
+      let above = 0;
+      let level = 0;
+      for (const [other, otherTotal] of final) {
+        if (other === key) continue;
+        if (otherTotal > total) above += 1;
+        else if (otherTotal === total) level += 1;
+      }
+      place.set(key, above >= advance ? 'out' : above + level < advance ? 'in' : 'tie');
+    }
+    outcomes.push({ winner: mask & 1 ? tonight[1] : tonight[0], place });
+  }
+  const always = (list, key, value) => list.length > 0 && list.every((outcome) => outcome.place.get(key) === value);
+  const lastGroupGame = (key) => !remaining.slice(1).some((pair) => pair.includes(key));
+  const lines = [];
+  let elimination = false;
+  for (const key of tonight) {
+    const name = names.get(key);
+    if (always(outcomes, key, 'in')) {
+      lines.push(`${name} is already through.`);
+      continue;
+    }
+    if (always(outcomes, key, 'out')) {
+      lines.push(`${name} can't advance anymore.`);
+      continue;
+    }
+    const ifWin = outcomes.filter((outcome) => outcome.winner === key);
+    const ifLoss = outcomes.filter((outcome) => outcome.winner !== key);
+    const parts = [];
+    if (always(ifWin, key, 'in')) parts.push('a win sends them through');
+    if (always(ifLoss, key, 'out')) {
+      parts.push('a loss knocks them out');
+      elimination = true;
+    } else if (lastGroupGame(key) && ifLoss.some((outcome) => outcome.place.get(key) !== 'in')) {
+      parts.push('a loss leaves them relying on other results or tiebreaks');
+    }
+    if (parts.length) lines.push(`${name}: ${parts.join('; ')}.`);
+  }
+  return [
+    elimination ? '**Elimination match.**' : null,
+    `Top ${advance} in Group ${String(match.group).replace(/^Group\s+/i, '')} advance.`,
+    ...lines
+  ].filter(Boolean);
+}
+
 // FACEIT's veto history for a match -> { actions: [{ map, action: 'ban' | 'pick' | 'decider',
 // teamId, teamName, random }] } in veto order. The last map left over is the decider (nobody picks
 // it). Returns { actions: [] } when FACEIT has no map veto for the match.
@@ -551,6 +624,7 @@ export function buildPrepPack({
   streamUrl = null,
   matchChannelId = null,
   seasonName = 'Season',
+  groupAdvance = 2,
   now = Date.now()
 }) {
   const [a, b] = factions(match);
@@ -579,6 +653,9 @@ export function buildPrepPack({
   }
 
   const startMs = Date.parse(startIso || '') || matchTimeMs(match);
+  const groupLines = groupStakes(match, seasonMatches, statsById, { advance: groupAdvance });
+  const stakes = groupLines.length ? groupLines : [whatsAtStake(match)].filter(Boolean);
+  const h2hText = (result) => `${result.won ? teamA.name : teamB.name} won ${result.won ? result.series : result.series.split('-').reverse().join('-')} on ${shortDate(result.timeMs)}${result.maps.length ? ` (${result.maps.map((map) => (result.won ? mapLine(map) : `${map.map} ${map.against}-${map.for}`)).join(', ')})` : ''}`;
   const stamp = startMs ? `<t:${Math.floor(startMs / 1000)}:F> (<t:${Math.floor(startMs / 1000)}:R>)` : 'Time TBD';
   // One field per map: who picked it, each team's record and last result on it, their best player
   // on it (current lineup), and any head-to-head on it.
@@ -615,7 +692,7 @@ export function buildPrepPack({
     title: `🎙️ Prep · ${teamA.name} vs ${teamB.name}`,
     description: [stamp, [match.round, match.group ? `Group ${String(match.group).replace(/^Group\s+/i, '')}` : null].filter(Boolean).join(' · ') || null, links || null].filter(Boolean).join('\n'),
     fields: [
-      whatsAtStake(match) ? { name: "🏆 What's at stake", value: whatsAtStake(match) } : null,
+      stakes.length ? { name: "🏆 What's at stake", value: stakes.join('\n').slice(0, 1024) } : null,
       { name: vetoInfo.maps.length ? '🗺️ Maps locked' : '🗺️ Maps', value: mapsValue.slice(0, 1024) },
       {
         name: '⚔️ H2H',
@@ -645,6 +722,15 @@ export function buildPrepPack({
       round: match.round || null,
       group: match.group || null,
       storylines: talkingPoints,
+      stakes,
+      form: [[a, teamA, seasonA], [b, teamB, seasonB]].map(([faction, team, season]) => ({
+        name: faction.name,
+        wins: season.wins,
+        losses: season.losses,
+        streak: season.streak ? `${season.streak.won ? 'W' : 'L'}${season.streak.count}` : null,
+        standing: standingFor(team)
+      })),
+      h2h: h2h.map(h2hText),
       stars: [[a, seasonA, rosterA], [b, seasonB, rosterB]]
         .map(([faction, season, roster]) => {
           const star = season.players.find((player) => !roster.size || roster.has(player.playerId));
