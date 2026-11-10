@@ -6794,7 +6794,25 @@ async function syncSheetResultsAndStats(now = Date.now()) {
   const sync = await getSheetSync();
   await checkApprovedSchedules(sync, now).catch((error) => console.error('Schedule check against FACEIT failed:', error));
   await syncSheetResults(await getSheetSync(), now);
+  await refreshRecentPostCastForms(now).catch((error) => console.error('Post-cast form refresh failed:', error));
   await syncSheetStatsCollected(sync, now);
+}
+
+// Casts from the last two weeks whose post-cast form went out but hasn't been seen yet: ask the
+// form sheet about them (one call per 50) so a submitted form is noticed within ~10 minutes and
+// "Stats Collected?" gets ticked, instead of waiting for the 48-hour nudge or someone opening
+// /request mine or /cf forms.
+const POST_CAST_REFRESH_DAYS = 14;
+async function refreshRecentPostCastForms(now = Date.now()) {
+  const sinceMs = Math.max(Date.parse(config.postCastFormGateSince || '') || 0, now - POST_CAST_REFRESH_DAYS * 24 * 60 * 60 * 1000);
+  const ids = (await listStreamRequests())
+    .filter((request) => request.status === 'approved'
+      && postCastFormState(request) === 'missing'
+      && (Date.parse(request.postCastReminderSentAt || '') || 0) >= sinceMs)
+    .map((request) => request.id);
+  if (!ids.length) return;
+  const { foundIds } = await checkFormsInSheet(ids, 'the sheet sync');
+  if (foundIds.length) console.log(`[Sheet] post-cast forms received: ${foundIds.join(', ')}`);
 }
 
 async function syncSheetResults(sync, now) {
