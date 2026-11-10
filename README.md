@@ -154,7 +154,7 @@ Inside each match channel:
 - `!accept` lets a member from the other team accept it.
 - `!decline` lets a member from the other team decline it.
 - `!cancel` lets the original proposer withdraw an open proposal before acceptance; authorized staff can also cancel it.
-- `!FireCrown`, or any message that says `#FireCrown` (any channel, anyone), makes the bot say `#FireCrown` and adds one to the running total; `!FireCrownCount` shows the total. Not case sensitive; longer tags like `#FireCrownCount` do not count; the total is kept in the data store.
+- `!FireCrown`, or any message that says `#FireCrown` (any channel, anyone), makes the bot say `#FireCrown` and adds one to the running total; `!FireCrownCount` shows the total. Not case sensitive; longer tags like `#FireCrownCount` do not count; the total is kept in the data store. Every use counts and gets a 🔥 reaction; the bot posts `#FireCrown` at most once per `FIRECROWN_COOLDOWN_SECONDS` (60) per channel (`0` posts every time).
 - Users with a role in `SCHEDULE_OVERRIDE_ROLE_IDS` can run `!schedule` without both teams accepting, but the request still requires admin approval.
 - `!admin reason here` or `!calladmin reason here` alerts admins with the match channel and FACEIT link.
 - Old schedule buttons are disabled. Scheduling is command-only inside match rooms.

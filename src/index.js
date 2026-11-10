@@ -201,7 +201,7 @@ import {
 } from './streamRequest.js';
 import { normalizeScheduleText, parseScheduleClock } from './scheduleInput.js';
 import { buildMatchResult } from './matchResult.js';
-import { isFireCrownMention } from './fireCrown.js';
+import { createFireCrownThrottle, isFireCrownMention } from './fireCrown.js';
 import { buildRoundup, buildSocialCard, buildSocialResultCard, matchTopPlayer, normalizeHandle, teamSocials } from './socialInfo.js';
 import { buildPrepPack, compactBotVeto, compactFaceitVeto, compactMatchStats, faceitVetoUnderway, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, teamKey, vetoSummary } from './prepPack.js';
 import {
@@ -250,6 +250,7 @@ const sclMessageUpdateQueues = new Map();
 let webhookServer = null;
 let operationsTimer = null;
 let prepTimer = null;
+const fireCrownMayPost = createFireCrownThrottle(config.fireCrownCooldownSeconds * 1000);
 
 const PENDING_SCHEDULE_TOPIC_PREFIX = 'Pending schedule:';
 const EMBED_COLORS = {
@@ -1269,12 +1270,16 @@ client.on(Events.MessageCreate, async (message) => {
 
     const content = message.content.trim();
 
-    // #FireCrown anywhere in a message, or !FireCrown on its own: the bot says #FireCrown and the
-    // running total goes up. !FireCrownCount: the total. (Bots are ignored above, so the bot's own
-    // #FireCrown never triggers itself.)
+    // #FireCrown anywhere in a message, or !FireCrown on its own: the running total goes up, the
+    // message gets a 🔥 reaction, and the bot says #FireCrown at most once per
+    // FIRECROWN_COOLDOWN_SECONDS (60) per channel. !FireCrownCount: the total. (Bots are ignored
+    // above, so the bot's own #FireCrown never triggers itself.)
     if (/^!firecrown$/i.test(content) || isFireCrownMention(content)) {
       await incrementCounter('fireCrown');
-      await message.channel.send({ content: '#FireCrown', allowedMentions: { parse: [] } });
+      await message.react('🔥').catch(() => null);
+      if (fireCrownMayPost(message.channelId)) {
+        await message.channel.send({ content: '#FireCrown', allowedMentions: { parse: [] } });
+      }
       return;
     }
     if (/^!firecrowncount$/i.test(content)) {

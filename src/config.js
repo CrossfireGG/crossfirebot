@@ -250,6 +250,8 @@ export function getConfig() {
     socialPostTime: /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(process.env.SOCIAL_POST_TIME || '').trim())
       ? String(process.env.SOCIAL_POST_TIME).trim()
       : '16:00',
+    // #FireCrown: the bot posts it at most once per this many seconds per channel (0 = every time).
+    fireCrownCooldownSeconds: /^\d+$/.test(String(process.env.FIRECROWN_COOLDOWN_SECONDS || '').trim()) ? Number(process.env.FIRECROWN_COOLDOWN_SECONDS) : 60,
     // How many teams per group go through to the playoffs (for "a loss knocks them out").
     groupAdvanceCount: Math.max(1, Number(process.env.GROUP_ADVANCE_COUNT || 2) || 2),
     socialCardLeadMinutes: Math.max(30, Number(process.env.SOCIAL_CARD_LEAD_MINUTES || 120) || 120),
