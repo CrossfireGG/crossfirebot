@@ -89,6 +89,10 @@ import {
   saveMatchVetoes,
   incrementCounter,
   getCounter,
+  createTicket,
+  saveTicket,
+  getTicket,
+  listTickets,
   listMainStreamForms,
   createMainStreamForm,
   updateMainStreamForm,
@@ -213,17 +217,32 @@ import { createFireCrownThrottle, isFireCrownMention } from './fireCrown.js';
 import { buildApplicationCard, parseApplication } from './casterApplications.js';
 import {
   buildRosterChangePost,
-  changeLogLine,
+  faceitNicknameFromUrl,
   faceitTeamIdFromUrl,
+  playerFromFaceit,
   isStarterSlot,
   parseDiscordId,
-  planRosterChange,
+  planRosterOps,
   playerLines,
   rosterSlots,
   slotTaken,
   slotText,
   validateNewPlayer
 } from './rosterChange.js';
+import {
+  buildTicketHeader,
+  buildTranscript,
+  MATCH_STATES,
+  matchIssuePriority,
+  PRIORITIES,
+  priorityText,
+  rosterPriority,
+  shouldBumpRoster,
+  ticketChannelName,
+  ticketNumberText,
+  ticketTopic,
+  TICKET_TOPICS
+} from './tickets.js';
 import { buildRoundup, buildSocialCard, buildSocialResultCard, matchTopPlayer, normalizeHandle, teamSocials } from './socialInfo.js';
 import { buildPrepPack, compactBotVeto, compactFaceitVeto, compactMatchStats, faceitVetoUnderway, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, teamKey, vetoSummary } from './prepPack.js';
 import {
@@ -467,12 +486,28 @@ client.on(Events.InteractionCreate, async (interaction) => {
       else if (interaction.commandName === 'cf') await handleSeasonAutocomplete(interaction);
       return;
     }
-    if (interaction.isChatInputCommand() && interaction.commandName === 'roster-change') {
-      await handleRosterChangeCommand(interaction);
+    if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_topic') {
+      await handleTicketTopic(interaction);
       return;
     }
-    if (interaction.customId?.startsWith('roster_')) {
-      await handleRosterChangeComponent(interaction);
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('ticket_form:')) {
+      await handleTicketForm(interaction);
+      return;
+    }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('ticket_close_submit:')) {
+      await handleTicketClose(interaction);
+      return;
+    }
+    if (/^ticket_(claim|reassign|assign|priority|close):/.test(interaction.customId || '')) {
+      await handleTicketControl(interaction);
+      return;
+    }
+    if (interaction.customId?.startsWith('troster_')) {
+      await handleTicketRoster(interaction);
+      return;
+    }
+    if (interaction.isButton() && interaction.customId === 'roster_done') {
+      await handleRosterDone(interaction);
       return;
     }
     if (interaction.isChatInputCommand()) {
@@ -720,6 +755,10 @@ async function handleAdminCommand(interaction) {
 
     if (subcommand === 'forms') {
       await showForms(interaction);
+      return;
+    }
+    if (subcommand === 'tickets') {
+      await postTicketPanel(interaction);
       return;
     }
 
@@ -7071,23 +7110,325 @@ async function syncSheetStatsCollected(sync, now) {
   }
 }
 
-// --- Roster changes (/roster-change) -----------------------------------------------------------
-// A captain (or staff, with team:) adds a player to their team on the player tracking sheet:
-// command options -> form (IGN, full name, FACEIT, HLTV, SteamID64) -> pick a current player or an
-// empty slot -> Remove from team / Move to sub -> Confirm. The sheet is written through the Apps
-// Script, then admins get a post in ROSTER_CHANGE_CHANNEL_ID with a "Done on FACEIT" button.
-// Drafts live in memory for 15 minutes; only the person who ran the command can use its controls.
-const ROSTER_DRAFT_MS = 15 * 60 * 1000;
-const rosterDrafts = new Map();
+// --- Support tickets ------------------------------------------------------------------------------
+// `/cf tickets` posts the "Open a ticket" panel. Picking a topic asks its questions (a form; Roster
+// Change looks up the captain's team instead), then opens a private channel for the opener, staff and
+// Tournament Operations with the answers in a header card. Staff can claim, reassign, change the
+// priority and close; closing posts a transcript to Support Receipts and deletes the channel.
+// Priority: a live / about-to-start match issue is urgent and pings the on-duty admins; a roster
+// change is priority when the team's next FACEIT match is within 24 hours (bumped later if the match
+// moves into that window); everything else is normal. Staff can override it.
 
-function newRosterDraft(fields) {
-  const now = Date.now();
-  for (const [id, draft] of rosterDrafts) if (now - draft.createdAt > ROSTER_DRAFT_MS) rosterDrafts.delete(id);
-  const id = Math.random().toString(36).slice(2, 10);
-  const draft = { id, createdAt: now, ...fields };
-  rosterDrafts.set(id, draft);
-  return draft;
+const TICKET_BOT_PERMS = [
+  PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory,
+  PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.ManageChannels
+];
+const TICKET_MEMBER_PERMS = [
+  PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory,
+  PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles
+];
+const APPLY_ROLES = ['Caster', 'Producer', 'Observer', 'Admin', 'Social Media', 'Other'];
+
+async function postTicketPanel(interaction) {
+  const channel = interaction.channel;
+  if (!channel?.isTextBased?.()) {
+    await interaction.reply({ content: 'Run this in the channel where the panel should go.', ephemeral: true });
+    return;
+  }
+  const embed = new EmbedBuilder()
+    .setTitle('🎫 Open a ticket')
+    .setDescription([
+      'Pick what you need help with. The bot asks a few questions first, then opens a private channel with the staff.',
+      '',
+      ...TICKET_TOPICS.map((topic) => `**${topic.emoji} ${topic.label}**: ${topic.description}`)
+    ].join('\n'))
+    .setColor(0x5865f2);
+  const select = new StringSelectMenuBuilder()
+    .setCustomId('ticket_topic')
+    .setPlaceholder('Pick a topic…')
+    .addOptions(TICKET_TOPICS.map((topic) => ({ label: topic.label, description: topic.description.slice(0, 100), value: topic.key, emoji: topic.emoji })));
+  await channel.send({ embeds: [embed], components: [new ActionRowBuilder().addComponents(select)] });
+  await interaction.reply({ content: 'Ticket panel posted.', ephemeral: true });
 }
+
+function isTicketStaff(member) {
+  return isAdminStaff(member) || canManageStreamRequests(member);
+}
+
+function ticketText(id, label, { style = TextInputStyle.Short, required = true, placeholder = null, max = 500 } = {}) {
+  const input = new TextInputBuilder().setCustomId(id).setStyle(style).setRequired(required).setMaxLength(max);
+  if (placeholder) input.setPlaceholder(placeholder);
+  return new LabelBuilder().setLabel(label).setTextInputComponent(input);
+}
+
+function ticketSelect(id, label, options, description = null) {
+  const select = new StringSelectMenuBuilder().setCustomId(id).setRequired(true).setMinValues(1).setMaxValues(1)
+    .addOptions(options.map((option) => (typeof option === 'string' ? { label: option, value: option } : option)));
+  const labelled = new LabelBuilder().setLabel(label).setStringSelectMenuComponent(select);
+  if (description) labelled.setDescription(description);
+  return labelled;
+}
+
+function ticketModal(topicKey) {
+  const modal = new ModalBuilder().setCustomId(`ticket_form:${topicKey}`);
+  if (topicKey === 'support') {
+    return modal.setTitle('General Support').addLabelComponents(
+      ticketText('help', 'What do you need help with?', { style: TextInputStyle.Paragraph, max: 1500 }),
+      ticketText('team', 'Your team (if it is about a team)', { required: false, max: 100 }),
+      ticketText('link', 'Screenshot or link (optional)', { required: false, placeholder: 'You can also post screenshots in the ticket' })
+    );
+  }
+  if (topicKey === 'match') {
+    return modal.setTitle('Match / FACEIT Issue').addLabelComponents(
+      ticketText('team', 'Your team', { max: 100 }),
+      ticketText('match', 'Match link (FACEIT room)', { placeholder: 'https://www.faceit.com/en/cs2/room/...' }),
+      ticketText('what', "What's happening?", { style: TextInputStyle.Paragraph, max: 1500 }),
+      ticketSelect('state', 'Is the match live?', MATCH_STATES)
+    );
+  }
+  if (topicKey === 'apply') {
+    return modal.setTitle('Apply to Crossfire').addLabelComponents(
+      ticketSelect('role', 'What are you applying for?', APPLY_ROLES),
+      ticketText('experience', 'Relevant experience', { style: TextInputStyle.Paragraph, max: 1500 }),
+      ticketText('links', 'Links (portfolio, channel, VODs…)', { required: false, style: TextInputStyle.Paragraph, max: 1000 })
+    );
+  }
+  // Roster Change opened by staff for a team.
+  return modal.setTitle('Roster Change').addLabelComponents(ticketText('team', 'Team name (as on the Roster Tracking tab)', { max: 100 }));
+}
+
+async function onDutyAdminIds(now = Date.now()) {
+  const stored = await getCrewAvailability().catch(() => null);
+  if (!stored?.data) return [];
+  return crewPeopleWithIds(stored)
+    .filter((person) => person.userId && (person.roles || []).includes('admin'))
+    .filter((person) => ['free', 'partial'].includes(availabilityAt(person, now, 60).state))
+    .map((person) => person.userId);
+}
+
+// The team's next FACEIT match: { ok: true, startMs, faceitUrl } (startMs null when none is
+// scheduled), or { ok: false } when the schedule couldn't be read.
+async function nextTeamMatch(team, now = Date.now()) {
+  if (!faceit || !config.faceitApiKey) return { ok: false };
+  let matches;
+  try {
+    matches = await loadSeasonMatches();
+  } catch {
+    return { ok: false };
+  }
+  const id = faceitTeamIdFromUrl(team.faceitUrl);
+  const key = normalizeTeamKey(team.teamName);
+  const upcoming = [];
+  for (const match of matches) {
+    if (/finished|cancel/i.test(String(match.status || ''))) continue;
+    const ours = [match.raw?.teams?.faction1, match.raw?.teams?.faction2]
+      .some((faction) => (id && faction?.faction_id === id) || (faction?.name && normalizeTeamKey(faction.name) === key));
+    if (!ours) continue;
+    const startMs = Date.parse(await approvedScheduleIso(match.id) || getFaceitScheduledAtIso(match) || '');
+    if (Number.isFinite(startMs) && startMs >= now - 3 * 60 * 60 * 1000) upcoming.push({ startMs, faceitUrl: match.faceitUrl || null });
+  }
+  upcoming.sort((a, b) => a.startMs - b.startMs);
+  return { ok: true, startMs: upcoming[0]?.startMs ?? null, faceitUrl: upcoming[0]?.faceitUrl || null };
+}
+
+function ticketControls(ticket) {
+  if (ticket.status !== 'open') return [];
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`ticket_claim:${ticket.id}`).setLabel(ticket.claimedBy ? 'Claim (take over)' : 'Claim').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`ticket_reassign:${ticket.id}`).setLabel('Reassign').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`ticket_close:${ticket.id}`).setLabel('Close').setStyle(ButtonStyle.Danger)
+    ),
+    new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+      .setCustomId(`ticket_priority:${ticket.id}`)
+      .setPlaceholder('Staff: change priority…')
+      .addOptions(Object.entries(PRIORITIES).map(([value, entry]) => ({ label: entry.label, value, emoji: entry.emoji, default: ticket.priority === value }))))
+  ];
+}
+
+function ticketHeaderPayload(ticket) {
+  const header = buildTicketHeader(ticket);
+  return {
+    embeds: [new EmbedBuilder().setTitle(header.title).setDescription(header.description).addFields(header.fields).setColor(header.color)],
+    components: ticketControls(ticket)
+  };
+}
+
+async function refreshTicketHeader(ticket) {
+  const channel = ticket.channelId ? await client.channels.fetch(ticket.channelId).catch(() => null) : null;
+  const message = channel?.isTextBased?.() && ticket.headerMessageId ? await channel.messages.fetch(ticket.headerMessageId).catch(() => null) : null;
+  if (message) await message.edit(ticketHeaderPayload(ticket)).catch(() => null);
+  return channel;
+}
+
+// Creates the ticket channel and its header. Returns { ticket, channel } or { error }.
+async function openTicket({ guild, parentId, opener, topic, answers, priority, extra = {}, adminPings = false }) {
+  const ticket = await createTicket({
+    topic,
+    openerId: opener.id,
+    openerTag: opener.username,
+    answers,
+    priority: priority.priority,
+    priorityReason: priority.reason || null,
+    priorityOverride: false,
+    needsVerify: Boolean(priority.needsVerify),
+    guildId: guild.id,
+    ...extra
+  });
+  await guild.roles.fetch().catch(() => null);
+  const staffRoleIds = (config.authorizedStaffRoleIds || []).filter((roleId) => guild.roles.cache.has(roleId));
+  const channel = await guild.channels.create({
+    name: ticketChannelName(topic, ticket.number, opener.username),
+    type: ChannelType.GuildText,
+    parent: config.ticketCategoryId || parentId || null,
+    topic: `${ticketNumberText(ticket.number)} · ${ticketTopic(topic)?.label || topic} · opened by ${opener.username}`.slice(0, 1024),
+    permissionOverwrites: [
+      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: client.user.id, allow: TICKET_BOT_PERMS },
+      { id: opener.id, allow: TICKET_MEMBER_PERMS },
+      ...staffRoleIds.map((roleId) => ({ id: roleId, allow: [...TICKET_MEMBER_PERMS, PermissionFlagsBits.ManageMessages] }))
+    ]
+  }).catch((error) => {
+    console.error(`[Tickets] could not create the ticket channel: ${error.message || error}`);
+    return null;
+  });
+  if (!channel) {
+    await saveTicket(ticket.id, { status: 'failed' });
+    return { error: "I couldn't create the ticket channel (missing Manage Channels permission?). Please tell a staff member." };
+  }
+  let pingUsers = [opener.id];
+  let pingRoles = [];
+  if (adminPings) {
+    const onDuty = await onDutyAdminIds();
+    if (onDuty.length) pingUsers = [...pingUsers, ...onDuty];
+    else pingRoles = config.adminAlertRoleIds;
+  }
+  const content = [
+    pingUsers.map((id) => `<@${id}>`).join(' '),
+    pingRoles.map((id) => `<@&${id}>`).join(' '),
+    adminPings ? '🔴 **Priority support:** this match is live or about to start.' : null
+  ].filter(Boolean).join(' ');
+  const saved = await saveTicket(ticket.id, { channelId: channel.id });
+  const header = await channel.send({ content, ...ticketHeaderPayload(saved), allowedMentions: { parse: [], users: pingUsers, roles: pingRoles } }).catch(() => null);
+  const final = await saveTicket(ticket.id, { headerMessageId: header?.id || null, adminPinged: adminPings ? [...pingUsers.slice(1), ...pingRoles.map((id) => `role:${id}`)] : [] });
+  await appendAuditLog({ type: 'ticket_opened', ticketId: ticket.id, topic, actorId: opener.id, priority: priority.priority }).catch(() => null);
+  return { ticket: final, channel };
+}
+
+// The topic dropdown on the panel.
+async function handleTicketTopic(interaction) {
+  if (config.ticketsStaffOnly && !isTicketStaff(interaction.member)) {
+    await interaction.reply({ content: 'The new ticket system is being tested by staff right now. For now, please use the usual ticket channel.', ephemeral: true });
+    return;
+  }
+  const topic = interaction.values?.[0];
+  if (!ticketTopic(topic)) {
+    await interaction.reply({ content: 'Pick a topic from the list.', ephemeral: true });
+    return;
+  }
+  const open = (await listTickets({ status: 'open' })).find((ticket) => ticket.openerId === interaction.user.id && ticket.topic === topic);
+  if (open?.channelId && await client.channels.fetch(open.channelId).catch(() => null)) {
+    await interaction.reply({ content: `You already have an open ${ticketTopic(topic).label} ticket: <#${open.channelId}>.`, ephemeral: true });
+    return;
+  }
+  if (topic !== 'roster' || isTicketStaff(interaction.member)) {
+    await interaction.showModal(ticketModal(topic));
+    return;
+  }
+  // Roster Change: only captains (staff get the form above to name the team).
+  await interaction.deferReply({ ephemeral: true });
+  const found = await resolveCaptainTeam(interaction.user, interaction.member);
+  if (found.error) {
+    await interaction.editReply(found.error);
+    return;
+  }
+  const result = await openRosterTicket(interaction, found.team);
+  await interaction.editReply(result.error || `Your roster change ticket is open: <#${result.channel.id}>`);
+}
+
+async function handleTicketForm(interaction) {
+  const topic = interaction.customId.slice('ticket_form:'.length);
+  await interaction.deferReply({ ephemeral: true });
+  const text = (id) => {
+    try {
+      return interaction.fields.getTextInputValue(id)?.trim() || '';
+    } catch {
+      return '';
+    }
+  };
+  const picked = (id) => {
+    try {
+      return [...(interaction.fields.getStringSelectValues(id) || [])][0] || '';
+    } catch {
+      return '';
+    }
+  };
+  if (topic === 'roster') {
+    const lookup = await scheduleSheet.readRosterTeam({ spreadsheetId: config.rosterSpreadsheetId, sheetName: config.rosterSheetName, teamName: text('team') });
+    if (!lookup.ok) {
+      await interaction.editReply(`Couldn't read the roster sheet: ${lookup.error}`);
+      return;
+    }
+    if (!lookup.team) {
+      await interaction.editReply(`No team called **${text('team')}** on the ${config.rosterSheetName} tab.`);
+      return;
+    }
+    const result = await openRosterTicket(interaction, lookup.team);
+    await interaction.editReply(result.error || `Roster change ticket opened: <#${result.channel.id}>`);
+    return;
+  }
+  let answers;
+  let priority = { priority: 'normal', reason: null };
+  let adminPings = false;
+  if (topic === 'support') {
+    answers = [
+      { label: 'What they need help with', value: text('help') },
+      { label: 'Team', value: text('team') },
+      { label: 'Screenshot or link', value: text('link') }
+    ];
+  } else if (topic === 'match') {
+    const state = picked('state');
+    const link = text('match');
+    const room = parseFaceitMatchRoomLink(link);
+    const match = room ? await faceit.getMatch(room.matchId).catch(() => null) : null;
+    const result = matchIssuePriority({ state, faceitStatus: match?.status || null });
+    priority = { priority: result.priority, reason: result.reason };
+    adminPings = result.pingAdmins;
+    answers = [
+      { label: 'Team', value: text('team') },
+      { label: 'Match', value: match ? `[${match.teamA} vs ${match.teamB}](${match.faceitUrl || link}) · FACEIT: ${String(match.status).toLowerCase()}` : link },
+      { label: "What's happening", value: text('what') },
+      { label: 'Match state', value: MATCH_STATES.find((entry) => entry.value === state)?.label || state }
+    ];
+  } else {
+    answers = [
+      { label: 'Applying for', value: picked('role') },
+      { label: 'Discord', value: `<@${interaction.user.id}> (${interaction.user.username})` },
+      { label: 'Experience', value: text('experience') },
+      { label: 'Links', value: text('links') }
+    ];
+  }
+  const result = await openTicket({
+    guild: interaction.guild,
+    parentId: interaction.channel?.parentId || null,
+    opener: interaction.user,
+    topic,
+    answers,
+    priority,
+    adminPings
+  });
+  await interaction.editReply(result.error || `Your ticket is open: <#${result.channel.id}>`);
+}
+
+// --- Roster changes inside Roster Change tickets -------------------------------------------------
+// The ticket shows the team, group and roster from the Roster Tracking tab. The captain (or staff)
+// picks a player to remove, move to sub or promote, or adds a new player as a starter or sub; the
+// details form checks the fields; Confirm writes the sheet through the Apps Script, posts the change
+// in the ticket and in Roster Change Requests (with "Done on FACEIT"). Wizard steps are ephemeral and
+// live in memory for 30 minutes.
+
+const ROSTER_WIZARD_MS = 30 * 60 * 1000;
+const rosterWizards = new Map();
 
 function isTeamCaptainMember(member) {
   if (!member?.roles?.cache) return false;
@@ -7100,138 +7441,77 @@ async function captainMappingFor(userId) {
   return (await listTeamMappings(teamMappingScope())).find((mapping) => (mapping.captainDiscordIds || []).includes(userId)) || null;
 }
 
-function rosterModal(draft) {
-  const values = draft.player || {};
-  const field = (id, label, value, placeholder, max = 200) => {
-    const input = new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(max).setPlaceholder(placeholder);
-    if (value) input.setValue(String(value).slice(0, max));
-    return new ActionRowBuilder().addComponents(input);
-  };
-  return new ModalBuilder()
-    .setCustomId(`roster_modal:${draft.id}`)
-    .setTitle('New player')
-    .addComponents(
-      field('alias', 'IGN', values.alias, 'In-game name', 64),
-      field('fullName', 'Full Name', values.fullName, 'First and last name', 100),
-      field('faceit', 'FACEIT Profile (link)', values.faceit, 'https://www.faceit.com/en/players/...'),
-      field('hltv', 'HLTV Profile (link)', values.hltv, 'https://www.hltv.org/player/...'),
-      field('steamId', 'SteamID64', values.steamId, '7656119xxxxxxxxxx', 25)
-    );
-}
-
-async function handleRosterChangeCommand(interaction) {
-  const staff = isAdminStaff(interaction.member);
-  const staffTeam = interaction.options.getString('team');
-  if (staffTeam && !staff) {
-    await interaction.reply({ content: 'Only staff can pick a team with `team:`. Captains just run `/roster-change` for their own team.', ephemeral: true });
-    return;
-  }
-  const user = interaction.options.getUser('player');
-  const typedId = interaction.options.getString('player_id');
-  let discordId = user?.id || null;
-  let discord = user?.username || null;
-  if (!user && typedId) {
-    discordId = parseDiscordId(typedId);
-    if (!discordId) {
-      await interaction.reply({ content: '`player_id` must be a Discord ID: a 17–20 digit number (Developer Mode → right-click them → Copy User ID).', ephemeral: true });
-      return;
-    }
-    discord = discordId;
-  }
-  if (!discordId) {
-    await interaction.reply({ content: 'Pick the new player with `player:`, or type their Discord ID in `player_id:` if they aren\'t in this server.', ephemeral: true });
-    return;
-  }
-  const draft = {
-    userId: interaction.user.id,
-    username: interaction.user.username,
-    staff,
-    staffTeam: staffTeam || null,
-    player: { discordId, discord, nationality: interaction.options.getString('nationality', true).trim(), twitter: (interaction.options.getString('twitter') || '').trim() }
-  };
-  // Quick check before the form: staff, a captain the bot knows from the team sync, or the captain
-  // role. Anyone else is looked up on the sheet first (that can take a few seconds).
-  if (staff || isTeamCaptainMember(interaction.member) || await captainMappingFor(interaction.user.id)) {
-    await interaction.showModal(rosterModal(newRosterDraft(draft)));
-    return;
-  }
-  await interaction.deferReply({ ephemeral: true });
-  const lookup = await scheduleSheet.readRosterTeam({ spreadsheetId: config.rosterSpreadsheetId, sheetName: config.rosterSheetName, captainDiscord: interaction.user.username });
-  if (!lookup.ok) {
-    await interaction.editReply(`Couldn't check the roster sheet: ${lookup.error}. Try again in a minute, or open a ticket.`);
-    return;
-  }
-  if (!lookup.team) {
-    await interaction.editReply('Only team captains can request roster changes, and you aren\'t listed as a captain on the roster sheet. If you are your team\'s captain, open a ticket so an admin can fix the sheet.');
-    return;
-  }
-  const saved = newRosterDraft({ ...draft, team: lookup.team });
-  await interaction.editReply({
-    content: `You're the captain of **${lookup.team.teamName}**. Fill in the new player's details:`,
-    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`roster_fix:${saved.id}`).setLabel('Fill in the new player').setStyle(ButtonStyle.Primary))]
-  });
-}
-
-// Finds the team for a draft: staff's team:, the team the bot knows the captain from, or the
-// sheet's Captain row with their Discord username. Captains must be on that team.
-async function resolveRosterTeam(draft) {
-  if (draft.team) return { team: draft.team };
-  const base = { spreadsheetId: config.rosterSpreadsheetId, sheetName: config.rosterSheetName };
-  if (draft.staffTeam) {
-    const lookup = await scheduleSheet.readRosterTeam({ ...base, teamName: draft.staffTeam });
-    if (!lookup.ok) return { error: `Couldn't read the roster sheet: ${lookup.error}` };
-    return lookup.team ? { team: lookup.team } : { error: `No team called **${draft.staffTeam}** on the ${config.rosterSheetName} tab. Check the spelling, or that the team has been added there.` };
-  }
-  const mapping = await captainMappingFor(draft.userId);
+// A captain's team on the Roster Tracking tab: from the team sync, or the team's Captain cell.
+async function resolveCaptainTeam(user, member) {
+  const mapping = await captainMappingFor(user.id);
   const lookup = await scheduleSheet.readRosterTeam({
-    ...base,
+    spreadsheetId: config.rosterSpreadsheetId,
+    sheetName: config.rosterSheetName,
     faceitTeamId: mapping?.faceitTeamId || null,
     teamName: mapping?.teamName || null,
-    captainDiscord: draft.username
+    captainDiscord: user.username
   });
-  if (!lookup.ok) return { error: `Couldn't read the roster sheet: ${lookup.error}` };
+  if (!lookup.ok) return { error: `Couldn't read the roster sheet: ${lookup.error}. Try again in a minute.` };
   if (!lookup.team) {
-    return { error: mapping
-      ? `Your team (**${mapping.teamName}**) wasn't found on the ${config.rosterSheetName} tab. Open a ticket so an admin can check the sheet.`
-      : 'Your team wasn\'t found on the roster sheet. Only team captains can request roster changes; if you are one, open a ticket.' };
+    return { error: mapping || isTeamCaptainMember(member)
+      ? "Your team wasn't found on the roster sheet. Open a General Support ticket so an admin can check it."
+      : 'Only team captains can request roster changes. If you are your team\'s captain, open a General Support ticket so an admin can fix the roster sheet.' };
+  }
+  if (!mapping && !lookup.team.isCaptain) {
+    return { error: 'Only team captains can request roster changes, and you are not listed as the captain of a team on the roster sheet.' };
   }
   return { team: lookup.team };
 }
 
-function rosterPickPayload(draft) {
-  const slots = rosterSlots(draft.team);
-  const options = slots.map((slot) => ({
-    label: slotText(slot).slice(0, 100),
-    description: (slotTaken(slot) ? 'Replace or move this player' : 'Add the new player here without removing anyone').slice(0, 100),
-    value: slot.label
-  }));
-  const embed = new EmbedBuilder()
-    .setTitle(`🔁 Roster change · ${draft.team.teamName}`.slice(0, 256))
-    .setDescription(['**New player**', ...playerLines(draft.player), '', 'Pick who the new player replaces, or an empty slot.'].join('\n').slice(0, 4000))
-    .setColor(0x5865f2);
-  return {
-    content: '',
-    embeds: [embed],
-    components: [
-      new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`roster_pick:${draft.id}`).setPlaceholder('Pick a player or an empty slot…').addOptions(options)),
-      new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`roster_cancel:${draft.id}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary))
-    ]
-  };
-}
+// After a confirmed roster change: the new player gets the team role and Season Participant role;
+// a removed player loses the team role, and Season Participant too unless they're on another team.
+// Returns lines for the captain and the admin post.
+async function applyRosterRoles({ guild, team, player, removedSlot }) {
+  if (!guild) return [];
+  await guild.roles.fetch().catch(() => null);
+  const mappings = await listTeamMappings(teamMappingScope());
+  const teamId = faceitTeamIdFromUrl(team.faceitUrl);
+  const key = normalizeTeamKey(team.teamName);
+  const mapping = mappings.find((entry) => (teamId && entry.faceitTeamId === teamId))
+    || mappings.find((entry) => [entry.teamName, ...(entry.aliases || [])].some((name) => normalizeTeamKey(name) === key));
+  const teamRoleId = mapping?.discordRoleId || config.teamRoleIds?.get?.(key) || null;
+  const teamRole = teamRoleId ? guild.roles.cache.get(teamRoleId) : null;
+  const participantName = String(config.seasonParticipantRoleName || '').toLowerCase();
+  const participantRole = (config.seasonParticipantRoleId && guild.roles.cache.get(config.seasonParticipantRoleId))
+    || guild.roles.cache.find((role) => participantName && role.name.toLowerCase() === participantName) || null;
+  const lines = [];
+  if (!teamRole) lines.push(`⚠️ No Discord role is linked to ${team.teamName}, so the team role wasn't changed (run \`/cf sync target:teams\`).`);
 
-function rosterConfirmPayload(draft, plan) {
-  const embed = new EmbedBuilder()
-    .setTitle(`🔁 Confirm roster change · ${draft.team.teamName}`.slice(0, 256))
-    .setDescription([plan.summary, plan.warning ? `\n⚠️ ${plan.warning}` : null, '', '**New player**', ...playerLines(draft.player)].filter((line) => line !== null).join('\n').slice(0, 4000))
-    .setColor(plan.warning ? 0xf1c40f : 0x5865f2);
-  return {
-    content: '',
-    embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`roster_confirm:${draft.id}`).setLabel('Confirm').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`roster_cancel:${draft.id}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
-    )]
-  };
+  if (player?.discordId) {
+    const member = await guild.members.fetch(player.discordId).catch(() => null);
+    if (!member) {
+      lines.push(`⚠️ ${player.alias} isn't in this server, so they didn't get their roles. They'll need them when they join.`);
+    } else {
+      const add = [teamRole, participantRole].filter((role) => role && !member.roles.cache.has(role.id));
+      if (add.length) {
+        const ok = await member.roles.add(add, `Roster change: added to ${team.teamName}`).then(() => true).catch(() => false);
+        lines.push(ok ? `🎭 Gave <@${member.id}> ${add.map((role) => `**${role.name}**`).join(' and ')}.` : `⚠️ Couldn't give <@${member.id}> their roles (the bot's role must be above them).`);
+      }
+    }
+  }
+
+  if (removedSlot && teamRole) {
+    const who = String(removedSlot.discord || '').replace(/^@/, '').trim();
+    const removedId = parseDiscordId(who) || (who ? await findMemberIdByName(guild, who).catch(() => null) : null);
+    const member = removedId ? await guild.members.fetch(removedId).catch(() => null) : null;
+    if (!member) {
+      lines.push(`⚠️ Couldn't find ${removedSlot.alias || 'the removed player'} in this server from the sheet's Discord cell, so remove their **${teamRole.name}** role by hand.`);
+    } else if (!player?.discordId || member.id !== player.discordId) {
+      const otherTeamRoleIds = new Set(mappings.map((entry) => entry.discordRoleId).filter((roleId) => roleId && roleId !== teamRole.id));
+      const onOtherTeam = member.roles.cache.some((role) => otherTeamRoleIds.has(role.id));
+      const remove = [teamRole, onOtherTeam ? null : participantRole].filter((role) => role && member.roles.cache.has(role.id));
+      if (remove.length) {
+        const ok = await member.roles.remove(remove, `Roster change: removed from ${team.teamName}`).then(() => true).catch(() => false);
+        lines.push(ok ? `🎭 Removed ${remove.map((role) => `**${role.name}**`).join(' and ')} from <@${member.id}>.` : `⚠️ Couldn't remove <@${member.id}>'s roles (the bot's role must be above them).`);
+      }
+    }
+  }
+  return lines;
 }
 
 // The team's group, from FACEIT's season matches (Group C), or null.
@@ -7244,170 +7524,604 @@ async function rosterTeamGroup(team) {
   return hit?.group || null;
 }
 
-async function handleRosterChangeComponent(interaction) {
-  const [kind, id, extra] = interaction.customId.split(':');
-  if (kind === 'roster_done') return handleRosterDone(interaction);
-  const draft = rosterDrafts.get(id);
-  if (!draft || Date.now() - draft.createdAt > ROSTER_DRAFT_MS) {
-    rosterDrafts.delete(id);
-    const content = 'This roster change timed out (15 minutes) or the bot restarted. Run `/roster-change` again.';
-    if (interaction.isMessageComponent()) await interaction.update({ content, embeds: [], components: [] }).catch(() => interaction.reply({ content, ephemeral: true }));
+function rosterListText(team) {
+  return rosterSlots(team).map((slot) => slotText(slot)).join('\n') || 'No players on the sheet yet.';
+}
+
+async function openRosterTicket(interaction, team) {
+  const next = await nextTeamMatch(team);
+  const priority = rosterPriority(next);
+  const group = await rosterTeamGroup(team);
+  const nextText = !next.ok ? 'Unknown (could not read the schedule)' : next.startMs ? `<t:${Math.floor(next.startMs / 1000)}:F> (<t:${Math.floor(next.startMs / 1000)}:R>)` : 'None scheduled';
+  const result = await openTicket({
+    guild: interaction.guild,
+    parentId: interaction.channel?.parentId || null,
+    opener: interaction.user,
+    topic: 'roster',
+    answers: [
+      { label: 'Team', value: team.teamName },
+      { label: 'Group', value: group || 'Unknown' },
+      { label: 'Next match', value: nextText }
+    ],
+    priority,
+    extra: {
+      teamName: team.teamName,
+      teamFaceitUrl: team.faceitUrl || null,
+      group,
+      nextMatchIso: next.startMs ? new Date(next.startMs).toISOString() : null,
+      nextMatchCheckedAt: new Date().toISOString()
+    }
+  });
+  if (result.error) return result;
+  await result.channel.send(rosterPanelPayload(result.ticket, team)).catch(() => null);
+  if (priority.needsVerify) {
+    await result.channel.send({ content: `<@${interaction.user.id}> I couldn't read your team's schedule. Please reply here with your **next match link** and **start time** so staff can check whether this needs to be done first.`, allowedMentions: { users: [interaction.user.id] } }).catch(() => null);
+  }
+  return result;
+}
+
+function rosterPanelPayload(ticket, team) {
+  const slots = rosterSlots(team).filter(slotTaken);
+  const embed = new EmbedBuilder()
+    .setTitle(`🔁 ${team.teamName} roster`)
+    .setDescription(['**Current roster** (from the Roster Tracking tab)', rosterListText(team), '', 'Pick a player to remove, move to sub or promote, or add a new player.'].join('\n').slice(0, 4000))
+    .setColor(0x5865f2);
+  const rows = [];
+  if (slots.length) {
+    rows.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
+      .setCustomId(`troster_pick:${ticket.id}`)
+      .setPlaceholder('Pick a player to change…')
+      .addOptions(slots.map((slot) => ({ label: slotText(slot).slice(0, 100), value: slot.label })))));
+  }
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`troster_add:${ticket.id}`).setLabel('Add a new player').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`troster_reload:${ticket.id}`).setLabel('Reload roster').setStyle(ButtonStyle.Secondary)
+  ));
+  return { embeds: [embed], components: rows };
+}
+
+async function freshRosterTeam(ticket) {
+  const lookup = await scheduleSheet.readRosterTeam({
+    spreadsheetId: config.rosterSpreadsheetId,
+    sheetName: config.rosterSheetName,
+    faceitTeamId: faceitTeamIdFromUrl(ticket.teamFaceitUrl),
+    teamName: ticket.teamName
+  });
+  if (!lookup.ok) return { error: `Couldn't read the roster sheet: ${lookup.error}` };
+  if (!lookup.team) return { error: `${ticket.teamName} isn't on the ${config.rosterSheetName} tab any more.` };
+  return { team: lookup.team };
+}
+
+// Page 1: the FACEIT link (IGN, SteamID64 and country come from FACEIT), Discord user, full name,
+// HLTV and Twitter.
+function rosterPlayerModalA(wizard) {
+  const values = wizard.draft || {};
+  const text = (id, label, value, placeholder, { required = true, max = 200, description = null } = {}) => {
+    const input = new TextInputBuilder().setCustomId(id).setStyle(TextInputStyle.Short).setRequired(required).setMaxLength(max).setPlaceholder(placeholder);
+    if (value) input.setValue(String(value).slice(0, max));
+    const labelled = new LabelBuilder().setLabel(label).setTextInputComponent(input);
+    if (description) labelled.setDescription(description);
+    return labelled;
+  };
+  const picker = new UserSelectMenuBuilder().setCustomId('discordUser').setRequired(false).setMinValues(0).setMaxValues(1);
+  if (values.pickedId) picker.setDefaultUsers(values.pickedId);
+  return new ModalBuilder()
+    .setCustomId(`troster_formA:${wizard.ticketId}`)
+    .setTitle('New player')
+    .addLabelComponents(
+      text('faceit', 'FACEIT profile link', values.faceitInput, 'https://www.faceit.com/en/players/...', { description: 'Their IGN, SteamID64 and country are filled in from FACEIT.' }),
+      new LabelBuilder().setLabel('Discord user').setDescription("Not in this server? Leave empty; you'll be asked for their ID.").setUserSelectMenuComponent(picker),
+      text('fullName', 'Full name', values.fullName, 'First and last name', { max: 100 }),
+      text('hltv', 'HLTV profile link', values.hltv, 'https://www.hltv.org/player/...'),
+      text('twitter', 'Twitter / X (optional)', values.twitterInput, '@handle or link', { required: false, max: 100 })
+    );
+}
+
+// Page 2, only when needed: their Discord ID (not in the server), and IGN / SteamID64 / nationality
+// typed by hand when FACEIT couldn't be reached or has no Steam account linked.
+function rosterPlayerModalB(wizard) {
+  const values = wizard.draft || {};
+  const need = wizard.pageTwo || {};
+  const text = (id, label, value, placeholder, max = 100) => {
+    const input = new TextInputBuilder().setCustomId(id).setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(max).setPlaceholder(placeholder);
+    if (value) input.setValue(String(value).slice(0, max));
+    return new LabelBuilder().setLabel(label).setTextInputComponent(input);
+  };
+  const fields = [];
+  if (need.discordId) fields.push(text('discordIdTyped', 'Their Discord ID (17-20 digits)', values.typedDiscordId, 'Developer Mode → right-click → Copy User ID', 25));
+  if (need.manual) {
+    fields.push(text('alias', 'In-game name (IGN)', values.alias, 'In-game name', 64));
+    fields.push(text('nationality', 'Nationality', values.nationality, 'e.g. United States', 60));
+  }
+  if (need.manual || need.steamId) fields.push(text('steamId', 'SteamID64', values.steamId, '7656119xxxxxxxxxx', 25));
+  return new ModalBuilder().setCustomId(`troster_formB:${wizard.ticketId}`).setTitle('New player: a few more details').addLabelComponents(...fields);
+}
+
+// Checks the draft once every page is in. Shows errors with fix buttons, or moves on to confirm.
+async function finishRosterPlayer(interaction, wizard, ticket) {
+  const draft = wizard.draft || {};
+  const typed = draft.typedDiscordId ? parseDiscordId(draft.typedDiscordId) : null;
+  const checked = validateNewPlayer({
+    alias: draft.alias, fullName: draft.fullName, faceit: draft.faceit || draft.faceitInput, hltv: draft.hltv, steamId: draft.steamId,
+    nationality: draft.nationality, twitter: draft.twitterInput,
+    discordId: draft.pickedId || typed, discord: draft.pickedName || typed || ''
+  });
+  if (draft.typedDiscordId && !typed && !draft.pickedId) checked.errors.push('Discord ID must be 17–20 digits (Developer Mode → right-click them → Copy User ID).');
+  if (checked.errors.length) {
+    wizard.player = null;
+    const buttons = [new ButtonBuilder().setCustomId(`troster_formA_open:${wizard.ticketId}`).setLabel('Fix the details').setStyle(ButtonStyle.Primary)];
+    if (Object.values(wizard.pageTwo || {}).some(Boolean)) buttons.push(new ButtonBuilder().setCustomId(`troster_formB_open:${wizard.ticketId}`).setLabel('Fix page 2').setStyle(ButtonStyle.Primary));
+    buttons.push(new ButtonBuilder().setCustomId(`troster_cancel:${wizard.ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary));
+    await interaction.editReply({ content: ['Some details need fixing:', ...checked.errors.map((error) => `• ${error}`), '', 'Your answers are kept.'].join('\n'), embeds: [], components: [new ActionRowBuilder().addComponents(buttons)] });
+    return;
+  }
+  wizard.player = { ...checked.player, fromFaceit: Boolean(draft.fromFaceit) };
+  await rosterWizardNext(interaction, wizard, ticket, { update: false });
+}
+
+function wizardKey(ticketId, userId) {
+  return `${ticketId}:${userId}`;
+}
+
+function rosterWizardFor(ticketId, userId, { create = false } = {}) {
+  const key = wizardKey(ticketId, userId);
+  const now = Date.now();
+  for (const [entryKey, entry] of rosterWizards) if (now - entry.startedAt > ROSTER_WIZARD_MS) rosterWizards.delete(entryKey);
+  if (!rosterWizards.has(key) && create) rosterWizards.set(key, { ticketId, userId, startedAt: now, change: {}, player: null });
+  return rosterWizards.get(key) || null;
+}
+
+function rosterConfirmView(wizard, plan) {
+  const lines = [plan.summary, plan.warning ? `\n⚠️ ${plan.warning}` : null];
+  if (wizard.player && wizard.change.kind !== 'promote') {
+    lines.push('', '**New player**', ...playerLines(wizard.player));
+    if (wizard.player.fromFaceit) lines.push('*IGN, SteamID64 and nationality are from their FACEIT profile.*');
+  }
+  return {
+    content: '',
+    embeds: [new EmbedBuilder().setTitle('Confirm roster change').setDescription(lines.filter((line) => line !== null).join('\n').slice(0, 4000)).setColor(plan.warning ? 0xf1c40f : 0x5865f2)],
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`troster_confirm:${wizard.ticketId}`).setLabel('Confirm').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`troster_cancel:${wizard.ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+    )]
+  };
+}
+
+// Shows the next step of the wizard: the player form, a swap pick, or the confirm view.
+async function rosterWizardNext(interaction, wizard, ticket, { update = true } = {}) {
+  const respond = (payload) => (update && interaction.isMessageComponent?.() ? interaction.update(payload) : interaction.editReply(payload));
+  const fresh = await freshRosterTeam(ticket);
+  if (fresh.error) return respond({ content: fresh.error, embeds: [], components: [] });
+  if (wizard.needsPlayer && !wizard.player) {
+    return respond({
+      content: 'Fill in the new player. Paste their FACEIT link and the bot fills in their IGN, SteamID64 and nationality.',
+      embeds: [],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`troster_formA_open:${wizard.ticketId}`).setLabel('Fill in the new player').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`troster_cancel:${wizard.ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+      )]
+    });
+  }
+  const plan = planRosterOps(fresh.team, { ...wizard.change, player: wizard.change.kind === 'promote' ? null : wizard.player });
+  if (!plan.ok && plan.needsSwap) {
+    const starters = rosterSlots(fresh.team).filter((slot) => isStarterSlot(slot.label) && slotTaken(slot));
+    return respond({
+      content: plan.error,
+      embeds: [],
+      components: [
+        new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`troster_swap:${wizard.ticketId}`).setPlaceholder('Starter who moves to sub…')
+          .addOptions(starters.map((slot) => ({ label: slotText(slot).slice(0, 100), value: slot.label })))),
+        new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`troster_cancel:${wizard.ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary))
+      ]
+    });
+  }
+  if (!plan.ok) return respond({ content: `⚠️ ${plan.error}`, embeds: [], components: [] });
+  wizard.team = fresh.team;
+  return respond(rosterConfirmView(wizard, plan));
+}
+
+async function handleTicketRoster(interaction) {
+  const [kind, ticketId, extra] = interaction.customId.split(':');
+  const ticket = await getTicket(ticketId);
+  if (!ticket || ticket.status !== 'open' || ticket.topic !== 'roster') {
+    await interaction.reply({ content: 'This ticket is closed.', ephemeral: true });
+    return;
+  }
+  if (interaction.user.id !== ticket.openerId && !isTicketStaff(interaction.member)) {
+    await interaction.reply({ content: 'Only the captain who opened this ticket (or staff) can change the roster here.', ephemeral: true });
+    return;
+  }
+
+  if (kind === 'troster_reload') {
+    await interaction.deferUpdate();
+    const fresh = await freshRosterTeam(ticket);
+    if (!fresh.error) await interaction.message.edit(rosterPanelPayload(ticket, fresh.team)).catch(() => null);
+    else await interaction.followUp({ content: fresh.error, ephemeral: true });
+    return;
+  }
+  if (kind === 'troster_pick') {
+    const wizard = rosterWizardFor(ticketId, interaction.user.id, { create: true });
+    wizard.change = { slotLabel: interaction.values?.[0] };
+    wizard.player = null;
+    const fresh = await freshRosterTeam(ticket);
+    const slot = fresh.team ? rosterSlots(fresh.team).find((entry) => entry.label === wizard.change.slotLabel) : null;
+    if (!slot || !slotTaken(slot)) {
+      await interaction.reply({ content: fresh.error || 'That player is not on the sheet any more. Press Reload roster.', ephemeral: true });
+      return;
+    }
+    const buttons = [new ButtonBuilder().setCustomId(`troster_kind:${ticketId}:remove`).setLabel('Remove from team').setStyle(ButtonStyle.Danger)];
+    if (isStarterSlot(slot.label)) buttons.push(new ButtonBuilder().setCustomId(`troster_kind:${ticketId}:sub`).setLabel('Move to sub').setStyle(ButtonStyle.Primary));
+    else buttons.push(new ButtonBuilder().setCustomId(`troster_kind:${ticketId}:promote`).setLabel('Promote to starter').setStyle(ButtonStyle.Primary));
+    buttons.push(new ButtonBuilder().setCustomId(`troster_cancel:${ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary));
+    await interaction.reply({ content: `**${slotText(slot)}**: what happens to them?`, components: [new ActionRowBuilder().addComponents(buttons)], ephemeral: true });
+    return;
+  }
+  if (kind === 'troster_add') {
+    const wizard = rosterWizardFor(ticketId, interaction.user.id, { create: true });
+    wizard.change = { kind: 'add' };
+    wizard.player = null;
+    await interaction.reply({
+      content: 'Is the new player joining as a starter or a sub?',
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`troster_join:${ticketId}:starter`).setLabel('Starter').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`troster_join:${ticketId}:sub`).setLabel('Sub').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`troster_cancel:${ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+      )],
+      ephemeral: true
+    });
+    return;
+  }
+
+  const wizard = rosterWizardFor(ticketId, interaction.user.id);
+  if (!wizard) {
+    const content = 'This step timed out. Start again from the roster in this ticket.';
+    if (interaction.isMessageComponent()) await interaction.update({ content, embeds: [], components: [] });
     else await interaction.reply({ content, ephemeral: true });
     return;
   }
-  if (interaction.user.id !== draft.userId) {
-    await interaction.reply({ content: 'Only the person who ran `/roster-change` can use this.', ephemeral: true });
-    return;
-  }
 
-  if (kind === 'roster_fix') {
-    await interaction.showModal(rosterModal(draft));
-    return;
-  }
-
-  if (kind === 'roster_modal') {
-    const checked = validateNewPlayer({
-      ...draft.player,
-      alias: interaction.fields.getTextInputValue('alias'),
-      fullName: interaction.fields.getTextInputValue('fullName'),
-      faceit: interaction.fields.getTextInputValue('faceit'),
-      hltv: interaction.fields.getTextInputValue('hltv'),
-      steamId: interaction.fields.getTextInputValue('steamId')
-    });
-    draft.player = checked.player;
-    if (!checked.ok) {
-      const payload = {
-        content: ['Some details need fixing:', ...checked.errors.map((error) => `• ${error}`), '', 'Press **Fix it**. Your answers are kept.'].join('\n'),
-        embeds: [],
-        components: [new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`roster_fix:${draft.id}`).setLabel('Fix it').setStyle(ButtonStyle.Primary),
-          new ButtonBuilder().setCustomId(`roster_cancel:${draft.id}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
-        )]
-      };
-      if (interaction.isFromMessage?.()) await interaction.update(payload);
-      else await interaction.reply({ ...payload, ephemeral: true });
-      return;
-    }
-    if (interaction.isFromMessage?.()) await interaction.deferUpdate();
-    else await interaction.deferReply({ ephemeral: true });
-    const found = await resolveRosterTeam(draft);
-    if (found.error) {
-      rosterDrafts.delete(draft.id);
-      await interaction.editReply({ content: found.error, embeds: [], components: [] });
-      return;
-    }
-    draft.team = found.team;
-    if (!rosterSlots(draft.team).length) {
-      rosterDrafts.delete(draft.id);
-      await interaction.editReply({ content: `**${draft.team.teamName}** has no Starter/Sub rows on the sheet. Open a ticket so an admin can check it.`, embeds: [], components: [] });
-      return;
-    }
-    await interaction.editReply(rosterPickPayload(draft));
-    return;
-  }
-
-  if (kind === 'roster_pick') {
-    draft.targetLabel = interaction.values?.[0];
-    const slot = rosterSlots(draft.team).find((entry) => entry.label === draft.targetLabel);
-    if (!slot) {
-      await interaction.update(rosterPickPayload(draft));
-      return;
-    }
-    if (!slotTaken(slot)) {
-      draft.action = 'open';
-      draft.plan = planRosterChange(draft.team, slot.label, 'open', draft.player.alias);
-      await interaction.update(rosterConfirmPayload(draft, draft.plan));
-      return;
-    }
-    const buttons = [new ButtonBuilder().setCustomId(`roster_action:${draft.id}:remove`).setLabel('Remove from team').setStyle(ButtonStyle.Danger)];
-    if (isStarterSlot(slot.label)) buttons.push(new ButtonBuilder().setCustomId(`roster_action:${draft.id}:sub`).setLabel('Move to sub').setStyle(ButtonStyle.Primary));
-    buttons.push(new ButtonBuilder().setCustomId(`roster_cancel:${draft.id}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary));
-    const pick = rosterPickPayload(draft);
-    pick.embeds[0].setDescription(['**New player**', ...playerLines(draft.player), '', `Picked: **${slotText(slot)}**. What happens to them?`].join('\n'));
-    await interaction.update({ ...pick, components: [pick.components[0], new ActionRowBuilder().addComponents(buttons)] });
-    return;
-  }
-
-  if (kind === 'roster_action') {
-    const plan = planRosterChange(draft.team, draft.targetLabel, extra, draft.player.alias);
-    if (!plan.ok) {
-      await interaction.update({ ...rosterPickPayload(draft), content: `⚠️ ${plan.error}` });
-      return;
-    }
-    draft.action = extra;
-    draft.plan = plan;
-    await interaction.update(rosterConfirmPayload(draft, plan));
-    return;
-  }
-
-  if (kind === 'roster_cancel') {
-    rosterDrafts.delete(draft.id);
+  if (kind === 'troster_cancel') {
+    rosterWizards.delete(wizardKey(ticketId, interaction.user.id));
     await interaction.update({ content: 'Cancelled. Nothing was changed.', embeds: [], components: [] });
     return;
   }
-
-  if (kind === 'roster_confirm') {
-    const plan = draft.plan;
-    if (!plan?.ok) {
-      await interaction.update(rosterPickPayload(draft));
+  if (kind === 'troster_join') {
+    wizard.change.joinAs = extra === 'sub' ? 'sub' : 'starter';
+    wizard.needsPlayer = true;
+    await rosterWizardNext(interaction, wizard, ticket);
+    return;
+  }
+  if (kind === 'troster_kind') {
+    wizard.change.kind = extra;
+    if (extra === 'promote') {
+      wizard.needsPlayer = false;
+      await rosterWizardNext(interaction, wizard, ticket);
       return;
     }
+    await interaction.update({
+      content: extra === 'remove' ? 'Add a new player in their slot?' : 'Add a new player in their starter slot?',
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`troster_replace:${ticketId}:yes`).setLabel('Yes, add a player').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`troster_replace:${ticketId}:no`).setLabel('No, just this change').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`troster_cancel:${ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+      )]
+    });
+    return;
+  }
+  if (kind === 'troster_replace') {
+    wizard.needsPlayer = extra === 'yes';
+    await rosterWizardNext(interaction, wizard, ticket);
+    return;
+  }
+  if (kind === 'troster_swap') {
+    wizard.change.swapLabel = interaction.values?.[0];
+    await rosterWizardNext(interaction, wizard, ticket);
+    return;
+  }
+  if (kind === 'troster_formA_open') {
+    await interaction.showModal(rosterPlayerModalA(wizard));
+    return;
+  }
+  if (kind === 'troster_formB_open') {
+    await interaction.showModal(rosterPlayerModalB(wizard));
+    return;
+  }
+  if (kind === 'troster_formA') {
+    await interaction.deferUpdate();
+    const pickedUser = (() => {
+      try {
+        return interaction.fields.getSelectedUsers('discordUser')?.first() || null;
+      } catch {
+        return null;
+      }
+    })();
+    const faceitInput = interaction.fields.getTextInputValue('faceit').trim();
+    const draft = {
+      ...(wizard.draft || {}),
+      faceitInput,
+      fullName: interaction.fields.getTextInputValue('fullName'),
+      hltv: interaction.fields.getTextInputValue('hltv'),
+      twitterInput: interaction.fields.getTextInputValue('twitter') || '',
+      pickedId: pickedUser?.id || null,
+      pickedName: pickedUser?.username || null
+    };
+    wizard.draft = draft;
+    const fixButtons = () => new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`troster_formA_open:${ticketId}`).setLabel('Fix the details').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`troster_cancel:${ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+    );
+    const nickname = faceitNicknameFromUrl(faceitInput);
+    if (!nickname) {
+      await interaction.editReply({ content: 'That FACEIT link isn\'t a player profile. It should look like `https://www.faceit.com/en/players/<name>`.', embeds: [], components: [fixButtons()] });
+      return;
+    }
+    let found;
+    let faceitDown = false;
+    try {
+      found = faceit && config.faceitApiKey ? playerFromFaceit(await faceit.getPlayerByNickname(nickname)) : null;
+      if (!faceit || !config.faceitApiKey) faceitDown = true;
+    } catch {
+      faceitDown = true;
+    }
+    if (!found && !faceitDown) {
+      await interaction.editReply({ content: `There's no FACEIT player called **${nickname}**. Check the link (open it in a browser to be sure).`, embeds: [], components: [fixButtons()] });
+      return;
+    }
+    if (found) Object.assign(draft, { alias: found.alias, steamId: found.steamId || draft.steamId || '', nationality: found.nationality || draft.nationality || '', faceit: found.faceit, fromFaceit: true });
+    else Object.assign(draft, { faceit: faceitInput, fromFaceit: false });
+    wizard.pageTwo = { discordId: !draft.pickedId, manual: faceitDown, steamId: Boolean(found) && !found.steamId };
+    if (Object.values(wizard.pageTwo).some(Boolean)) {
+      const why = [
+        found ? `Found **${found.alias}** on FACEIT${found.nationality ? ` (${found.nationality})` : ''}.` : "Couldn't reach FACEIT, so type their IGN, SteamID64 and nationality.",
+        wizard.pageTwo.steamId ? 'Their FACEIT has no Steam account linked, so type their SteamID64.' : null,
+        wizard.pageTwo.discordId ? "They weren't picked from this server, so type their Discord ID." : null
+      ].filter(Boolean).join('\n');
+      await interaction.editReply({
+        content: why,
+        embeds: [],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`troster_formB_open:${ticketId}`).setLabel('Next').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId(`troster_cancel:${ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+        )]
+      });
+      return;
+    }
+    await finishRosterPlayer(interaction, wizard, ticket);
+    return;
+  }
+  if (kind === 'troster_formB') {
+    await interaction.deferUpdate();
+    const value = (id) => {
+      try {
+        return interaction.fields.getTextInputValue(id) || '';
+      } catch {
+        return null;
+      }
+    };
+    const draft = wizard.draft || {};
+    for (const [field, id] of [['typedDiscordId', 'discordIdTyped'], ['alias', 'alias'], ['nationality', 'nationality'], ['steamId', 'steamId']]) {
+      const typed = value(id);
+      if (typed !== null) draft[field] = typed;
+    }
+    wizard.draft = draft;
+    await finishRosterPlayer(interaction, wizard, ticket);
+    return;
+  }
+  if (kind === 'troster_confirm') {
     await interaction.update({ content: 'Saving to the roster sheet…', embeds: [], components: [] });
-    const sheetUpdated = !plan.subsFull;
-    if (sheetUpdated) {
-      const written = await scheduleSheet.writeRosterChange({
+    const fresh = await freshRosterTeam(ticket);
+    if (fresh.error) {
+      await interaction.editReply({ content: fresh.error });
+      return;
+    }
+    const player = wizard.change.kind === 'promote' ? null : wizard.player;
+    const plan = planRosterOps(fresh.team, { ...wizard.change, player });
+    const removedSlot = wizard.change.kind === 'remove' ? rosterSlots(fresh.team).find((slot) => slot.label === wizard.change.slotLabel) || null : null;
+    if (!plan.ok) {
+      await interaction.editReply({ content: `⚠️ ${plan.error} Start again from the roster.` });
+      return;
+    }
+    if (plan.sheetChange) {
+      const written = await scheduleSheet.applyRosterOps({
         spreadsheetId: config.rosterSpreadsheetId,
         sheetName: config.rosterSheetName,
-        teamName: draft.team.teamName,
-        headerRow: draft.team.headerRow,
-        targetRow: plan.target.row,
-        expectedAlias: plan.target.alias || '',
-        mode: plan.action === 'sub' ? 'sub' : 'replace',
-        player: draft.player,
+        teamName: fresh.team.teamName,
+        headerRow: fresh.team.headerRow,
+        expect: plan.expect,
+        ops: plan.ops,
         linkLabel: config.rosterLinkLabel,
-        logLine: changeLogLine(draft.team.teamName, plan, draft.player)
+        logLine: plan.logLine
       });
       if (!written.ok) {
-        await appendAuditLog({ type: 'roster_change_failed', actorId: draft.userId, team: draft.team.teamName, error: written.error }).catch(() => null);
-        await interaction.editReply({
-          ...rosterConfirmPayload(draft, plan),
-          content: `❌ The roster sheet couldn't be updated: ${written.error}\nNothing was sent to the admins. Press Confirm to try again, or Cancel.`
-        });
+        await appendAuditLog({ type: 'roster_change_failed', ticketId, actorId: interaction.user.id, error: written.error }).catch(() => null);
+        await interaction.editReply({ ...rosterConfirmView(wizard, plan), content: `❌ The roster sheet couldn't be updated: ${written.error}\nNothing was sent to the admins. Press Confirm to try again, or Cancel.` });
         return;
       }
     }
-    rosterDrafts.delete(draft.id);
-    const post = buildRosterChangePost({
-      teamName: draft.team.teamName,
-      group: await rosterTeamGroup(draft.team),
-      requesterId: draft.userId,
-      player: draft.player,
-      plan,
-      sheetUpdated
-    });
-    const channel = config.rosterChangeChannelId ? await client.channels.fetch(config.rosterChangeChannelId).catch(() => null) : null;
+    rosterWizards.delete(wizardKey(ticketId, interaction.user.id));
+    // Discord roles only follow a change that was written to the sheet.
+    const roleLines = plan.sheetChange
+      ? await applyRosterRoles({ guild: interaction.guild, team: fresh.team, player, removedSlot }).catch((error) => [`⚠️ Roles not changed: ${error.message || error}`])
+      : [];
+    const post = buildRosterChangePost({ teamName: fresh.team.teamName, group: ticket.group, requesterId: interaction.user.id, plan, player, ticketChannelId: ticket.channelId, roles: roleLines });
+    const embed = () => new EmbedBuilder().setTitle(post.title).setDescription(post.description).addFields(post.fields).setColor(plan.sheetChange ? 0x5865f2 : 0xf1c40f);
+    const ticketChannel = await client.channels.fetch(ticket.channelId).catch(() => null);
+    await ticketChannel?.send?.({ embeds: [embed()] }).catch(() => null);
+    const adminChannel = config.rosterChangeChannelId ? await client.channels.fetch(config.rosterChangeChannelId).catch(() => null) : null;
     const pings = config.rosterChangePingRoleIds.map((roleId) => `<@&${roleId}>`).join(' ');
-    const message = channel?.isTextBased?.()
-      ? await channel.send({
+    const adminPost = adminChannel?.isTextBased?.()
+      ? await adminChannel.send({
         content: pings || undefined,
-        embeds: [new EmbedBuilder().setTitle(post.title).setDescription(post.description).addFields(post.fields).setColor(sheetUpdated ? 0x5865f2 : 0xf1c40f)],
+        embeds: [embed()],
         components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('roster_done').setLabel('Done on FACEIT').setStyle(ButtonStyle.Success))],
         allowedMentions: { parse: [], roles: config.rosterChangePingRoleIds }
-      }).catch((error) => {
-        console.error(`[Roster] could not post the roster change: ${error.message || error}`);
-        return null;
-      })
+      }).catch(() => null)
       : null;
-    await appendAuditLog({ type: 'roster_change', actorId: draft.userId, team: draft.team.teamName, action: plan.action, slot: plan.target.label, added: draft.player.alias, sheetUpdated, posted: Boolean(message) }).catch(() => null);
-    const sheetLine = sheetUpdated ? '✅ The roster sheet is updated.' : '⚠️ Both sub slots are full, so the sheet was left for an admin to sort out.';
-    const adminLine = message ? `Admins were told in <#${config.rosterChangeChannelId}> to update FACEIT.` : '⚠️ The admin post failed, so please tell an admin about this change.';
-    await interaction.editReply({ content: `${sheetLine}\n${plan.summary}\n${adminLine}`, embeds: [], components: [] });
+    // The roster list in the ticket shows the new roster.
+    const reloaded = await freshRosterTeam(ticket);
+    if (reloaded.team && ticketChannel) {
+      const panel = (await ticketChannel.messages.fetch({ limit: 20 }).catch(() => null))?.find((message) => message.author.id === client.user.id && message.embeds?.[0]?.title?.endsWith(' roster'));
+      if (panel) await panel.edit(rosterPanelPayload(ticket, reloaded.team)).catch(() => null);
+    }
+    await appendAuditLog({ type: 'roster_change', ticketId, actorId: interaction.user.id, team: fresh.team.teamName, kind: wizard.change.kind, summary: plan.summary, sheetChange: plan.sheetChange, posted: Boolean(adminPost) }).catch(() => null);
+    await interaction.editReply({
+      content: [
+        plan.sheetChange ? '✅ The roster sheet is updated.' : '⚠️ The sheet was left for an admin to sort out.',
+        plan.summary,
+        adminPost ? `Admins were told in <#${config.rosterChangeChannelId}> to update FACEIT.` : '⚠️ The admin post failed, so tell the staff in this ticket.',
+        ...roleLines
+      ].join('\n')
+    });
+  }
+}
+
+// Claim / Reassign / Priority / Close on a ticket header (staff only).
+async function handleTicketControl(interaction) {
+  const [kind, ticketId] = interaction.customId.split(':');
+  const ticket = await getTicket(ticketId);
+  if (!ticket || ticket.status !== 'open') {
+    await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true });
+    return;
+  }
+  if (!isTicketStaff(interaction.member)) {
+    await interaction.reply({ content: 'Only staff can do that.', ephemeral: true });
+    return;
+  }
+  const channel = interaction.channel;
+  if (kind === 'ticket_claim') {
+    const saved = await saveTicket(ticketId, { claimedBy: interaction.user.id, claimedTag: interaction.user.username, claimedAt: new Date().toISOString() });
+    await interaction.update(ticketHeaderPayload(saved));
+    await channel.send({ content: `🙋 <@${ticket.openerId}>, <@${interaction.user.id}> is handling your ticket.`, allowedMentions: { users: [ticket.openerId] } }).catch(() => null);
+    await appendAuditLog({ type: 'ticket_claimed', ticketId, actorId: interaction.user.id }).catch(() => null);
+    return;
+  }
+  if (kind === 'ticket_reassign') {
+    await interaction.reply({
+      content: 'Who should handle this ticket?',
+      components: [new ActionRowBuilder().addComponents(new UserSelectMenuBuilder().setCustomId(`ticket_assign:${ticketId}`).setMinValues(1).setMaxValues(1))],
+      ephemeral: true
+    });
+    return;
+  }
+  if (kind === 'ticket_assign') {
+    const userId = interaction.values?.[0];
+    const user = userId ? await client.users.fetch(userId).catch(() => null) : null;
+    const saved = await saveTicket(ticketId, { claimedBy: userId, claimedTag: user?.username || userId, claimedAt: new Date().toISOString() });
+    await interaction.update({ content: `Reassigned to <@${userId}>.`, components: [] });
+    await refreshTicketHeader(saved);
+    await channel.send({ content: `🔁 <@${userId}> is now handling this ticket.`, allowedMentions: { users: [userId] } }).catch(() => null);
+    await appendAuditLog({ type: 'ticket_reassigned', ticketId, actorId: interaction.user.id, to: userId }).catch(() => null);
+    return;
+  }
+  if (kind === 'ticket_priority') {
+    const value = interaction.values?.[0];
+    if (!PRIORITIES[value]) {
+      await interaction.reply({ content: 'Pick a priority from the list.', ephemeral: true });
+      return;
+    }
+    const saved = await saveTicket(ticketId, { priority: value, priorityOverride: true, priorityReason: `Set by ${interaction.user.username}` });
+    await interaction.update(ticketHeaderPayload(saved));
+    await channel.send({ content: `Priority set to **${priorityText(value)}** by <@${interaction.user.id}>.`, allowedMentions: { parse: [] } }).catch(() => null);
+    await appendAuditLog({ type: 'ticket_priority', ticketId, actorId: interaction.user.id, priority: value }).catch(() => null);
+    return;
+  }
+  if (kind === 'ticket_close') {
+    const reason = new TextInputBuilder().setCustomId('reason').setStyle(TextInputStyle.Paragraph).setRequired(false).setMaxLength(500).setPlaceholder('Optional: how it was solved');
+    await interaction.showModal(new ModalBuilder().setCustomId(`ticket_close_submit:${ticketId}`).setTitle(`Close ticket ${ticketNumberText(ticket.number)}`)
+      .addLabelComponents(new LabelBuilder().setLabel('Reason (goes in the transcript)').setTextInputComponent(reason)));
+  }
+}
+
+// Every message in the channel, oldest first, for the transcript.
+async function ticketMessages(channel) {
+  const all = [];
+  let before;
+  for (let page = 0; page < 30; page++) {
+    const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) }).catch(() => null);
+    if (!batch?.size) break;
+    all.push(...batch.values());
+    before = batch.last().id;
+    if (batch.size < 100) break;
+  }
+  return all.map((message) => ({
+    createdAt: message.createdTimestamp,
+    author: message.author?.username || 'unknown',
+    content: message.content || '',
+    attachments: [...message.attachments.values()].map((file) => file.url),
+    embeds: message.embeds.map((embed) => [embed.title, embed.description].filter(Boolean).join(' — ').slice(0, 500))
+  }));
+}
+
+async function handleTicketClose(interaction) {
+  const ticketId = interaction.customId.slice('ticket_close_submit:'.length);
+  const ticket = await getTicket(ticketId);
+  if (!ticket || ticket.status !== 'open') {
+    await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true });
+    return;
+  }
+  if (!isTicketStaff(interaction.member)) {
+    await interaction.reply({ content: 'Only staff can close tickets.', ephemeral: true });
+    return;
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const reason = interaction.fields.getTextInputValue('reason')?.trim() || null;
+  const channel = interaction.channel;
+  const now = Date.now();
+  const transcript = buildTranscript(ticket, await ticketMessages(channel), { closedBy: interaction.user.username, reason, nowMs: now });
+  const receipts = config.ticketReceiptsChannelId ? await client.channels.fetch(config.ticketReceiptsChannelId).catch(() => null) : null;
+  const closed = { ...ticket, status: 'closed', closedBy: interaction.user.id, closedAt: new Date(now).toISOString(), closeReason: reason };
+  const header = buildTicketHeader(closed);
+  const sent = receipts?.isTextBased?.()
+    ? await receipts.send({
+      embeds: [new EmbedBuilder().setTitle(header.title).setDescription(`Closed by <@${interaction.user.id}>.`).addFields(header.fields).setColor(0x95a5a6)],
+      files: [{ attachment: Buffer.from(transcript, 'utf8'), name: `ticket-${ticket.id}.txt` }],
+      allowedMentions: { parse: [] }
+    }).catch((error) => {
+      console.error(`[Tickets] transcript for ${ticket.id} not posted: ${error.message || error}`);
+      return null;
+    })
+    : null;
+  if (!sent) {
+    await interaction.editReply("⚠️ The transcript couldn't be posted to Support Receipts, so the ticket was left open. Check the bot can post files there, then close again.");
+    return;
+  }
+  await saveTicket(ticketId, { status: 'closed', closedBy: interaction.user.id, closedAt: closed.closedAt, closeReason: reason, transcriptMessageId: sent.id });
+  await appendAuditLog({ type: 'ticket_closed', ticketId, actorId: interaction.user.id, reason }).catch(() => null);
+  await interaction.editReply('Transcript saved to Support Receipts. Deleting this channel in 5 seconds.');
+  await channel.send({ content: `🔒 Ticket closed by <@${interaction.user.id}>${reason ? `: ${reason}` : ''}. This channel will be deleted in 5 seconds.`, allowedMentions: { parse: [] } }).catch(() => null);
+  setTimeout(() => {
+    channel.delete(`Ticket ${ticketNumberText(ticket.number)} closed`).catch((error) => console.error(`[Tickets] could not delete ${channel.id}: ${error.message || error}`));
+  }, 5000);
+}
+
+// Every 10 minutes: re-read each open roster ticket's next match (every 30 minutes per ticket) and
+// bump it to priority when the match is now within 24 hours (unless staff set the priority).
+let lastTicketPriorityCheckAt = 0;
+async function syncTicketPriorities(now = Date.now()) {
+  if (now - lastTicketPriorityCheckAt < 10 * 60 * 1000) return;
+  lastTicketPriorityCheckAt = now;
+  for (const ticket of await listTickets({ status: 'open' })) {
+    if (ticket.topic !== 'roster' || ticket.priorityOverride) continue;
+    let current = ticket;
+    if (now - (Date.parse(ticket.nextMatchCheckedAt || '') || 0) >= 30 * 60 * 1000) {
+      const next = await nextTeamMatch({ teamName: ticket.teamName, faceitUrl: ticket.teamFaceitUrl }, now);
+      current = await saveTicket(ticket.id, {
+        nextMatchCheckedAt: new Date(now).toISOString(),
+        ...(next.ok ? { nextMatchIso: next.startMs ? new Date(next.startMs).toISOString() : null, needsVerify: false } : {})
+      }) || ticket;
+    }
+    if (!shouldBumpRoster(current, now)) continue;
+    const saved = await saveTicket(ticket.id, { priority: 'priority', priorityReason: 'Next match within 24 hours (bumped)' });
+    const channel = await refreshTicketHeader(saved);
+    const startSec = Math.floor(Date.parse(saved.nextMatchIso) / 1000);
+    await channel?.send?.({ content: `⏫ Bumped to **${priorityText('priority')}**: ${saved.teamName}'s next match is <t:${startSec}:R>.`, allowedMentions: { parse: [] } }).catch(() => null);
+    await appendAuditLog({ type: 'ticket_bumped', ticketId: ticket.id, nextMatchIso: saved.nextMatchIso }).catch(() => null);
   }
 }
 
 // "Done on FACEIT" on the admin post: staff only; marks who did it and when, then disables the button.
 async function handleRosterDone(interaction) {
-  if (!isAdminStaff(interaction.member) && !canManageStreamRequests(interaction.member)) {
+  if (!isTicketStaff(interaction.member)) {
     await interaction.reply({ content: 'Only admins can mark a roster change done.', ephemeral: true });
     return;
   }
@@ -8361,6 +9075,7 @@ async function runStreamOperationsTick(now = Date.now()) {
   await fillSeasonMatchStats().catch((error) => console.error('Season match stats fill failed:', error.message || error));
   await syncSheetResultsAndStats(now).catch((error) => console.error('Sheet results/stats sync failed:', error));
   await postNewCasterApplications(now).catch((error) => console.error('Caster applications failed:', error));
+  await syncTicketPriorities(now).catch((error) => console.error('Ticket priorities failed:', error));
   await syncCrewAvailability(now).catch((error) => console.error('Crew availability sync failed:', error));
   await sendCrewAvailabilityReminders(now).catch((error) => console.error('Crew availability reminders failed:', error));
   const active = (await listStreamRequests()).filter((request) =>

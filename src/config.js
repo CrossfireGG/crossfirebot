@@ -233,6 +233,12 @@ export function getConfig() {
     // Twitter, FACEIT and HLTV are written as hyperlinks showing this text (the tab uses "…").
     rosterLinkLabel: process.env.ROSTER_LINK_LABEL || '…',
     rosterChangePingRoleIds: parseCsvValue(process.env.ROSTER_CHANGE_PING_ROLE_IDS || process.env.ADMIN_ALERT_ROLE_IDS || ''),
+    // Support tickets: each ticket's transcript goes to Support Receipts when it closes. Ticket
+    // channels are created in TICKET_CATEGORY_ID, or the category of the channel with the panel.
+    ticketReceiptsChannelId: process.env.TICKET_RECEIPTS_CHANNEL_ID || '1418723351073132594',
+    ticketCategoryId: process.env.TICKET_CATEGORY_ID || null,
+    // While testing, only staff can open tickets from the panel. Set TICKETS_STAFF_ONLY=false to open it to everyone.
+    ticketsStaffOnly: process.env.TICKETS_STAFF_ONLY !== 'false',
     casterApplicationChannelId: process.env.CASTER_APPLICATION_CHANNEL_ID || '1558684878743150693',
     casterApplicationPingIds: parseCsvValue(process.env.CASTER_APPLICATION_PING_IDS || '206446410042834945'),
     casterApplicationSheetUrl: process.env.CASTER_APPLICATION_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1rQGdrdrrbh94ZR_EL12uCqcQwHR6A4VR9SBDbjXGJZY/edit?gid=37125937#gid=37125937',

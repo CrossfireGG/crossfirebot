@@ -37,6 +37,17 @@ export class FaceitClient {
     return normalizeMatch(raw, source || sourceForMatch(raw, this.sources) || raw.source || { type: 'match', id: matchId, name: '' });
   }
 
+  // A FACEIT player by their account nickname (the one in their profile link). null when FACEIT has
+  // no such player; throws when FACEIT can't be reached.
+  async getPlayerByNickname(nickname) {
+    try {
+      return await this.request(`/players?nickname=${encodeURIComponent(nickname)}`);
+    } catch (error) {
+      if (/^FACEIT 404:/.test(String(error?.message || ''))) return null;
+      throw error;
+    }
+  }
+
   // The map veto of a match: every ban and pick and which faction made it, from FACEIT's public
   // veto history (what the match room shows; the Data API only has the final picks). Raw payload
   // ({ tickets: [...] }), or null when FACEIT has none for the match.

@@ -1,4 +1,4 @@
-// Roster changes (/roster-change): a captain adds a player to their team on the "Roster Tracking"
+// Roster changes (Roster Change tickets): a captain changes their team on the "Roster Tracking"
 // tab of the Crossfire Player Tracking sheet, removing a player or moving one to a sub slot, and the
 // admins are told to update FACEIT. Pure functions; index.js runs the Discord flow and the sheet calls.
 
@@ -83,47 +83,6 @@ export function validateNewPlayer(input = {}) {
   return { ok: errors.length === 0, errors, player };
 }
 
-// What the change does to the sheet. action: 'remove' (new player replaces them), 'sub' (they move
-// to a sub slot, new player takes theirs) or 'open' (new player goes into an empty slot).
-// Returns { target, action, subSlot, subsFull, summary, warning }.
-export function planRosterChange(team, targetLabel, action, newAlias = 'the new player') {
-  const slots = rosterSlots(team);
-  const target = slots.find((slot) => slot.label.toLowerCase() === String(targetLabel || '').toLowerCase()) || null;
-  if (!target) return { ok: false, error: 'That roster slot is not on the sheet any more. Run /roster-change again.' };
-  const who = (slot) => clean(slot.alias) || clean(slot.fullName);
-  if (action === 'open') {
-    if (slotTaken(target)) return { ok: false, error: `${target.label} is not empty any more.` };
-    return { ok: true, target, action, subSlot: null, subsFull: false, summary: `Adding **${newAlias}** in the open ${target.label} slot.`, warning: null };
-  }
-  if (!slotTaken(target)) return { ok: false, error: `${target.label} is empty, so there is nobody to remove or move.` };
-  if (action === 'remove') {
-    return { ok: true, target, action, subSlot: null, subsFull: false, summary: `Adding **${newAlias}** as ${target.label}, removing **${who(target)}** from the team.`, warning: null };
-  }
-  if (action === 'sub') {
-    if (!isStarterSlot(target.label)) return { ok: false, error: `${who(target)} is already a sub.` };
-    const subSlot = slots.find((slot) => isSubSlot(slot.label) && !slotTaken(slot)) || null;
-    return {
-      ok: true,
-      target,
-      action,
-      subSlot,
-      subsFull: !subSlot,
-      summary: `Adding **${newAlias}** as ${target.label}, moving **${who(target)}** to ${subSlot ? subSlot.label : 'sub'}.`,
-      warning: subSlot ? null : `Both sub slots are full. It will still be sent, but the sheet won't be changed: an admin will decide where ${who(target)} and ${newAlias} go.`
-    };
-  }
-  return { ok: false, error: 'Pick Remove from team or Move to sub.' };
-}
-
-// The line added to the sheet's CHANGES column, in the style staff already use there:
-// CLUB 333: -"calamity" +"zoro-"
-export function changeLogLine(teamName, plan, player) {
-  const out = clean(plan.target?.alias) || clean(plan.target?.fullName);
-  if (plan.action === 'remove') return `${teamName}: -"${out}" +"${player.alias}"`;
-  if (plan.action === 'sub') return `${teamName}: +"${player.alias}" ("${out}" to sub)`;
-  return `${teamName}: +"${player.alias}"`;
-}
-
 // The new player's details, one per line, for the confirm view and the admin post.
 export function playerLines(player) {
   return [
@@ -138,30 +97,179 @@ export function playerLines(player) {
   ].filter(Boolean);
 }
 
-// The post in the roster change channel. sheetUpdated=false when subs were full (nothing written).
-export function buildRosterChangePost({ teamName, group = null, requesterId, player, plan, sheetUpdated = true, nowMs = Date.now() }) {
-  const out = clean(plan.target?.alias) || clean(plan.target?.fullName);
-  const change = plan.action === 'remove'
-    ? `Removed: **${out}** (was ${plan.target.label})`
-    : plan.action === 'sub'
-      ? `Moved to sub: **${out}** (was ${plan.target.label}${plan.subSlot ? `, now ${plan.subSlot.label}` : ''})`
-      : `Nobody removed (added in the open ${plan.target.label} slot)`;
+// A roster change as sheet steps. change: { kind, slotLabel, swapLabel, player }
+//   kind 'add'     -> player joins in the first empty slot of change.joinAs ('starter' | 'sub')
+//   kind 'remove'  -> slotLabel's player leaves; player (optional) takes their slot
+//   kind 'sub'     -> slotLabel's starter moves to the first empty sub slot; player (optional) takes
+//                     their starter slot. Both subs full: still sent, sheet left for an admin.
+//   kind 'promote' -> slotLabel's sub moves to the first empty starter slot (player optional takes
+//                     the sub slot), or swaps with swapLabel's starter when no starter slot is free.
+// Returns { ok, error, needsSwap, ops, expect, summary, logLine, warning, sheetChange }.
+// ops: { op: 'write', row, player } | { op: 'clear', row } | { op: 'copy', from, to } | { op: 'swap', a, b }
+// expect: [{ row, alias }] — every row the change reads; the sheet refuses if any moved.
+export function planRosterOps(team, change = {}) {
+  const slots = rosterSlots(team);
+  const find = (label) => slots.find((slot) => slot.label.toLowerCase() === String(label || '').toLowerCase()) || null;
+  const firstEmpty = (kind) => slots.find((slot) => (kind === 'starter' ? isStarterSlot(slot.label) : isSubSlot(slot.label)) && !slotTaken(slot)) || null;
+  const who = (slot) => clean(slot.alias) || clean(slot.fullName);
+  const expect = (...rows) => rows.filter(Boolean).map((slot) => ({ row: slot.row, alias: slot.alias || '' }));
+  const player = change.player || null;
+  const teamName = team?.teamName || 'Team';
+
+  if (change.kind === 'add') {
+    const kind = change.joinAs === 'sub' ? 'sub' : 'starter';
+    const target = firstEmpty(kind);
+    if (!player) return { ok: false, error: 'Fill in the new player first.' };
+    if (!target) return { ok: false, error: `There's no open ${kind} slot. Pick a player to remove, move to sub or promote first.` };
+    return {
+      ok: true,
+      ops: [{ op: 'write', row: target.row, player }],
+      expect: expect(target),
+      summary: `Adding **${player.alias}** as ${target.label}.`,
+      logLine: `${teamName}: +"${player.alias}"`,
+      warning: null,
+      sheetChange: true,
+      newSlotLabel: target.label
+    };
+  }
+
+  const slot = find(change.slotLabel);
+  if (!slot || !slotTaken(slot)) return { ok: false, error: 'That player is not on the sheet any more. Pick again.' };
+  const out = who(slot);
+  const replacement = player ? `, adding **${player.alias}** as ${slot.label}` : '';
+  const replacementLog = player ? ` +"${player.alias}"` : '';
+
+  if (change.kind === 'remove') {
+    return {
+      ok: true,
+      ops: [player ? { op: 'write', row: slot.row, player } : { op: 'clear', row: slot.row }],
+      expect: expect(slot),
+      summary: `Removing **${out}** (${slot.label})${replacement}.`,
+      logLine: `${teamName}: -"${out}"${replacementLog}`,
+      warning: null,
+      sheetChange: true,
+      newSlotLabel: player ? slot.label : null
+    };
+  }
+
+  if (change.kind === 'sub') {
+    if (!isStarterSlot(slot.label)) return { ok: false, error: `${out} is already a sub.` };
+    const sub = firstEmpty('sub');
+    if (!sub) {
+      return {
+        ok: true,
+        ops: [],
+        expect: [],
+        summary: `Moving **${out}** to sub${replacement}.`,
+        logLine: null,
+        warning: `Both sub slots are full. It will still be sent, but the sheet won't be changed: an admin will decide where ${out}${player ? ` and ${player.alias}` : ''} go.`,
+        sheetChange: false,
+        newSlotLabel: null
+      };
+    }
+    return {
+      ok: true,
+      ops: [{ op: 'copy', from: slot.row, to: sub.row }, player ? { op: 'write', row: slot.row, player } : { op: 'clear', row: slot.row }],
+      expect: expect(slot, sub),
+      summary: `Moving **${out}** to ${sub.label}${replacement}.`,
+      logLine: `${teamName}: "${out}" to sub${replacementLog}`,
+      warning: null,
+      sheetChange: true,
+      newSlotLabel: player ? slot.label : null
+    };
+  }
+
+  if (change.kind === 'promote') {
+    if (!isSubSlot(slot.label)) return { ok: false, error: `${out} is already a starter.` };
+    const starter = firstEmpty('starter');
+    if (starter) {
+      const subReplacement = player ? `, adding **${player.alias}** as ${slot.label}` : '';
+      return {
+        ok: true,
+        ops: [{ op: 'copy', from: slot.row, to: starter.row }, player ? { op: 'write', row: slot.row, player } : { op: 'clear', row: slot.row }],
+        expect: expect(slot, starter),
+        summary: `Promoting **${out}** to ${starter.label}${subReplacement}.`,
+        logLine: `${teamName}: "${out}" to starter${replacementLog}`,
+        warning: null,
+        sheetChange: true,
+        newSlotLabel: player ? slot.label : null
+      };
+    }
+    const swap = find(change.swapLabel);
+    if (!swap || !isStarterSlot(swap.label) || !slotTaken(swap)) {
+      return { ok: false, needsSwap: true, error: 'All five starter slots are full. Pick the starter who moves to sub.' };
+    }
+    return {
+      ok: true,
+      ops: [{ op: 'swap', a: slot.row, b: swap.row }],
+      expect: expect(slot, swap),
+      summary: `Promoting **${out}** to ${swap.label}, moving **${who(swap)}** to ${slot.label}.`,
+      logLine: `${teamName}: "${out}" to starter, "${who(swap)}" to sub`,
+      warning: player ? `${player.alias} wasn't added: a swap doesn't free a slot. Add them as a separate change.` : null,
+      sheetChange: true,
+      newSlotLabel: null
+    };
+  }
+
+  return { ok: false, error: 'Pick what happens to the player.' };
+}
+
+// The post in the roster change channel (and the ticket): team, group, who asked, the change, the
+// new player, a link to the ticket. sheetChange=false when nothing could be written (subs full).
+export function buildRosterChangePost({ teamName, group = null, requesterId, plan, player = null, ticketChannelId = null, roles = [], nowMs = Date.now() }) {
   const description = [
     'Please update this roster on FACEIT.',
-    sheetUpdated ? null : `\n⚠️ Both sub slots are full, so the sheet was **not** changed. Decide where **${out}** and **${player.alias}** go, then update the sheet and FACEIT.`
+    plan.sheetChange ? null : `\n⚠️ ${plan.warning || 'The sheet was not changed.'}`
   ].filter(Boolean).join('\n');
+  const fields = [
+    { name: 'Team', value: teamName, inline: true },
+    { name: 'Group', value: group || 'Unknown', inline: true },
+    { name: 'Requested by', value: `<@${requesterId}>`, inline: true },
+    { name: 'Change', value: plan.summary.slice(0, 1024) }
+  ];
+  if (player) fields.push({ name: `Player added${plan.newSlotLabel ? ` (${plan.newSlotLabel})` : ''}`, value: playerLines(player).join('\n').slice(0, 1024) });
+  if (roles.length) fields.push({ name: 'Discord roles', value: roles.join('\n').slice(0, 1024) });
+  if (ticketChannelId) fields.push({ name: 'Ticket', value: `<#${ticketChannelId}>`, inline: true });
+  fields.push({ name: 'Submitted', value: `<t:${Math.floor(nowMs / 1000)}:f>`, inline: true });
+  fields.push({ name: 'Sheet', value: plan.sheetChange ? 'Updated' : 'Not changed (admin to decide)', inline: true });
+  return { title: `🔁 Roster change · ${teamName}`.slice(0, 256), description, fields };
+}
+
+// The account nickname in a FACEIT profile link: faceit.com/en/players/<nickname>[/...].
+export function faceitNicknameFromUrl(url) {
+  const match = String(url || '').trim().match(/faceit\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?players(?:-modal)?\/([^/?#\s]+)/i);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+// "us" -> "United States".
+export function countryName(code) {
+  const text = String(code || '').trim();
+  if (!text) return '';
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'region' }).of(text.toUpperCase()) || text.toUpperCase();
+  } catch {
+    return text.toUpperCase();
+  }
+}
+
+// What FACEIT knows about a player, for the new-player form: { alias, steamId, nationality, faceit }.
+// steamId is '' when their Steam account isn't linked on FACEIT.
+export function playerFromFaceit(apiPlayer) {
+  const nickname = String(apiPlayer?.nickname || '').trim();
+  if (!nickname) return null;
+  const steamId = [apiPlayer.steam_id_64, apiPlayer.games?.cs2?.game_player_id, apiPlayer.games?.csgo?.game_player_id]
+    .map((value) => String(value || ''))
+    .find((value) => /^7656119\d{10}$/.test(value)) || '';
   return {
-    title: `🔁 Roster change · ${teamName}`.slice(0, 256),
-    description,
-    fields: [
-      { name: 'Team', value: teamName, inline: true },
-      { name: 'Group', value: group || 'Unknown', inline: true },
-      { name: 'Requested by', value: `<@${requesterId}>`, inline: true },
-      { name: `Player added (${plan.target.label})`, value: playerLines(player).join('\n').slice(0, 1024) },
-      { name: plan.action === 'open' ? 'Player removed' : plan.action === 'sub' ? 'Player moved to sub' : 'Player removed', value: change.slice(0, 1024) },
-      { name: 'Submitted', value: `<t:${Math.floor(nowMs / 1000)}:f>`, inline: true },
-      { name: 'Sheet', value: sheetUpdated ? 'Updated' : 'Not changed (subs full)', inline: true }
-    ]
+    alias: nickname,
+    steamId,
+    nationality: countryName(apiPlayer.country),
+    faceit: `https://www.faceit.com/en/players/${encodeURIComponent(nickname)}`
   };
 }
 

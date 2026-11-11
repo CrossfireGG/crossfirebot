@@ -42,7 +42,8 @@ function normalizeDb(db) {
     matchVetoes: db.matchVetoes || {},
     teamInfoCache: db.teamInfoCache || {},
     counters: db.counters || {},
-    mainStreamForms: db.mainStreamForms || {}
+    mainStreamForms: db.mainStreamForms || {},
+    tickets: db.tickets || {}
   };
 }
 
@@ -828,6 +829,41 @@ export async function saveMatchVetoes(entries) {
     for (const [matchId, veto] of Object.entries(entries || {})) db.matchVetoes[matchId] = veto;
     return Object.keys(db.matchVetoes).length;
   });
+}
+
+// Support tickets, keyed by ticket number ("0042"). The number comes from a counter, so each one is
+// unique even across restarts.
+export async function createTicket(fields) {
+  return mutateDb((db) => {
+    db.counters = db.counters || {};
+    db.tickets = db.tickets || {};
+    db.counters.ticketNumber = Number(db.counters.ticketNumber || 0) + 1;
+    const number = db.counters.ticketNumber;
+    const id = String(number).padStart(4, '0');
+    db.tickets[id] = { ...fields, id, number, status: 'open', createdAt: new Date().toISOString() };
+    return { ...db.tickets[id] };
+  });
+}
+
+export async function saveTicket(id, patch) {
+  return mutateDb((db) => {
+    const ticket = db.tickets?.[id];
+    if (!ticket) return null;
+    db.tickets[id] = { ...ticket, ...patch, updatedAt: new Date().toISOString() };
+    return { ...db.tickets[id] };
+  });
+}
+
+export async function getTicket(id) {
+  return (await snapshot()).tickets?.[id] || null;
+}
+
+export async function getTicketByChannel(channelId) {
+  return Object.values((await snapshot()).tickets || {}).find((ticket) => ticket.channelId === channelId) || null;
+}
+
+export async function listTickets({ status = null } = {}) {
+  return Object.values((await snapshot()).tickets || {}).filter((ticket) => !status || ticket.status === status);
 }
 
 // Named running totals (e.g. how many times !FireCrown was used). Returns the new total.

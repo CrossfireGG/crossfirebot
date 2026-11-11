@@ -152,7 +152,7 @@ export class LogOnlyScheduleSheet {
     return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)', team: null };
   }
 
-  async writeRosterChange() {
+  async applyRosterOps() {
     return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)' };
   }
 
@@ -237,11 +237,11 @@ export class AppsScriptScheduleSheet {
     return { ...result, team: body.team && typeof body.team === 'object' ? body.team : null };
   }
 
-  // Writes a roster change: { spreadsheetId, sheetName, teamName, headerRow, targetRow, expectedAlias, mode, player, logLine }.
-  async writeRosterChange(change) {
-    const { body, ...result } = await this.post('rosterChange', null, change);
+  // Applies a roster change: { spreadsheetId, sheetName, teamName, headerRow, expect, ops, linkLabel, logLine }.
+  async applyRosterOps(change) {
+    const { body, ...result } = await this.post('rosterApply', null, change);
     if (!result.ok) return result;
-    return { ...result, row: body.row ?? null, movedTo: body.movedTo || null };
+    return { ...result, applied: body.applied ?? 0, logged: Boolean(body.logged) };
   }
 
   // The crew availability tabs: { tabs: [{ name, values, backgrounds }] }.
