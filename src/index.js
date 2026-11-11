@@ -243,7 +243,7 @@ import {
 import { createWebsitePublisher } from './websitePublisher.js';
 import { buildMainStreamSheetRow, buildScheduleSheetRow, buildStreamLinkSheetRow, createScheduleSheet } from './scheduleSheet.js';
 import { isAuthorizedStaffMember, parseForceDirective } from './operationsPolicy.js';
-import { installDiscordContentGuard } from './discordLimits.js';
+import { installDiscordContentGuard, splitDiscordContent } from './discordLimits.js';
 
 const config = getConfig();
 const websitePublisher = createWebsitePublisher(config);
@@ -1238,50 +1238,54 @@ async function handleAuditLog(interaction) {
     : 'No matching audit events.'));
 }
 
+// `/cf commands`: the list is longer than one Discord message, so it goes out as a reply plus
+// follow-ups, split between lines.
 async function handleCommandHelp(interaction) {
-  await interaction.reply({
-    content: [
-      '**CROSSFIRE Admin Commands**',
-      '`/cf sync target:matches` - create/update FACEIT match rooms.',
-      '`/cf sync target:matches round:Group Stage - Round 1` - sync one group-stage round only.',
-      '`/cf sync target:teams` - sync roles, captains, participants, and nicknames from the sheet.',
-      '`/cf sync target:teams notify_captains:true` - also DM captains about missing players.',
-      '`/cf sync target:teams dry_run:true` - preview roster changes without changing Discord.',
-      '`/cf audit target:matches` - check match rooms and permissions without creating channels.',
-      '`/cf audit target:matches fix:true` - repair channel names, links, pins, and permissions.',
-      '`/cf audit target:players` - show sheet players missing from Discord.',
-      '`/cf audit target:captains` - show missing captains.',
-      '`/cf refresh` - refresh status emojis on existing match channels.',
-      '`/cf status` - show how many matches the bot knows.',
-      '`/cf create link:<FACEIT room link>` - create/update one match room.',
-      '`/cf sample` - create a sample match room for testing.',
-      '`/cf mappings action:list|inspect|link|repair` - manage persistent team-role mappings.',
-      '`/cf veto action:start|inspect|reset|cancel|seeds` - manage a playoff veto.',
-      '`/cf streams action:list|inspect|cancel` - see, inspect or cancel caster requests (cancel by `request_id:`, `match:` or `caster:`).',
-      '`/cf auditlog match_id:<optional>` - inspect scheduling and operations decisions.',
-      '`/cf forms` - who owes post-cast forms. Pick a caster to see their casts, nudge them or mark a form received, or press Nudge all.',
-      '`/cf upcoming` - post the Upcoming Matches list in the community casters channel now, with or without pinging Community Casters.',
-      '`/cf season action:list|start|rounds|edit|end|delete` - set season dates and each round\'s scheduling window.',
-      '',
-      '**Match Room Commands**',
-      '`!schedule November 2 8 PM ET` - propose a match time.',
-      '`!propose November 2 8 PM ET` - same as `!schedule`.',
-      '`!reschedule November 2 9 PM ET` - request a new time.',
-      '`!accept` - accept the open proposal from the other team.',
-      '`!decline` - decline the open proposal.',
-      '`!cancel` - cancel your open proposal before it is accepted.',
-      '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.',
-      '`/request stream` - open the community stream request form (`!request` now points casters here).',
-      '`!sendip FACEIT_LINK MESSAGE` - staff immediately DM connection details to approved casters. Without a message it reposts the IP prompt.',
-      '`/cf mainstream match:<link> stream:<channel> caster1:@ producer:@ …` - staff put a match on the official stream, set its crew, or `remove:True` to take it off.',
-      '',
-      '**Public Slash Commands**',
-      '`/request stream` - submit a stream request; `/request open` lists every confirmed upcoming match; `/request cancel` cancels your pending request.',
-      '`/crossfire upcoming|team|rounds|veto|help` - authorized match and event information.'
-    ].join('\n'),
-    ephemeral: true
-  });
+  const [first, ...rest] = splitDiscordContent(COMMAND_HELP_LINES.join('\n'));
+  await interaction.reply({ content: first, ephemeral: true });
+  for (const content of rest) await interaction.followUp({ content, ephemeral: true });
 }
+
+const COMMAND_HELP_LINES = [
+  '**CROSSFIRE Admin Commands**',
+  '`/cf sync target:matches` - create/update FACEIT match rooms.',
+  '`/cf sync target:matches round:Group Stage - Round 1` - sync one group-stage round only.',
+  '`/cf sync target:teams` - sync roles, captains, participants, and nicknames from the sheet.',
+  '`/cf sync target:teams notify_captains:true` - also DM captains about missing players.',
+  '`/cf sync target:teams dry_run:true` - preview roster changes without changing Discord.',
+  '`/cf audit target:matches` - check match rooms and permissions without creating channels.',
+  '`/cf audit target:matches fix:true` - repair channel names, links, pins, and permissions.',
+  '`/cf audit target:players` - show sheet players missing from Discord.',
+  '`/cf audit target:captains` - show missing captains.',
+  '`/cf refresh` - refresh status emojis on existing match channels.',
+  '`/cf status` - show how many matches the bot knows.',
+  '`/cf create link:<FACEIT room link>` - create/update one match room.',
+  '`/cf sample` - create a sample match room for testing.',
+  '`/cf mappings action:list|inspect|link|repair` - manage persistent team-role mappings.',
+  '`/cf veto action:start|inspect|reset|cancel|seeds` - manage a playoff veto.',
+  '`/cf streams action:list|inspect|cancel` - see, inspect or cancel caster requests (cancel by `request_id:`, `match:` or `caster:`).',
+  '`/cf auditlog match_id:<optional>` - inspect scheduling and operations decisions.',
+  '`/cf forms` - who owes post-cast forms. Pick a caster to see their casts, nudge them or mark a form received, or press Nudge all.',
+  '`/cf upcoming` - post the Upcoming Matches list in the community casters channel now, with or without pinging Community Casters.',
+  '`/cf season action:list|start|rounds|edit|end|delete` - set season dates and each round\'s scheduling window.',
+  '`/cf season action:set CSTV password password:<password>` - the password added to every IP sent to casters, as `password "PW"; connect IP:PORT`. `password:none` removes it.',
+  '',
+  '**Match Room Commands**',
+  '`!schedule November 2 8 PM ET` - propose a match time.',
+  '`!propose November 2 8 PM ET` - same as `!schedule`.',
+  '`!reschedule November 2 9 PM ET` - request a new time.',
+  '`!accept` - accept the open proposal from the other team.',
+  '`!decline` - decline the open proposal.',
+  '`!cancel` - cancel your open proposal before it is accepted.',
+  '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.',
+  '`/request stream` - open the community stream request form (`!request` now points casters here).',
+  '`!sendip FACEIT_LINK MESSAGE` - staff immediately DM connection details to approved casters. Without a message it reposts the IP prompt.',
+  '`/cf mainstream match:<link> stream:<channel> caster1:@ producer:@ …` - staff put a match on the official stream, set its crew, or `remove:True` to take it off.',
+  '',
+  '**Public Slash Commands**',
+  '`/request stream` - submit a stream request; `/request open` lists every confirmed upcoming match; `/request cancel` cancels your pending request.',
+  '`/crossfire upcoming|team|rounds|veto|help` - authorized match and event information.'
+];
 
 client.on(Events.MessageCreate, async (message) => {
   try {

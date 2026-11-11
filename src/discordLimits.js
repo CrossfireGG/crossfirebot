@@ -20,6 +20,34 @@ export function fitDiscordContent(text, limit = DISCORD_CONTENT_LIMIT) {
   return `${kept}${note(omitted)}`;
 }
 
+// Splits text into as few Discord messages as it fits in. It breaks at a blank line between
+// sections where it can, otherwise between lines (a single line longer than the limit is cut into
+// pieces). Blank lines at a break are dropped.
+export function splitDiscordContent(text, limit = DISCORD_CONTENT_LIMIT) {
+  const chunks = [];
+  let current = '';
+  const add = (piece, separator) => {
+    if (!current) current = piece;
+    else if (current.length + separator.length + piece.length <= limit) current += `${separator}${piece}`;
+    else {
+      chunks.push(current);
+      current = piece;
+    }
+  };
+  for (const section of String(text ?? '').split(/\n{2,}/)) {
+    if (section.length <= limit) {
+      add(section, '\n\n');
+      continue;
+    }
+    section.split('\n').forEach((line, index) => {
+      const pieces = line.length > limit ? line.match(new RegExp(`[\\s\\S]{1,${limit}}`, 'g')) : [line];
+      pieces.forEach((piece, pieceIndex) => add(piece, index === 0 && pieceIndex === 0 ? '\n\n' : '\n'));
+    });
+  }
+  if (current) chunks.push(current);
+  return chunks.map((chunk) => chunk.replace(/^\n+|\n+$/g, '')).filter((chunk) => chunk.trim());
+}
+
 let installed = false;
 
 // Every message the bot sends (replies, edits, follow-ups, channel posts, DMs) gets its text from
