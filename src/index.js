@@ -4832,7 +4832,7 @@ async function handleCrewOpenButton(interaction) {
         .addOptions(options);
       return new LabelBuilder()
         .setLabel(field.label)
-        .setDescription(field.key === 'casters' ? 'Caster 1, plus Caster 2 if there is one. Only people free then.' : 'Only people free then, from the staff schedule.')
+        .setDescription(field.key === 'casters' ? 'Caster 1, plus Caster 2 if there is one. Free people first; ⚠️ = not free then.' : 'Free people first, from the staff schedule; ⚠️ = not free then.')
         .setStringSelectMenuComponent(select);
     }
     const picker = new UserSelectMenuBuilder()
@@ -4893,7 +4893,9 @@ async function handleCrewSubmit(interaction) {
   const removedLine = await dmRemovedCrewMembers(matchId, previousCrew);
   const ipLine = await pingCrewAboutPostedIp(await getMainStreamCoverage(matchId) || coverage);
   await appendAuditLog({ type: 'main_stream_crew_set', actorId: interaction.user.id, matchId, crew, posted: result.ok }).catch(() => null);
-  await interaction.editReply({ content: [result.line, removedLine, ipLine].filter(Boolean).join('\n'), allowedMentions: { parse: [] } });
+  // Anyone picked who isn't marked free (or is on another crew then), like /cf mainstream does.
+  const warnings = await crewAvailabilityWarnings(matchId, crewUserIds(crew)).catch(() => []);
+  await interaction.editReply({ content: [result.line, removedLine, ipLine, ...warnings].filter(Boolean).join('\n').slice(0, 2000), allowedMentions: { parse: [] } });
 }
 
 // When the IP is already in #request-ip and the crew is set (or changed) afterwards, ping the crew
@@ -8297,8 +8299,9 @@ async function matchStartMs(matchId) {
   return Number.isFinite(ms) ? ms : null;
 }
 
-// Options for each crew form dropdown: people free for this match who can do the role, plus the
-// current picks. null = availability is not available (the form then uses plain user pickers).
+// Options for each crew form dropdown: everyone on the staff schedule who can do the role, free
+// first, then partly free / maybe, then the rest marked "Not free" (busy, on another crew, or not
+// filled in), plus the current picks. null = availability is not available (plain user pickers).
 async function crewFormSelectOptions(coverage) {
   const stored = await getCrewAvailability();
   if (!config.crewAvailabilityEnabled || !stored.data) return null;
@@ -8317,11 +8320,12 @@ async function crewFormSelectOptions(coverage) {
     for (const entry of rankCrew(people, role, { matchId: coverage.matchId, startMs, bookings, now })) {
       const id = entry.person.userId;
       const isCurrent = current.includes(id);
-      if (seen.has(id) || (!isCurrent && !['free', 'partial', 'maybe'].includes(entry.state))) continue;
+      if (seen.has(id)) continue;
       seen.add(id);
+      const notFree = !['free', 'partial', 'maybe'].includes(entry.state);
       options.push({
         label: `${entry.person.name} (${entry.worked} this week)`.slice(0, 100),
-        description: crewEntryDescription(entry),
+        description: notFree ? `⚠️ Not free · ${crewEntryDescription(entry)}`.slice(0, 100) : crewEntryDescription(entry),
         value: id,
         default: isCurrent
       });
