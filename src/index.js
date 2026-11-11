@@ -487,6 +487,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       else if (interaction.commandName === 'cf') await handleSeasonAutocomplete(interaction);
       return;
     }
+    if (interaction.isButton() && interaction.customId === 'ticket_start') {
+      await handleTicketStart(interaction);
+      return;
+    }
     if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_topic') {
       await handleTicketTopic(interaction);
       return;
@@ -7136,20 +7140,39 @@ async function postTicketPanel(interaction) {
     await interaction.reply({ content: 'Run this in the channel where the panel should go.', ephemeral: true });
     return;
   }
+  // The panel just sits there: pressing Contact Support shows the topics privately, then the form,
+  // and only then is the ticket channel made. Nothing is ever posted in the panel's channel.
   const embed = new EmbedBuilder()
-    .setTitle('🎫 Open a ticket')
+    .setTitle('⚔️ CROSSFIRE SUPPORT ⚔️')
     .setDescription([
-      'Pick what you need help with. The bot asks a few questions first, then opens a private channel with the staff.',
+      'Need assistance? Our Crossfire Support Team is here to help you in real-time!',
       '',
-      ...TICKET_TOPICS.map((topic) => `**${topic.emoji} ${topic.label}**: ${topic.description}`)
+      '🛠️ This is the official route for CROSSFIRE support.',
+      '⬇️ Use the button below to open a support ticket.',
+      '',
+      'Please use tickets to contact staff members.'
     ].join('\n'))
-    .setColor(0x5865f2);
+    .setColor(0x2ecc71);
+  const button = new ButtonBuilder().setCustomId('ticket_start').setLabel('Contact Support').setEmoji('📩').setStyle(ButtonStyle.Danger);
+  await channel.send({ embeds: [embed], components: [new ActionRowBuilder().addComponents(button)] });
+  await interaction.reply({ content: 'Ticket panel posted.', ephemeral: true });
+}
+
+// "Contact Support": the topic picker, visible only to the person who pressed it.
+async function handleTicketStart(interaction) {
+  if (config.ticketsStaffOnly && !isTicketStaff(interaction.member)) {
+    await interaction.reply({ content: 'The new ticket system is being tested by staff right now. For now, please use the usual ticket channel.', ephemeral: true });
+    return;
+  }
   const select = new StringSelectMenuBuilder()
     .setCustomId('ticket_topic')
-    .setPlaceholder('Pick a topic…')
+    .setPlaceholder('What do you need help with?')
     .addOptions(TICKET_TOPICS.map((topic) => ({ label: topic.label, description: topic.description.slice(0, 100), value: topic.key, emoji: topic.emoji })));
-  await channel.send({ embeds: [embed], components: [new ActionRowBuilder().addComponents(select)] });
-  await interaction.reply({ content: 'Ticket panel posted.', ephemeral: true });
+  await interaction.reply({
+    content: 'What do you need help with? Pick a topic, answer a few questions, and a private ticket opens with the staff.',
+    components: [new ActionRowBuilder().addComponents(select)],
+    ephemeral: true
+  });
 }
 
 function isTicketStaff(member) {
