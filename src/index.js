@@ -7316,28 +7316,28 @@ async function openTicket({ guild, parentId, opener, topic, answers, priority, e
     await saveTicket(ticket.id, { status: 'failed' });
     return { error: "I couldn't create the ticket channel (missing Manage Channels permission?). Please tell a staff member." };
   }
-  let pingUsers = [opener.id];
-  let pingRoles = [];
+  // Staff pings go in the alert channel, not the ticket: Tournament Operations always, plus the
+  // on-duty admins (or the admin alert roles when nobody is marked free) for urgent tickets.
+  let adminPingUserIds = [];
+  let adminPingRoleIds = [];
   if (adminPings) {
-    const onDuty = await onDutyAdminIds();
-    if (onDuty.length) pingUsers = [...pingUsers, ...onDuty];
-    else pingRoles = config.adminAlertRoleIds;
+    adminPingUserIds = await onDutyAdminIds();
+    if (!adminPingUserIds.length) adminPingRoleIds = config.adminAlertRoleIds;
   }
   const content = [
-    pingUsers.map((id) => `<@${id}>`).join(' '),
-    pingRoles.map((id) => `<@&${id}>`).join(' '),
-    adminPings ? '🔴 **Priority support:** this match is live or about to start.' : null
+    `<@${opener.id}>`,
+    adminPings ? '🔴 **Priority support:** this match is live or about to start, and the admins have been alerted.' : null
   ].filter(Boolean).join(' ');
-  const saved = await saveTicket(ticket.id, { channelId: channel.id });
-  const header = await channel.send({ content, ...ticketHeaderPayload(saved), allowedMentions: { parse: [], users: pingUsers, roles: pingRoles } }).catch(() => null);
-  const final = await saveTicket(ticket.id, { headerMessageId: header?.id || null, adminPinged: adminPings ? [...pingUsers.slice(1), ...pingRoles.map((id) => `role:${id}`)] : [] });
-  // Tell Tournament Operations a ticket needs help.
+  const saved = await saveTicket(ticket.id, { channelId: channel.id, adminPingUserIds, adminPingRoleIds });
+  const header = await channel.send({ content, ...ticketHeaderPayload(saved), allowedMentions: { parse: [], users: [opener.id] } }).catch(() => null);
+  const final = await saveTicket(ticket.id, { headerMessageId: header?.id || null });
+  // Tell Tournament Operations (and, if urgent, the on-duty admins) a ticket needs help.
   const alertChannel = config.ticketAlertChannelId ? await client.channels.fetch(config.ticketAlertChannelId).catch(() => null) : null;
   let opened = final;
   if (alertChannel?.isTextBased?.()) {
     const alert = await alertChannel.send({
       ...ticketAlertPayload(final),
-      allowedMentions: { parse: [], roles: config.ticketAlertRoleIds }
+      allowedMentions: { parse: [], users: adminPingUserIds, roles: [...config.ticketAlertRoleIds, ...adminPingRoleIds] }
     }).catch((error) => {
       console.error(`[Tickets] alert for ${ticket.id} not posted: ${error.message || error}`);
       return null;

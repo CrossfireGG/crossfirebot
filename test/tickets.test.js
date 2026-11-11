@@ -92,5 +92,8 @@ test('the Tournament Operations alert names the ticket, links it and gives the p
   assert.equal(ticketAlertText({ ...ticket, priority: 'normal', channelId: null }),
     'Hey Tournament Operations, ticket **#0042 · General Support** has been opened and needs help! Priority: 🟢 Normal');
   assert.match(ticketAlertText({ ...ticket, claimedBy: '9' }), /\nHandled by <@9>$/, 'shows who claimed it');
+  assert.equal(ticketAlertText({ ...ticket, adminPingUserIds: ['3', '4'], claimedBy: '9' }).split('\n').slice(1).join(' | '),
+    '🔴 Live or about to start: <@3> <@4> | Handled by <@9>', 'urgent: the on-duty admins are in the alert, and stay there after a claim');
+  assert.match(ticketAlertText({ ...ticket, adminPingRoleIds: ['77'] }), /🔴 Live or about to start: <@&77>/, 'or the admin roles');
   assert.match(ticketAlertText({ ...ticket, claimedBy: '9', status: 'closed', closedBy: '7' }), /\n🔒 Closed by <@7>$/, 'and when it closes');
 });

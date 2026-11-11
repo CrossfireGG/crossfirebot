@@ -83,6 +83,8 @@ export function ticketAlertText(ticket, { roleIds = [] } = {}) {
   const name = `${ticketNumberText(ticket.number)} · ${ticketTopic(ticket.topic)?.label || 'Support'}`;
   const link = ticket.channelId ? ` (<#${ticket.channelId}>)` : '';
   const lines = [`Hey ${who}, ticket **${name}**${link} has been opened and needs help! Priority: ${priorityText(ticket.priority)}`];
+  const admins = [...(ticket.adminPingUserIds || []).map((id) => `<@${id}>`), ...(ticket.adminPingRoleIds || []).map((id) => `<@&${id}>`)];
+  if (admins.length) lines.push(`🔴 Live or about to start: ${admins.join(' ')}`);
   if (ticket.status === 'closed') lines.push(`🔒 Closed by <@${ticket.closedBy}>`);
   else if (ticket.claimedBy) lines.push(`Handled by <@${ticket.claimedBy}>`);
   return lines.join('\n');

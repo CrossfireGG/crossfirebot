@@ -265,7 +265,7 @@ A staff nudge also counts as the automatic 48-hour nudge. Form DMs, forms found 
 `/cf tickets` posts the **Open a ticket** panel in the channel it is run in (#open-a-ticket). Picking a topic asks its questions first, then opens a private channel (`match-0042-username`) that only the opener, the bot and the staff roles (`AUTHORIZED_STAFF_ROLE_IDS`, including Tournament Operations) can see, in `TICKET_CATEGORY_ID` or the panel's category. The channel starts with a header card holding the answers, who opened it, who is handling it and the priority. The opener replies in the same channel.
 
 - **General Support**: what they need help with, their team, a screenshot or link (they can also post screenshots in the ticket).
-- **Match / FACEIT Issue**: team, match link, what's happening, and whether the match is live, starting within the hour, later or finished. Live or about to start (or a FACEIT room that is live) is **🔴 Urgent** and pings the on-duty admins: admins marked free right now on the Admin Schedule tab, or `ADMIN_ALERT_ROLE_IDS` when nobody is.
+- **Match / FACEIT Issue**: team, match link, what's happening, and whether the match is live, starting within the hour, later or finished. Live or about to start (or a FACEIT room that is live) is **🔴 Urgent** and the alert (below) also pings the on-duty admins: admins marked free right now on the Admin Schedule tab, or `ADMIN_ALERT_ROLE_IDS` when nobody is. The ticket itself only pings the person who opened it.
 - **Roster Change**: captains only (from the team sync, the Team Captain role, or the Captain cell on the Roster Tracking tab); staff get a form to name the team. See below.
 - **Apply to Crossfire**: what they're applying for, their Discord (filled in automatically), experience and links.
 
