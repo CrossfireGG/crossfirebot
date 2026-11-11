@@ -243,6 +243,7 @@ import {
 import { createWebsitePublisher } from './websitePublisher.js';
 import { buildMainStreamSheetRow, buildScheduleSheetRow, buildStreamLinkSheetRow, createScheduleSheet } from './scheduleSheet.js';
 import { isAuthorizedStaffMember, parseForceDirective } from './operationsPolicy.js';
+import { installDiscordContentGuard } from './discordLimits.js';
 
 const config = getConfig();
 const websitePublisher = createWebsitePublisher(config);
@@ -376,6 +377,15 @@ const SEASON6_WB_ROUND_OF_32_MATCHES = [
 const SEASON6_WB_ROUND_OF_32_PAIR_ORDER = new Map(
   SEASON6_WB_ROUND_OF_32_MATCHES.map(([teamA, teamB], index) => [matchPairKey(teamA, teamB), index])
 );
+
+// No message fails for being over Discord's 2000-character limit: it is trimmed instead, and the
+// log names the code that built it so that message can be split or shortened properly.
+installDiscordContentGuard({
+  onTrim: (length) => {
+    const origin = (new Error().stack || '').split('\n').filter((line) => /[\\/]src[\\/]/.test(line) && !/node_modules|discordLimits\.js/.test(line)).slice(0, 4).map((line) => line.trim());
+    console.warn(`[Discord] message of ${length} characters trimmed to fit the 2000 limit.${origin.length ? ` From: ${origin.join(' <- ')}` : ''}`);
+  }
+});
 
 const client = new Client({
   intents: [
