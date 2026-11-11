@@ -545,9 +545,14 @@ function fakeMember(roleIds = [], permissionIds = [], roleNames = []) {
 test('CSTV connect lines are built from IP:PORT and get the season password', async () => {
   const { buildCstvConnect, wantsSeasonPassword, parseSeasonPassword } = await import('../src/streamRequest.js');
   assert.deepEqual(buildCstvConnect('66.206.17.130:27035', { password: 'pw1' }), {
-    valid: true, value: 'connect 66.206.17.130:27035; password "pw1"', address: true, passwordAdded: true, passwordMissing: false
+    valid: true, value: 'password "pw1"; connect 66.206.17.130:27035', address: true, passwordAdded: true, passwordMissing: false
   });
-  assert.equal(buildCstvConnect('connect 66.206.17.130:27035;', { password: 'pw1' }).value, 'connect 66.206.17.130:27035; password "pw1"');
+  assert.equal(buildCstvConnect('connect 66.206.17.130:27035;', { password: 'pw1' }).value, 'password "pw1"; connect 66.206.17.130:27035');
+  assert.equal(
+    buildCstvConnect('password "313safafo2h13"; connect 136.83.35.38:20001', { password: 'pw1' }).value,
+    'password "313safafo2h13"; connect 136.83.35.38:20001',
+    'a full password-first line is sent as typed'
+  );
   assert.equal(buildCstvConnect(' connect 66.206.17.130:27035 ', { password: 'pw1', usePassword: false }).value, 'connect 66.206.17.130:27035');
   const missing = buildCstvConnect('66.206.17.130:27035', { password: null });
   assert.equal(missing.value, 'connect 66.206.17.130:27035');
@@ -568,4 +573,11 @@ test('CSTV connect lines are built from IP:PORT and get the season password', as
   assert.deepEqual(parseSeasonPassword('none'), { valid: true, value: null });
   assert.equal(parseSeasonPassword('has space').valid, false);
   assert.equal(parseSeasonPassword('a"b').valid, false);
+  // Staff can paste the whole line or a quoted password; only the password is kept.
+  assert.deepEqual(parseSeasonPassword('password "313safafo2h13"; connect ip'), { valid: true, value: '313safafo2h13' });
+  assert.deepEqual(parseSeasonPassword('password "313safafo2h13"; connect 136.83.35.38:20001'), { valid: true, value: '313safafo2h13' });
+  assert.deepEqual(parseSeasonPassword('password 313safafo2h13'), { valid: true, value: '313safafo2h13' });
+  assert.deepEqual(parseSeasonPassword('"313safafo2h13"'), { valid: true, value: '313safafo2h13' });
+  assert.deepEqual(parseSeasonPassword('"313safafo2h13";'), { valid: true, value: '313safafo2h13' });
+  assert.equal(parseSeasonPassword('password ""').valid, false);
 });

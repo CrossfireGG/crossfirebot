@@ -320,7 +320,8 @@ export function buildCstvConnect(raw, { password = null, usePassword = true } = 
     const addPassword = Boolean(usePassword && password);
     return {
       valid: true,
-      value: `connect ${host}:${port}${addPassword ? `; password "${password}"` : ''}`,
+      // Password first, so it is set before CS2 starts connecting.
+      value: `${addPassword ? `password "${password}"; ` : ''}connect ${host}:${port}`,
       address: true,
       passwordAdded: addPassword,
       passwordMissing: Boolean(usePassword && !password)
@@ -339,12 +340,19 @@ export function wantsSeasonPassword(answer) {
   return !/^\s*(n|no|false|f|0|off)\s*$/i.test(String(answer ?? ''));
 }
 
-// Season CSTV password as typed in `/cf season`; "none"/"clear" removes it.
+// Season CSTV password as typed in `/cf season`; "none"/"clear" removes it. Staff may paste just the
+// password, the password in quotes, or a whole line like `password "abc123"; connect 1.2.3.4:27015`.
 export function parseSeasonPassword(raw) {
-  const text = String(raw ?? '').trim();
+  let text = String(raw ?? '').trim();
   if (!text) return { valid: false, error: 'Give the password, e.g. `password:abc123`. Use `password:none` to remove it.' };
   if (/^(none|clear|remove|-)$/i.test(text)) return { valid: true, value: null };
-  if (/["';\s]/.test(text)) return { valid: false, error: 'The password cannot contain spaces, quotes or `;`.' };
+  const fromLine = text.match(/\bpassword\s+(?:"([^"]*)"|'([^']*)'|([^\s;"']+))/i);
+  if (fromLine) text = (fromLine[1] ?? fromLine[2] ?? fromLine[3]).trim();
+  else text = text.replace(/^(["'])(.*)\1;?$/, '$2').trim();
+  if (!text) return { valid: false, error: 'Give the password, e.g. `password:abc123`. Use `password:none` to remove it.' };
+  if (/["';\s]/.test(text)) {
+    return { valid: false, error: 'Give just the password (no spaces, quotes or `;`), e.g. `password:313safafo2h13`. The bot sends it to casters as `password "313safafo2h13"; connect IP:PORT`.' };
+  }
   if (text.length > 64) return { valid: false, error: 'The password can be at most 64 characters.' };
   return { valid: true, value: text };
 }

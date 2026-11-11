@@ -1100,7 +1100,7 @@ async function handleSeasonCommand(interaction) {
     // The password itself never goes in the audit log.
     await appendAuditLog({ type: 'season_cstv_password_set', actorId: interaction.user.id, seasonId: season.id, cleared: !parsed.value }).catch(() => null);
     await interaction.editReply(parsed.value
-      ? `Saved the CSTV password for **${season.name}**. It's added to every IP sent from now on (type **No** in the form's password box to skip it for one match).`
+      ? `Saved the CSTV password for **${season.name}**. Every IP sent from now on goes to casters as \`password "${parsed.value}"; connect IP:PORT\` (type **No** in the form's password box to skip it for one match).`
       : `Removed the CSTV password for **${season.name}**. IPs are sent without one.`);
     return;
   }
