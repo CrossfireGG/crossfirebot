@@ -234,9 +234,9 @@ export function getConfig() {
     rosterLinkLabel: process.env.ROSTER_LINK_LABEL || '…',
     rosterChangePingRoleIds: parseCsvValue(process.env.ROSTER_CHANGE_PING_ROLE_IDS || process.env.ADMIN_ALERT_ROLE_IDS || ''),
     // Support tickets: each ticket's transcript goes to Support Receipts when it closes. Ticket
-    // channels are created in TICKET_CATEGORY_ID, or the category of the channel with the panel.
+    // channels are created in TICKET_CATEGORY_ID (the Support category).
     ticketReceiptsChannelId: process.env.TICKET_RECEIPTS_CHANNEL_ID || '1418723351073132594',
-    ticketCategoryId: process.env.TICKET_CATEGORY_ID || null,
+    ticketCategoryId: process.env.TICKET_CATEGORY_ID || '1128908635133706260', // the Support category
     // While testing, only staff can open tickets from the panel. Set TICKETS_STAFF_ONLY=false to open it to everyone.
     ticketsStaffOnly: process.env.TICKETS_STAFF_ONLY !== 'false',
     casterApplicationChannelId: process.env.CASTER_APPLICATION_CHANNEL_ID || '1558684878743150693',
