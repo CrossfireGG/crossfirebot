@@ -52,9 +52,14 @@
  *                         spreadsheet and tab come from the bot (`spreadsheetId`, `sheetName`).
  *                         Finds the team by FACEIT team ID (its Team Info FACEIT link), name, or
  *                         its captain (Discord username or IGN in the Captain cell).
+ *   One-time (run from the editor, not called by the bot): previewRosterMigration() and
+ *                         migrateRosterTracking() copy this season's teams from the old
+ *                         "HLTV Tracking" tab into the new "Roster Tracking" layout.
  *   "rosterApply"         applies a roster change from a Roster Change ticket as steps (write a
  *                         new player, clear, copy, swap rows), plus a line in a "CHANGES" column
- *                         if the tab has one. Refuses if any row changed since it was read.
+ *                         if the tab has one, and one row per player on the "Roster History" tab
+ *                         (Date, Team, Action, Player linked to FACEIT, Role/Spot, Requested by).
+ *                         Refuses if any row changed since it was read.
  *
  * Everything else in columns H–M is left for staff and is never touched.
  * After every write the tab is sorted by column A (date and time).
@@ -582,6 +587,18 @@ function applyRosterOps(body) {
   const width = ROSTER_FIELDS.length;
   const range = (row) => sheet.getRange(Number(row), ROSTER_FIRST_FIELD_COLUMN, 1, width);
   const linkLabel = String(body.linkLabel || '…');
+  // Roster History: existing players' FACEIT links are read now, before any row moves (the roster
+  // shows them as "…" with the link behind).
+  const history = (Array.isArray(body.history) ? body.history : []).map((entry) => {
+    let faceit = String(entry.faceit || '');
+    if (!faceit && entry.faceitRow && rosterRows[Number(entry.faceitRow)]) {
+      const cell = sheet.getRange(Number(entry.faceitRow), ROSTER_FIRST_FIELD_COLUMN + ROSTER_FIELDS.indexOf('faceit'));
+      const rich = typeof cell.getRichTextValue === 'function' ? cell.getRichTextValue() : null;
+      faceit = (rich && typeof rich.getLinkUrl === 'function' && rich.getLinkUrl()) || '';
+      if (!faceit && /^https?:\/\//i.test(String(rosterRows[Number(entry.faceitRow)].faceit || ''))) faceit = rosterRows[Number(entry.faceitRow)].faceit;
+    }
+    return { action: String(entry.action || ''), player: String(entry.player || ''), spot: String(entry.spot || ''), faceit: faceit };
+  });
   ops.forEach((op) => {
     if (op.op === 'clear') {
       range(op.row).clearContent();
@@ -596,6 +613,8 @@ function applyRosterOps(body) {
       range(temp).clear();
     } else if (op.op === 'write') {
       const player = op.player || {};
+      // SteamID64 is 17 digits: plain text, or Sheets rounds the last digits away.
+      sheet.getRange(Number(op.row), ROSTER_FIRST_FIELD_COLUMN + ROSTER_FIELDS.indexOf('steamId')).setNumberFormat('@');
       range(op.row).setValues([ROSTER_FIELDS.map((field) => String(player[field] || ''))]);
       ROSTER_LINK_FIELDS.forEach((field) => {
         const url = String(player[field] || '').trim();
@@ -615,7 +634,34 @@ function applyRosterOps(body) {
     }
     sheet.getRange(at, changesColumn).setValue(String(body.logLine));
   }
-  return reply(200, { ok: true, applied: ops.length, logged: Boolean(changesColumn) });
+  const historyRows = history.length ? appendRosterHistory(body, block.teamName, history) : 0;
+  return reply(200, { ok: true, applied: ops.length, logged: Boolean(changesColumn), historyRows: historyRows });
+}
+
+// The "Roster History" tab (made with its header the first time): one row per player a change
+// affects. Date | Team | Action | Player (linked to their FACEIT profile) | Role/Spot | Requested by.
+const ROSTER_HISTORY_HEADERS = ['Date', 'Team', 'Action', 'Player', 'Role/Spot', 'Requested by'];
+
+function appendRosterHistory(body, teamName, entries) {
+  const book = SpreadsheetApp.openById(body.spreadsheetId);
+  const name = String(body.historySheetName || 'Roster History');
+  let sheet = book.getSheetByName(name);
+  if (!sheet) {
+    sheet = book.insertSheet(name);
+    sheet.getRange(1, 1, 1, ROSTER_HISTORY_HEADERS.length).setValues([ROSTER_HISTORY_HEADERS]).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  }
+  const start = Math.max(sheet.getLastRow(), 1) + 1;
+  const when = body.when ? new Date(body.when) : new Date();
+  const requestedBy = String(body.requestedBy || '');
+  const rows = entries.map((entry) => [when, teamName, entry.action, entry.player, entry.spot, requestedBy]);
+  sheet.getRange(start, 1, rows.length, ROSTER_HISTORY_HEADERS.length).setValues(rows);
+  sheet.getRange(start, 1, rows.length, 1).setNumberFormat('mmm d, yyyy h:mm am/pm');
+  entries.forEach((entry, index) => {
+    if (!entry.player || !/^https?:\/\//i.test(entry.faceit)) return;
+    sheet.getRange(start + index, 4).setRichTextValue(SpreadsheetApp.newRichTextValue().setText(entry.player).setLinkUrl(entry.faceit).build());
+  });
+  return rows.length;
 }
 
 function findColumnByHeaderContaining(sheet, text) {
@@ -626,6 +672,165 @@ function findColumnByHeaderContaining(sheet, text) {
     if (String(headers[i]).toLowerCase().indexOf(text) >= 0) return i + 1;
   }
   return 0;
+}
+
+// ---- One-time: copy this season's teams from "HLTV Tracking" to "Roster Tracking" ----
+// Run previewRosterMigration() first (it only logs), then migrateRosterTracking() once, from the
+// Apps Script editor (pick the function, press Run). Teams already on Roster Tracking are skipped,
+// so running it twice adds nothing twice. The old tab is only read. The first block on Roster
+// Tracking is the template: every team gets its formatting, with a copy of the row after it (the
+// black divider) between teams; empty blocks already on the tab are filled first.
+//   Old layout: header row (B team, C "Full Name"), Twitter: (B link, E VRS), Team Faceit: (B link),
+//   Starter 1-5 / Sub 1-2 / Coach (B "Captain" on the captain's row, C Full Name, D Alias, E Discord,
+//   F-H the FACEIT link, HLTV link and nationality in any order, I SteamID64).
+//   New layout: see "Roster tab" above.
+const MIGRATION_SOURCE_TAB = 'HLTV Tracking';
+const MIGRATION_TARGET_TAB = 'Roster Tracking';
+// Teams on the old tab to leave out. Empty: every team on HLTV Tracking is in Season 7 (some only in
+// the Playoff Stage, so they never played in groups).
+const MIGRATION_SKIP_TEAMS = [];
+const MIGRATION_LINK_LABEL = '…';
+
+function previewRosterMigration() {
+  const plan = planRosterMigration_();
+  Logger.log('Will add ' + plan.add.length + ' team(s): ' + plan.add.map((team) => team.teamName).join(', '));
+  Logger.log('Already on ' + MIGRATION_TARGET_TAB + ': ' + (plan.existing.join(', ') || 'none'));
+  Logger.log('Skipped (not this season): ' + (plan.skipped.join(', ') || 'none'));
+}
+
+function migrateRosterTracking() {
+  const book = SpreadsheetApp.openById(ROSTER_MIGRATION_SPREADSHEET_ID_());
+  const target = book.getSheetByName(MIGRATION_TARGET_TAB);
+  const plan = planRosterMigration_();
+  const width = 9;
+  // The tab's own layout: the first team block (rows 1-11) is the template for every team, and the
+  // row right after it (the black divider) is the template for the row between teams.
+  const blocks = readRosterBlocks(target);
+  if (!blocks.length) throw new Error('Set up one team block on ' + MIGRATION_TARGET_TAB + ' first (it is used as the template).');
+  const templateStart = blocks[0].headerRow - 1;
+  const template = target.getRange(templateStart, 1, ROSTER_BLOCK_HEIGHT_, width);
+  const divider = target.getRange(templateStart + ROSTER_BLOCK_HEIGHT_, 1, 1, width);
+  const rowHeight = target.getRowHeight(templateStart);
+  // Empty blocks already on the tab (no team name) are filled first, in order; the rest go below the
+  // last block, each after a divider row, the same way as the template.
+  const free = blocks.filter((block) => !String(block.teamName || '').trim()).map((block) => block.headerRow - 1);
+  let next = blocks[blocks.length - 1].headerRow - 1 + ROSTER_BLOCK_HEIGHT_ + 1;
+  plan.add.forEach((team) => {
+    let start = free.shift();
+    if (!start) {
+      start = next;
+      next += ROSTER_BLOCK_HEIGHT_ + 1;
+      divider.copyTo(target.getRange(start - 1, 1, 1, width), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+      template.copyTo(target.getRange(start, 1, ROSTER_BLOCK_HEIGHT_, width), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+      target.setRowHeights(start - 1, ROSTER_BLOCK_HEIGHT_ + 1, rowHeight);
+    }
+    // SteamID64 is 17 digits: plain text, or Sheets rounds the last digits away.
+    target.getRange(start + 3, 8, 8, 1).setNumberFormat('@');
+    target.getRange(start, 1, ROSTER_BLOCK_HEIGHT_, width).setValues(rosterMigrationRows_(team));
+    const link = (r, c, url, label) => {
+      if (!/^https?:\/\//i.test(url)) return;
+      target.getRange(r, c).setRichTextValue(SpreadsheetApp.newRichTextValue().setText(label).setLinkUrl(url).build());
+    };
+    link(start + 1, 4, team.twitter, team.twitter.replace(/^https?:\/\/(www\.)?/i, ''));
+    link(start + 1, 5, team.faceitUrl, 'faceit.com/...');
+    team.players.forEach((player, index) => {
+      link(start + 3 + index, 5, player.faceit, MIGRATION_LINK_LABEL);
+      link(start + 3 + index, 6, player.hltv, MIGRATION_LINK_LABEL);
+    });
+  });
+  Logger.log('Added ' + plan.add.length + ' team(s) to ' + MIGRATION_TARGET_TAB + '. Skipped ' + plan.existing.length + ' already there and ' + plan.skipped.length + ' not this season.');
+  return plan.add.length;
+}
+
+const ROSTER_BLOCK_HEIGHT_ = 11;
+const ROSTER_MIGRATION_LABELS_ = ['Starter 1:', 'Starter 2:', 'Starter 3:', 'Starter 4:', 'Starter 5:', 'Sub 1:', 'Sub 2:', 'Coach:'];
+
+function ROSTER_MIGRATION_SPREADSHEET_ID_() {
+  return '1zgbcvzSqo3hxsH20PH51y2xrODODNnUfGMgLrJGinng';
+}
+
+// The cell's link if it has one, otherwise its text when that is a URL.
+function migrationLinkAt_(rich, display) {
+  const url = rich && typeof rich.getLinkUrl === 'function' ? rich.getLinkUrl() : null;
+  if (url) return url;
+  const text = String(display || '').trim();
+  if (/^https?:\/\//i.test(text)) return text;
+  if (/^(www\.)?[a-z0-9-]+\.(com|org|gg|tv)\//i.test(text)) return 'https://' + text;
+  return '';
+}
+
+function migrationClean_(value) {
+  const text = String(value || '').trim();
+  return /^(n\/?a|none|-|\.)$/i.test(text) ? '' : text;
+}
+
+function planRosterMigration_() {
+  const book = SpreadsheetApp.openById(ROSTER_MIGRATION_SPREADSHEET_ID_());
+  const source = book.getSheetByName(MIGRATION_SOURCE_TAB);
+  const target = book.getSheetByName(MIGRATION_TARGET_TAB);
+  if (!source || !target) throw new Error('Need both tabs: "' + MIGRATION_SOURCE_TAB + '" and "' + MIGRATION_TARGET_TAB + '"');
+  const lastRow = source.getLastRow();
+  const range = source.getRange(1, 1, lastRow, 9);
+  const values = range.getDisplayValues();
+  const rich = range.getRichTextValues();
+  const have = {};
+  readRosterBlocks(target).forEach((block) => { if (String(block.teamName || '').trim()) have[rosterKey(block.teamName)] = true; });
+  const skip = {};
+  MIGRATION_SKIP_TEAMS.forEach((name) => { skip[rosterKey(name)] = true; });
+  const plan = { add: [], existing: [], skipped: [] };
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][2]).trim().toLowerCase() !== 'full name') continue;
+    const teamName = String(values[i][1]).trim();
+    if (!teamName) continue;
+    if (skip[rosterKey(teamName)]) { plan.skipped.push(teamName); continue; }
+    if (have[rosterKey(teamName)]) { plan.existing.push(teamName); continue; }
+    const twitterRow = values[i + 1] || [];
+    const faceitRow = values[i + 2] || [];
+    const players = [];
+    let captain = '';
+    for (let k = 0; k < ROSTER_MIGRATION_LABELS_.length; k++) {
+      const r = values[i + 3 + k] || [];
+      const links = rich[i + 3 + k] || [];
+      // Columns F-H hold the FACEIT link, the HLTV link and the nationality, but not always in the
+      // order of their headers, so each cell is sorted by what it holds.
+      const cells = [5, 6, 7].map((c) => ({ link: migrationLinkAt_(links[c], r[c]), text: migrationClean_(r[c]) }));
+      const linkTo = (host) => (cells.filter((cell) => host.test(cell.link))[0] || {}).link || '';
+      const nationalityCell = cells.filter((cell) => cell.text && !cell.link && !/\.(com|org|gg|tv)\b/i.test(cell.text))[0];
+      const player = {
+        alias: migrationClean_(r[3]),
+        discord: migrationClean_(r[4]),
+        faceit: linkTo(/faceit\.com/i),
+        hltv: linkTo(/hltv\.org/i),
+        nationality: nationalityCell ? nationalityCell.text : '',
+        steamId: String(r[8] || '').replace(/[^0-9]/g, ''),
+        fullName: migrationClean_(r[2])
+      };
+      if (/captain/i.test(String(r[1])) && !captain) captain = player.discord || player.alias;
+      players.push(player);
+    }
+    plan.add.push({
+      teamName: teamName,
+      captain: captain,
+      twitter: migrationLinkAt_((rich[i + 1] || [])[1], twitterRow[1]),
+      vrs: migrationClean_(twitterRow[4]),
+      faceitUrl: migrationLinkAt_((rich[i + 2] || [])[1], faceitRow[1]),
+      players: players
+    });
+  }
+  return plan;
+}
+
+function rosterMigrationRows_(team) {
+  const rows = [
+    ['', 'Team', 'Captian', 'Twitter', 'FACEIT', 'HLTV', 'VRS', 'Abbreviation', 'Logo'],
+    ['Team Info', team.teamName, team.captain, team.twitter, team.faceitUrl, '', team.vrs, '', ''],
+    ['Player Info', 'IGN', 'Discord', 'Twitter', 'FACEIT', 'HLTV', 'Nationality', 'SteamID64', 'Full Name']
+  ];
+  ROSTER_MIGRATION_LABELS_.forEach((label, index) => {
+    const p = team.players[index] || {};
+    rows.push([label, p.alias || '', p.discord || '', '', p.faceit || '', p.hltv || '', p.nationality || '', p.steamId || '', p.fullName || '']);
+  });
+  return rows;
 }
 
 function lookupPostCastForms(requestIds) {

@@ -229,6 +229,9 @@ export function getConfig() {
     // admins are told to update FACEIT (Roster Change Requests), pinging these roles.
     rosterSpreadsheetId: process.env.ROSTER_SPREADSHEET_ID || '1zgbcvzSqo3hxsH20PH51y2xrODODNnUfGMgLrJGinng',
     rosterSheetName: process.env.ROSTER_SHEET_NAME || 'Roster Tracking',
+    // Every roster change adds rows here (made by the script the first time): Date, Team, Action,
+    // Player (linked to FACEIT), Role/Spot, Requested by.
+    rosterHistorySheetName: process.env.ROSTER_HISTORY_SHEET_NAME || 'Roster History',
     rosterChangeChannelId: process.env.ROSTER_CHANGE_CHANNEL_ID || '1569823541858410507',
     // Twitter, FACEIT and HLTV are written as hyperlinks showing this text (the tab uses "…").
     rosterLinkLabel: process.env.ROSTER_LINK_LABEL || '…',

@@ -7977,22 +7977,30 @@ async function handleTicketRoster(interaction) {
       await interaction.editReply({ content: `⚠️ ${plan.error} Start again from the roster.` });
       return;
     }
-    if (plan.sheetChange) {
+    // The sheet call also adds the Roster History rows, so a change sent to an admin (subs full,
+    // nothing written to the roster) still goes in the history.
+    let historyWarning = null;
+    if (plan.sheetChange || plan.history?.length) {
       const written = await scheduleSheet.applyRosterOps({
         spreadsheetId: config.rosterSpreadsheetId,
         sheetName: config.rosterSheetName,
         teamName: fresh.team.teamName,
         headerRow: fresh.team.headerRow,
-        expect: plan.expect,
-        ops: plan.ops,
+        expect: plan.sheetChange ? plan.expect : [],
+        ops: plan.sheetChange ? plan.ops : [],
         linkLabel: config.rosterLinkLabel,
-        logLine: plan.logLine
+        logLine: plan.sheetChange ? plan.logLine : null,
+        history: plan.history || [],
+        historySheetName: config.rosterHistorySheetName,
+        requestedBy: interaction.member?.displayName || interaction.user.globalName || interaction.user.username,
+        when: new Date().toISOString()
       });
-      if (!written.ok) {
+      if (!written.ok && plan.sheetChange) {
         await appendAuditLog({ type: 'roster_change_failed', ticketId, actorId: interaction.user.id, error: written.error }).catch(() => null);
         await interaction.editReply({ ...rosterConfirmView(wizard, plan), content: `❌ The roster sheet couldn't be updated: ${written.error}\nNothing was sent to the admins. Press Confirm to try again, or Cancel.` });
         return;
       }
+      if (!written.ok) historyWarning = `⚠️ The Roster History tab couldn't be updated: ${written.error}`;
     }
     rosterWizards.delete(wizardKey(ticketId, interaction.user.id));
     // Discord roles only follow a change that was written to the sheet.
@@ -8025,8 +8033,9 @@ async function handleTicketRoster(interaction) {
         plan.sheetChange ? '✅ The roster sheet is updated.' : '⚠️ The sheet was left for an admin to sort out.',
         plan.summary,
         adminPost ? `Admins were told in <#${config.rosterChangeChannelId}> to update FACEIT.` : '⚠️ The admin post failed, so tell the staff in this ticket.',
-        ...roleLines
-      ].join('\n')
+        ...roleLines,
+        historyWarning
+      ].filter(Boolean).join('\n')
     });
   }
 }

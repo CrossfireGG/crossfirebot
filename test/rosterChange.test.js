@@ -151,3 +151,21 @@ test('the admin post lists the Discord role changes', () => {
   assert.equal(post.fields.find((field) => field.name === 'Discord roles').value, '🎭 Gave <@1> **CLUB 333** and **Season Participant**.');
   assert.equal(buildRosterChangePost({ teamName: 'CLUB 333', requesterId: '42', plan }).fields.some((field) => field.name === 'Discord roles'), false);
 });
+
+test('Roster History rows: one per player affected, with their FACEIT link or roster row', () => {
+  const remove = planRosterOps(team(), { kind: 'remove', slotLabel: 'Starter 3', player });
+  assert.deepEqual(remove.history, [
+    { action: 'Removed', player: 'calamity', spot: 'Starter 3', faceitRow: 6 },
+    { action: 'Added', player: 'zoro-', spot: 'Starter 3', faceit: 'https://www.faceit.com/en/players/zoro-' }
+  ]);
+  assert.deepEqual(planRosterOps(team({ subs: ['benchy', ''] }), { kind: 'sub', slotLabel: 'Starter 3' }).history,
+    [{ action: 'Moved to sub', player: 'calamity', spot: 'Starter 3 → Sub 2', faceitRow: 6 }]);
+  assert.deepEqual(planRosterOps(team({ subs: ['benchy', ''] }), { kind: 'promote', slotLabel: 'Sub 1', swapLabel: 'Starter 2' }).history, [
+    { action: 'Promoted', player: 'benchy', spot: 'Sub 1 → Starter 2', faceitRow: 9 },
+    { action: 'Moved to sub', player: 'two', spot: 'Starter 2 → Sub 1', faceitRow: 5 }
+  ]);
+  assert.deepEqual(planRosterOps(team(), { kind: 'add', joinAs: 'sub', player }).history,
+    [{ action: 'Added', player: 'zoro-', spot: 'Sub 1', faceit: 'https://www.faceit.com/en/players/zoro-' }]);
+  const full = planRosterOps(team({ subs: ['a', 'b'] }), { kind: 'sub', slotLabel: 'Starter 3', player });
+  assert.deepEqual(full.history.map((row) => row.action), ['Sent to admin: move to sub (subs full)', 'Sent to admin: add (subs full)'], 'still recorded when the sheet is left for an admin');
+});

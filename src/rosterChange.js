@@ -104,7 +104,7 @@ export function playerLines(player) {
 //                     their starter slot. Both subs full: still sent, sheet left for an admin.
 //   kind 'promote' -> slotLabel's sub moves to the first empty starter slot (player optional takes
 //                     the sub slot), or swaps with swapLabel's starter when no starter slot is free.
-// Returns { ok, error, needsSwap, ops, expect, summary, logLine, warning, sheetChange }.
+// Returns { ok, error, needsSwap, ops, expect, summary, logLine, history, warning, sheetChange }.
 // ops: { op: 'write', row, player } | { op: 'clear', row } | { op: 'copy', from, to } | { op: 'swap', a, b }
 // expect: [{ row, alias }] — every row the change reads; the sheet refuses if any moved.
 export function planRosterOps(team, change = {}) {
@@ -115,6 +115,10 @@ export function planRosterOps(team, change = {}) {
   const expect = (...rows) => rows.filter(Boolean).map((slot) => ({ row: slot.row, alias: slot.alias || '' }));
   const player = change.player || null;
   const teamName = team?.teamName || 'Team';
+  // Roster History rows: one per player affected. faceit is the new player's link; faceitRow is the
+  // roster row to read an existing player's FACEIT link from (the sheet shows it as "…").
+  const added = (spot) => (player ? [{ action: 'Added', player: player.alias, spot, faceit: player.faceit || '' }] : []);
+  const moved = (from, action, spot) => ({ action, player: who(from), spot, faceitRow: from.row });
 
   if (change.kind === 'add') {
     const kind = change.joinAs === 'sub' ? 'sub' : 'starter';
@@ -127,6 +131,7 @@ export function planRosterOps(team, change = {}) {
       expect: expect(target),
       summary: `Adding **${player.alias}** as ${target.label}.`,
       logLine: `${teamName}: +"${player.alias}"`,
+      history: added(target.label),
       warning: null,
       sheetChange: true,
       newSlotLabel: target.label
@@ -146,6 +151,7 @@ export function planRosterOps(team, change = {}) {
       expect: expect(slot),
       summary: `Removing **${out}** (${slot.label})${replacement}.`,
       logLine: `${teamName}: -"${out}"${replacementLog}`,
+      history: [moved(slot, 'Removed', slot.label), ...added(slot.label)],
       warning: null,
       sheetChange: true,
       newSlotLabel: player ? slot.label : null
@@ -162,6 +168,7 @@ export function planRosterOps(team, change = {}) {
         expect: [],
         summary: `Moving **${out}** to sub${replacement}.`,
         logLine: null,
+        history: [moved(slot, 'Sent to admin: move to sub (subs full)', `${slot.label} → sub`), ...(player ? [{ ...added(slot.label)[0], action: 'Sent to admin: add (subs full)' }] : [])],
         warning: `Both sub slots are full. It will still be sent, but the sheet won't be changed: an admin will decide where ${out}${player ? ` and ${player.alias}` : ''} go.`,
         sheetChange: false,
         newSlotLabel: null
@@ -173,6 +180,7 @@ export function planRosterOps(team, change = {}) {
       expect: expect(slot, sub),
       summary: `Moving **${out}** to ${sub.label}${replacement}.`,
       logLine: `${teamName}: "${out}" to sub${replacementLog}`,
+      history: [moved(slot, 'Moved to sub', `${slot.label} → ${sub.label}`), ...added(slot.label)],
       warning: null,
       sheetChange: true,
       newSlotLabel: player ? slot.label : null
@@ -190,6 +198,7 @@ export function planRosterOps(team, change = {}) {
         expect: expect(slot, starter),
         summary: `Promoting **${out}** to ${starter.label}${subReplacement}.`,
         logLine: `${teamName}: "${out}" to starter${replacementLog}`,
+        history: [moved(slot, 'Promoted', `${slot.label} → ${starter.label}`), ...added(slot.label)],
         warning: null,
         sheetChange: true,
         newSlotLabel: player ? slot.label : null
@@ -205,6 +214,7 @@ export function planRosterOps(team, change = {}) {
       expect: expect(slot, swap),
       summary: `Promoting **${out}** to ${swap.label}, moving **${who(swap)}** to ${slot.label}.`,
       logLine: `${teamName}: "${out}" to starter, "${who(swap)}" to sub`,
+      history: [moved(slot, 'Promoted', `${slot.label} → ${swap.label}`), moved(swap, 'Moved to sub', `${swap.label} → ${slot.label}`)],
       warning: player ? `${player.alias} wasn't added: a swap doesn't free a slot. Add them as a separate change.` : null,
       sheetChange: true,
       newSlotLabel: null
