@@ -238,6 +238,7 @@ import {
   priorityText,
   rosterPriority,
   shouldBumpRoster,
+  ticketAlertText,
   ticketChannelName,
   ticketNumberText,
   ticketTopic,
@@ -7235,7 +7236,7 @@ function ticketControls(ticket) {
   if (ticket.status !== 'open') return [];
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`ticket_claim:${ticket.id}`).setLabel(ticket.claimedBy ? 'Claim (take over)' : 'Claim').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`ticket_claim:${ticket.id}`).setLabel(ticket.claimedBy ? 'Take over' : 'Claim').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`ticket_reassign:${ticket.id}`).setLabel('Reassign').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`ticket_close:${ticket.id}`).setLabel('Close').setStyle(ButtonStyle.Danger)
     ),
@@ -7244,6 +7245,25 @@ function ticketControls(ticket) {
       .setPlaceholder('Staff: change priority…')
       .addOptions(Object.entries(PRIORITIES).map(([value, entry]) => ({ label: entry.label, value, emoji: entry.emoji, default: ticket.priority === value }))))
   ];
+}
+
+// The Tournament Operations alert: the text, plus Claim (Take over once claimed) and a link to the
+// ticket while it's open.
+function ticketAlertPayload(ticket) {
+  const components = [];
+  if (ticket.status === 'open') {
+    const buttons = [new ButtonBuilder().setCustomId(`ticket_claim:${ticket.id}`).setLabel(ticket.claimedBy ? 'Take over' : 'Claim').setStyle(ticket.claimedBy ? ButtonStyle.Secondary : ButtonStyle.Primary)];
+    if (ticket.channelId && ticket.guildId) buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('Open ticket').setURL(`https://discord.com/channels/${ticket.guildId}/${ticket.channelId}`));
+    components.push(new ActionRowBuilder().addComponents(buttons));
+  }
+  return { content: ticketAlertText(ticket, { roleIds: config.ticketAlertRoleIds }), components, allowedMentions: { parse: [] } };
+}
+
+async function refreshTicketAlert(ticket) {
+  if (!ticket?.alertChannelId || !ticket.alertMessageId) return;
+  const channel = await client.channels.fetch(ticket.alertChannelId).catch(() => null);
+  const message = channel?.isTextBased?.() ? await channel.messages.fetch(ticket.alertMessageId).catch(() => null) : null;
+  if (message) await message.edit(ticketAlertPayload(ticket)).catch(() => null);
 }
 
 function ticketHeaderPayload(ticket) {
@@ -7311,8 +7331,21 @@ async function openTicket({ guild, parentId, opener, topic, answers, priority, e
   const saved = await saveTicket(ticket.id, { channelId: channel.id });
   const header = await channel.send({ content, ...ticketHeaderPayload(saved), allowedMentions: { parse: [], users: pingUsers, roles: pingRoles } }).catch(() => null);
   const final = await saveTicket(ticket.id, { headerMessageId: header?.id || null, adminPinged: adminPings ? [...pingUsers.slice(1), ...pingRoles.map((id) => `role:${id}`)] : [] });
+  // Tell Tournament Operations a ticket needs help.
+  const alertChannel = config.ticketAlertChannelId ? await client.channels.fetch(config.ticketAlertChannelId).catch(() => null) : null;
+  let opened = final;
+  if (alertChannel?.isTextBased?.()) {
+    const alert = await alertChannel.send({
+      ...ticketAlertPayload(final),
+      allowedMentions: { parse: [], roles: config.ticketAlertRoleIds }
+    }).catch((error) => {
+      console.error(`[Tickets] alert for ${ticket.id} not posted: ${error.message || error}`);
+      return null;
+    });
+    if (alert) opened = await saveTicket(ticket.id, { alertChannelId: alertChannel.id, alertMessageId: alert.id }) || final;
+  }
   await appendAuditLog({ type: 'ticket_opened', ticketId: ticket.id, topic, actorId: opener.id, priority: priority.priority }).catch(() => null);
-  return { ticket: final, channel };
+  return { ticket: opened, channel };
 }
 
 // The topic dropdown on the panel.
@@ -7987,12 +8020,22 @@ async function handleTicketControl(interaction) {
     await interaction.reply({ content: 'Only staff can do that.', ephemeral: true });
     return;
   }
-  const channel = interaction.channel;
   if (kind === 'ticket_claim') {
+    if (ticket.claimedBy === interaction.user.id) {
+      await interaction.reply({ content: "You're already handling this ticket.", ephemeral: true });
+      return;
+    }
     const saved = await saveTicket(ticketId, { claimedBy: interaction.user.id, claimedTag: interaction.user.username, claimedAt: new Date().toISOString() });
-    await interaction.update(ticketHeaderPayload(saved));
-    await channel.send({ content: `🙋 <@${ticket.openerId}>, <@${interaction.user.id}> is handling your ticket.`, allowedMentions: { users: [ticket.openerId] } }).catch(() => null);
-    await appendAuditLog({ type: 'ticket_claimed', ticketId, actorId: interaction.user.id }).catch(() => null);
+    // Claimed from the ticket's header or from the Tournament Operations alert: update that one in
+    // place, and the other one too.
+    if (interaction.message?.id === ticket.alertMessageId) {
+      await interaction.update(ticketAlertPayload(saved));
+      await refreshTicketHeader(saved);
+    } else {
+      await interaction.update(ticketHeaderPayload(saved));
+      await refreshTicketAlert(saved);
+    }
+    await appendAuditLog({ type: 'ticket_claimed', ticketId, actorId: interaction.user.id, takeOver: Boolean(ticket.claimedBy) }).catch(() => null);
     return;
   }
   if (kind === 'ticket_reassign') {
@@ -8009,7 +8052,7 @@ async function handleTicketControl(interaction) {
     const saved = await saveTicket(ticketId, { claimedBy: userId, claimedTag: user?.username || userId, claimedAt: new Date().toISOString() });
     await interaction.update({ content: `Reassigned to <@${userId}>.`, components: [] });
     await refreshTicketHeader(saved);
-    await channel.send({ content: `🔁 <@${userId}> is now handling this ticket.`, allowedMentions: { users: [userId] } }).catch(() => null);
+    await refreshTicketAlert(saved);
     await appendAuditLog({ type: 'ticket_reassigned', ticketId, actorId: interaction.user.id, to: userId }).catch(() => null);
     return;
   }
@@ -8021,7 +8064,7 @@ async function handleTicketControl(interaction) {
     }
     const saved = await saveTicket(ticketId, { priority: value, priorityOverride: true, priorityReason: `Set by ${interaction.user.username}` });
     await interaction.update(ticketHeaderPayload(saved));
-    await channel.send({ content: `Priority set to **${priorityText(value)}** by <@${interaction.user.id}>.`, allowedMentions: { parse: [] } }).catch(() => null);
+    await refreshTicketAlert(saved);
     await appendAuditLog({ type: 'ticket_priority', ticketId, actorId: interaction.user.id, priority: value }).catch(() => null);
     return;
   }
@@ -8085,7 +8128,8 @@ async function handleTicketClose(interaction) {
     await interaction.editReply("⚠️ The transcript couldn't be posted to Support Receipts, so the ticket was left open. Check the bot can post files there, then close again.");
     return;
   }
-  await saveTicket(ticketId, { status: 'closed', closedBy: interaction.user.id, closedAt: closed.closedAt, closeReason: reason, transcriptMessageId: sent.id });
+  const closedTicket = await saveTicket(ticketId, { status: 'closed', closedBy: interaction.user.id, closedAt: closed.closedAt, closeReason: reason, transcriptMessageId: sent.id });
+  await refreshTicketAlert(closedTicket);
   await appendAuditLog({ type: 'ticket_closed', ticketId, actorId: interaction.user.id, reason }).catch(() => null);
   await interaction.editReply('Transcript saved to Support Receipts. Deleting this channel in 5 seconds.');
   await channel.send({ content: `🔒 Ticket closed by <@${interaction.user.id}>${reason ? `: ${reason}` : ''}. This channel will be deleted in 5 seconds.`, allowedMentions: { parse: [] } }).catch(() => null);
@@ -8113,6 +8157,7 @@ async function syncTicketPriorities(now = Date.now()) {
     if (!shouldBumpRoster(current, now)) continue;
     const saved = await saveTicket(ticket.id, { priority: 'priority', priorityReason: 'Next match within 24 hours (bumped)' });
     const channel = await refreshTicketHeader(saved);
+    await refreshTicketAlert(saved);
     const startSec = Math.floor(Date.parse(saved.nextMatchIso) / 1000);
     await channel?.send?.({ content: `⏫ Bumped to **${priorityText('priority')}**: ${saved.teamName}'s next match is <t:${startSec}:R>.`, allowedMentions: { parse: [] } }).catch(() => null);
     await appendAuditLog({ type: 'ticket_bumped', ticketId: ticket.id, nextMatchIso: saved.nextMatchIso }).catch(() => null);

@@ -76,13 +76,25 @@ export function ticketNumberText(number) {
   return `#${String(number).padStart(4, '0')}`;
 }
 
+// The alert posted for Tournament Operations when a ticket opens:
+// "Hey @Tournament Operations, ticket #0042 · General Support (#support-0042-crown) has been opened and needs help! Priority: 🔴 Urgent"
+export function ticketAlertText(ticket, { roleIds = [] } = {}) {
+  const who = roleIds.length ? roleIds.map((id) => `<@&${id}>`).join(' ') : 'Tournament Operations';
+  const name = `${ticketNumberText(ticket.number)} · ${ticketTopic(ticket.topic)?.label || 'Support'}`;
+  const link = ticket.channelId ? ` (<#${ticket.channelId}>)` : '';
+  const lines = [`Hey ${who}, ticket **${name}**${link} has been opened and needs help! Priority: ${priorityText(ticket.priority)}`];
+  if (ticket.status === 'closed') lines.push(`🔒 Closed by <@${ticket.closedBy}>`);
+  else if (ticket.claimedBy) lines.push(`Handled by <@${ticket.claimedBy}>`);
+  return lines.join('\n');
+}
+
 // The ticket's header card: { title, description, fields, color }.
 export function buildTicketHeader(ticket) {
   const topic = ticketTopic(ticket.topic);
   const fields = [
     { name: 'Opened by', value: `<@${ticket.openerId}>`, inline: true },
     { name: 'Handled by', value: ticket.claimedBy ? `<@${ticket.claimedBy}>` : 'Not claimed yet', inline: true },
-    { name: 'Priority', value: `${priorityText(ticket.priority)}${ticket.priorityReason ? ` · ${ticket.priorityReason}` : ''}${ticket.priorityOverride ? ' (set by staff)' : ''}`.slice(0, 1024), inline: false }
+    { name: 'Priority', value: `${priorityText(ticket.priority)}${ticket.priorityReason ? ` · ${ticket.priorityReason}` : ''}${ticket.priorityOverride && !/^set by /i.test(ticket.priorityReason || '') ? ' (set by staff)' : ''}`.slice(0, 1024), inline: false }
   ];
   if (ticket.needsVerify) fields.push({ name: '⚠️ Staff', value: 'Verify the next match: the bot could not read it, so the team was asked for the link and start time.' });
   for (const answer of ticket.answers || []) {
@@ -95,7 +107,7 @@ export function buildTicketHeader(ticket) {
     title: `🎫 Ticket ${ticketNumberText(ticket.number)} · ${topic?.label || 'Support'}`.slice(0, 256),
     description: ticket.status === 'closed'
       ? 'This ticket is closed.'
-      : 'Staff will be with you soon. Add anything else (screenshots, links) right here in this channel.',
+      : 'The Admin team has been notified and will assist you as soon as possible. Please provide any details or evidence to help us handle this ticket.',
     fields: fields.slice(0, 25),
     color: (PRIORITIES[ticket.priority] || PRIORITIES.normal).color
   };

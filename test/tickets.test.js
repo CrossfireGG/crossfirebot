@@ -7,6 +7,7 @@ import {
   matchIssuePriority,
   rosterPriority,
   shouldBumpRoster,
+  ticketAlertText,
   ticketChannelName,
   TICKET_TOPICS
 } from '../src/tickets.js';
@@ -52,6 +53,7 @@ test('ticket channel names and the header card', () => {
     answers: [{ label: 'Team', value: 'CLUB 333' }, { label: 'Match link', value: '' }, { label: "What's happening", value: 'Server crashed' }]
   });
   assert.equal(header.title, '🎫 Ticket #0042 · Match / FACEIT Issue');
+  assert.equal(header.description, 'The Admin team has been notified and will assist you as soon as possible. Please provide any details or evidence to help us handle this ticket.');
   assert.deepEqual(header.fields.map((field) => field.name), ['Opened by', 'Handled by', 'Priority', 'Team', "What's happening"]);
   assert.equal(header.fields[1].value, 'Not claimed yet');
   assert.equal(header.fields[2].value, '🔴 Urgent · Match is live');
@@ -59,6 +61,8 @@ test('ticket channel names and the header card', () => {
   assert.equal(claimed.fields[1].value, '<@9>');
   assert.match(claimed.fields[2].value, /\(set by staff\)/);
   assert.equal(claimed.fields[3].name, '⚠️ Staff');
+  const named = buildTicketHeader({ number: 1, topic: 'support', openerId: '1', priority: 'urgent', priorityOverride: true, priorityReason: 'Set by bigntallmatt' });
+  assert.equal(named.fields[2].value, '🔴 Urgent · Set by bigntallmatt', 'no repeated "(set by staff)"');
 });
 
 test('the transcript lists every message oldest first with files and embeds', () => {
@@ -79,4 +83,14 @@ test('the transcript lists every message oldest first with files and embeds', ()
     '[2026-11-11 20:01 UTC] zoro: Help [file: https://cdn/x.png]',
     '[2026-11-11 20:02 UTC] admin1: Fixed!'
   ]);
+});
+
+test('the Tournament Operations alert names the ticket, links it and gives the priority', () => {
+  const ticket = { number: 42, topic: 'support', channelId: '555', priority: 'urgent' };
+  assert.equal(ticketAlertText(ticket, { roleIds: ['1474118305169019163'] }),
+    'Hey <@&1474118305169019163>, ticket **#0042 · General Support** (<#555>) has been opened and needs help! Priority: 🔴 Urgent');
+  assert.equal(ticketAlertText({ ...ticket, priority: 'normal', channelId: null }),
+    'Hey Tournament Operations, ticket **#0042 · General Support** has been opened and needs help! Priority: 🟢 Normal');
+  assert.match(ticketAlertText({ ...ticket, claimedBy: '9' }), /\nHandled by <@9>$/, 'shows who claimed it');
+  assert.match(ticketAlertText({ ...ticket, claimedBy: '9', status: 'closed', closedBy: '7' }), /\n🔒 Closed by <@7>$/, 'and when it closes');
 });

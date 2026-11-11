@@ -237,6 +237,9 @@ export function getConfig() {
     // channels are created in TICKET_CATEGORY_ID (the Support category).
     ticketReceiptsChannelId: process.env.TICKET_RECEIPTS_CHANNEL_ID || '1418723351073132594',
     ticketCategoryId: process.env.TICKET_CATEGORY_ID || '1128908635133706260', // the Support category
+    // When a ticket opens, an alert pings Tournament Operations in this channel.
+    ticketAlertChannelId: process.env.TICKET_ALERT_CHANNEL_ID || '1473806888188776653',
+    ticketAlertRoleIds: parseSnowflakeList(process.env.TICKET_ALERT_ROLE_IDS ?? tournamentOpsRoleIds.join(',')),
     // While testing, only staff can open tickets from the panel. Set TICKETS_STAFF_ONLY=false to open it to everyone.
     ticketsStaffOnly: process.env.TICKETS_STAFF_ONLY !== 'false',
     casterApplicationChannelId: process.env.CASTER_APPLICATION_CHANNEL_ID || '1558684878743150693',
