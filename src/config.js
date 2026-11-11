@@ -135,6 +135,10 @@ export function getConfig() {
     throw new Error('FACEIT_SOURCES must include at least one source');
   }
 
+  // Tournament Operations can do everything staff and admins can on the bot. These IDs are always
+  // added to the authorized staff list, even when AUTHORIZED_STAFF_ROLE_IDS is set.
+  const tournamentOpsRoleIds = parseSnowflakeList(process.env.TOURNAMENT_OPS_ROLE_IDS ?? '1474118305169019163');
+
   const commandGuildIds = [
     process.env.DISCORD_GUILD_ID,
     ...parseSnowflakeList(process.env.DISCORD_COMMAND_GUILD_IDS || '')
@@ -170,10 +174,14 @@ export function getConfig() {
     matchAccessRoleIds: parseCsvValue(process.env.MATCH_ACCESS_ROLE_IDS || '1128907825167482900,1353921199016644700'),
     matchAccessRoleNames: parseCsvValue(process.env.MATCH_ACCESS_ROLE_NAMES || ''),
     scheduleOverrideRoleIds: parseCsvValue(process.env.SCHEDULE_OVERRIDE_ROLE_IDS || '1128907825167482900'),
-    authorizedStaffRoleIds: parseSnowflakeList(process.env.AUTHORIZED_STAFF_ROLE_IDS || [
-      process.env.DISCORD_STAFF_ROLE_ID,
-      ...parseSnowflakeList(process.env.ADMIN_ALERT_ROLE_IDS || '')
-    ].filter(Boolean).join(',')),
+    tournamentOpsRoleIds,
+    authorizedStaffRoleIds: [...new Set([
+      ...parseSnowflakeList(process.env.AUTHORIZED_STAFF_ROLE_IDS || [
+        process.env.DISCORD_STAFF_ROLE_ID,
+        ...parseSnowflakeList(process.env.ADMIN_ALERT_ROLE_IDS || '')
+      ].filter(Boolean).join(',')),
+      ...tournamentOpsRoleIds
+    ])],
     roleSyncPairs: parseRoleSyncPairs(
       process.env.ROLE_SYNC_PAIRS ||
       '1128905368018354277:1128907940720562296=1473173377005912074:1474117290600562920'

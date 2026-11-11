@@ -71,7 +71,8 @@ test('authorized staff role IDs accept spaces, commas, and semicolons', () => {
     'DISCORD_GUILD_ID',
     'FACEIT_API_KEY',
     'FACEIT_SOURCES',
-    'AUTHORIZED_STAFF_ROLE_IDS'
+    'AUTHORIZED_STAFF_ROLE_IDS',
+    'TOURNAMENT_OPS_ROLE_IDS'
   ].map((key) => [key, process.env[key]]));
   try {
     Object.assign(process.env, {
@@ -82,12 +83,47 @@ test('authorized staff role IDs accept spaces, commas, and semicolons', () => {
       FACEIT_SOURCES: 'championship:test-id:Test Championship',
       AUTHORIZED_STAFF_ROLE_IDS: '333333333333333 444444444444444,555555555555555;666666666666666'
     });
+    delete process.env.TOURNAMENT_OPS_ROLE_IDS;
     assert.deepEqual(getConfig().authorizedStaffRoleIds, [
       '333333333333333',
       '444444444444444',
       '555555555555555',
-      '666666666666666'
+      '666666666666666',
+      '1474118305169019163'
     ]);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('Tournament Operations role has full staff access by default', () => {
+  const previous = Object.fromEntries([
+    'DISCORD_TOKEN',
+    'DISCORD_CLIENT_ID',
+    'DISCORD_GUILD_ID',
+    'FACEIT_API_KEY',
+    'FACEIT_SOURCES',
+    'AUTHORIZED_STAFF_ROLE_IDS',
+    'DISCORD_STAFF_ROLE_ID',
+    'ADMIN_ALERT_ROLE_IDS',
+    'TOURNAMENT_OPS_ROLE_IDS'
+  ].map((key) => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, {
+      DISCORD_TOKEN: 'test-token',
+      DISCORD_CLIENT_ID: '111111111111111',
+      DISCORD_GUILD_ID: '222222222222222',
+      FACEIT_API_KEY: 'test-key',
+      FACEIT_SOURCES: 'championship:test-id:Test Championship'
+    });
+    for (const key of ['AUTHORIZED_STAFF_ROLE_IDS', 'DISCORD_STAFF_ROLE_ID', 'ADMIN_ALERT_ROLE_IDS', 'TOURNAMENT_OPS_ROLE_IDS']) delete process.env[key];
+    const config = getConfig();
+    assert.deepEqual(config.authorizedStaffRoleIds, ['1474118305169019163']);
+    assert.equal(isAuthorizedStaffMember(fakeMember(['1474118305169019163']), config), true);
+    assert.equal(isAuthorizedStaffMember(fakeMember(['999999999999999']), config), false);
   } finally {
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key];
