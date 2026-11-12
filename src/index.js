@@ -8145,13 +8145,15 @@ async function handleTicketRoster(interaction) {
     const ticketChannel = await client.channels.fetch(ticket.channelId).catch(() => null);
     await ticketChannel?.send?.({ embeds: [embed()] }).catch(() => null);
     const adminChannel = config.rosterChangeChannelId ? await client.channels.fetch(config.rosterChangeChannelId).catch(() => null) : null;
-    const pings = config.rosterChangePingRoleIds.map((roleId) => `<@&${roleId}>`).join(' ');
+    // A claimed ticket pings only the admin handling it; otherwise the roster change roles.
+    const handler = (await getTicket(ticketId).catch(() => null))?.claimedBy || ticket.claimedBy || null;
+    const pings = handler ? `<@${handler}>` : config.rosterChangePingRoleIds.map((roleId) => `<@&${roleId}>`).join(' ');
     const adminPost = adminChannel?.isTextBased?.()
       ? await adminChannel.send({
         content: pings || undefined,
         embeds: [embed()],
         components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('roster_done').setLabel('Done on FACEIT').setStyle(ButtonStyle.Success))],
-        allowedMentions: { parse: [], roles: config.rosterChangePingRoleIds }
+        allowedMentions: handler ? { parse: [], users: [handler] } : { parse: [], roles: config.rosterChangePingRoleIds }
       }).catch(() => null)
       : null;
     // The roster list in the ticket shows the new roster.
