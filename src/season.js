@@ -76,6 +76,25 @@ export const LEGACY_SEASON_SEED = Object.freeze({
   ]
 });
 
+// Season 7 playoff dates announced after the Group Stage. These are merged into the
+// persisted Season 7 record once, without replacing rounds staff have already edited.
+export const SEASON7_PLAYOFF_ROUNDS = Object.freeze([
+  { name: 'Upper Bracket - Round 1', startDate: '2026-11-14', endDate: '2026-11-17', defaultDate: '2026-11-15', defaultTime: '20:00' },
+  { name: 'Upper Bracket - Round 2', startDate: '2026-11-18', endDate: '2026-11-20', defaultDate: '2026-11-19', defaultTime: '20:00' },
+  { name: 'Lower Bracket - Round 1', startDate: '2026-11-18', endDate: '2026-11-20', defaultDate: '2026-11-19', defaultTime: '20:00' },
+  { name: 'Upper Bracket - Round 3', startDate: '2026-11-21', endDate: '2026-11-23', defaultDate: '2026-11-22', defaultTime: '20:00' },
+  { name: 'Lower Bracket - Round 2', startDate: '2026-11-21', endDate: '2026-11-23', defaultDate: '2026-11-22', defaultTime: '20:00' },
+  { name: 'Lower Bracket - Round 3', startDate: '2026-11-24', endDate: '2026-11-26', defaultDate: '2026-11-25', defaultTime: '20:00' },
+  { name: 'Upper Bracket - Round 4', startDate: '2026-11-27', endDate: '2026-11-29', defaultDate: '2026-11-28', defaultTime: '20:00' },
+  { name: 'Lower Bracket - Round 4', startDate: '2026-11-27', endDate: '2026-11-29', defaultDate: '2026-11-28', defaultTime: '20:00' },
+  { name: 'Lower Bracket - Round 5', startDate: '2026-11-30', endDate: '2026-12-02', defaultDate: '2026-12-01', defaultTime: '20:00' },
+  { name: 'Upper Bracket - Round 5', startDate: '2026-12-03', endDate: '2026-12-05', defaultDate: '2026-12-04', defaultTime: '20:00' },
+  { name: 'Lower Bracket - Round 6', startDate: '2026-12-03', endDate: '2026-12-05', defaultDate: '2026-12-04', defaultTime: '20:00' },
+  { name: 'Lower Bracket - Round 7', startDate: '2026-12-06', endDate: '2026-12-08', defaultDate: '2026-12-07', defaultTime: '20:00' },
+  { name: 'Lower Bracket - Round 8', startDate: '2026-12-09', endDate: '2026-12-11', defaultDate: '2026-12-10', defaultTime: '20:00' },
+  { name: 'Grand Final (BO5)', startDate: '2026-12-11', endDate: '2026-12-13', defaultDate: '2026-12-12', defaultTime: '20:00' }
+]);
+
 export function normalizeRoundName(value) {
   return String(value || '')
     .toLowerCase()
@@ -363,6 +382,22 @@ export function findSeasonRound(season, names) {
     if (round) return round;
   }
   return null;
+}
+
+export function mergeMissingSeasonRounds(season, rounds, { endDate = null } = {}) {
+  if (!season) return { season, added: [] };
+  const existing = new Set((season.rounds || []).map((round) => roundKey(round.name)));
+  const added = (rounds || [])
+    .filter((round) => !existing.has(roundKey(round.name)))
+    .map((round) => ({ ...round }));
+  return {
+    season: {
+      ...season,
+      endDate: endDate && (!season.endDate || season.endDate < endDate) ? endDate : season.endDate,
+      rounds: [...(season.rounds || []).map((round) => ({ ...round })), ...added]
+    },
+    added
+  };
 }
 
 // ---------- which season ----------

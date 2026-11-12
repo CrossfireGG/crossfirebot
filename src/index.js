@@ -109,6 +109,7 @@ import {
 import {
   LEGACY_SEASON_SEED,
   PLAYOFF_ROUND_NAMES,
+  SEASON7_PLAYOFF_ROUNDS,
   currentSeason,
   easternDateKey,
   findSeasonByRef,
@@ -118,6 +119,7 @@ import {
   formatRoundsText,
   formatSeasonRange,
   makeSeasonId,
+  mergeMissingSeasonRounds,
   parseRoundsText,
   parseSeasonDate,
   planDeleteSeason,
@@ -980,6 +982,24 @@ async function loadSeasons() {
   if (seeded) {
     console.log(`[Season] Copied the built-in ${seeded.name} round dates into the data store.`);
     await appendAuditLog({ type: 'season_seeded', seasonId: seeded.id, name: seeded.name });
+  }
+  const seasons = await listSeasons();
+  const season7 = findSeasonByRef(seasons, 'season-7');
+  const merged = mergeMissingSeasonRounds(season7, SEASON7_PLAYOFF_ROUNDS, { endDate: '2026-12-13' });
+  if (merged.added.length) {
+    const result = await updateSeasons((items) => planUpdateSeason(items, season7.id, {
+      endDate: merged.season.endDate,
+      rounds: merged.season.rounds
+    }));
+    if (!result?.error) {
+      console.log(`[Season] Added ${merged.added.length} Season 7 playoff round(s).`);
+      await appendAuditLog({
+        type: 'season_playoff_rounds_migrated',
+        seasonId: season7.id,
+        roundCount: merged.added.length,
+        rounds: merged.added.map((round) => round.name)
+      });
+    }
   }
   await refreshSeasonCache();
 }

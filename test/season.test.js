@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   LEGACY_SEASON_SEED,
+  SEASON7_PLAYOFF_ROUNDS,
   currentSeason,
   easternDateKey,
   findSeasonByRef,
@@ -10,6 +11,7 @@ import {
   formatRoundsText,
   isKnownRoundName,
   makeSeasonId,
+  mergeMissingSeasonRounds,
   parseRoundsText,
   parseSeasonDate,
   parseSeasonTime,
@@ -146,6 +148,29 @@ test('the seeded season reproduces the old hard-coded Group Stage windows', () =
   // The scheduling code parses window edges as "<date> 12:00 AM EST" / "<date> 11:59 PM EST".
   assert.equal(new Date(Date.parse(`${groupStage.start} 12:00 AM EST`)).toISOString(), '2026-11-02T05:00:00.000Z');
   assert.equal(new Date(Date.parse(`${groupStage.end} 11:59 PM EST`)).toISOString(), '2026-11-12T04:59:00.000Z');
+});
+
+test('Season 7 playoff rounds append once without replacing staff edits', () => {
+  const custom = {
+    name: 'Upper Bracket - Round 1',
+    startDate: '2026-11-13',
+    endDate: '2026-11-17',
+    defaultDate: '2026-11-15',
+    defaultTime: '21:00'
+  };
+  const first = mergeMissingSeasonRounds(
+    { ...season7, rounds: [...season7.rounds, custom] },
+    SEASON7_PLAYOFF_ROUNDS,
+    { endDate: '2026-12-13' }
+  );
+  assert.equal(first.season.endDate, '2026-12-13');
+  assert.equal(first.added.length, SEASON7_PLAYOFF_ROUNDS.length - 1);
+  assert.deepEqual(findSeasonRound(first.season, ['WB Round of 32']), custom);
+  assert.equal(findSeasonRound(first.season, ['Grand Final']).defaultDate, '2026-12-12');
+
+  const second = mergeMissingSeasonRounds(first.season, SEASON7_PLAYOFF_ROUNDS, { endDate: '2026-12-13' });
+  assert.equal(second.added.length, 0);
+  assert.deepEqual(second.season.rounds, first.season.rounds);
 });
 
 test('findSeasonRound tries names in order and maps FACEIT playoff names', () => {
