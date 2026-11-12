@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { arenaLinkConflict } from './arenaLogic.js';
 import { STREAM_ACTIVE_STATUSES } from './streamRequest.js';
 
 const dbPath = path.resolve(process.env.BOT_DATA_PATH || 'bot-data.json');
@@ -44,7 +45,9 @@ function normalizeDb(db) {
     counters: db.counters || {},
     mainStreamForms: db.mainStreamForms || {},
     tickets: db.tickets || {},
-    rosterChanges: db.rosterChanges || {}
+    rosterChanges: db.rosterChanges || {},
+    arenaLinks: db.arenaLinks || {},
+    arenaMatches: db.arenaMatches || {}
   };
 }
 
@@ -896,6 +899,66 @@ export async function getRosterChange(id) {
 // Changes still waiting for "Done on FACEIT" (not undone).
 export async function listOpenRosterChanges() {
   return Object.values((await snapshot()).rosterChanges || {}).filter((record) => !record.doneAt && !record.undoneAt);
+}
+
+// Crossfire Arena: which Discord account each FACEIT player is ({ [faceitPlayerId]: link }), and
+// the games that have team voice channels right now ({ [faceitMatchId]: record }).
+export async function listArenaLinks() {
+  return (await snapshot()).arenaLinks || {};
+}
+
+// Links a FACEIT account to a Discord account. One FACEIT account per Discord account and the other
+// way round; replace: true (staff) moves the link instead of refusing.
+// { ok: true, link, replaced: [links removed] } | { ok: false, reason: 'taken' | 'other', existing }
+export async function linkArenaPlayer({ playerId, nickname, discordId, source, linkedBy = null }, { replace = false } = {}) {
+  return mutateDb((db) => {
+    db.arenaLinks = db.arenaLinks || {};
+    const check = arenaLinkConflict(db.arenaLinks, { playerId, discordId });
+    if (!check.ok && !replace) return check;
+    const replaced = [];
+    for (const [id, link] of Object.entries(db.arenaLinks)) {
+      if (id === playerId ? link.discordId !== discordId : link.discordId === discordId) {
+        replaced.push(link);
+        delete db.arenaLinks[id];
+      }
+    }
+    const link = { playerId, nickname, discordId, source, linkedBy, linkedAt: new Date().toISOString() };
+    db.arenaLinks[playerId] = link;
+    return { ok: true, link, replaced };
+  });
+}
+
+// Removes the links of a Discord account and/or a FACEIT account. Returns the removed links.
+export async function unlinkArenaPlayer({ discordId = null, playerId = null }) {
+  return mutateDb((db) => {
+    const removed = [];
+    for (const [id, link] of Object.entries(db.arenaLinks || {})) {
+      if ((discordId && link.discordId === discordId) || (playerId && id === playerId)) {
+        removed.push(link);
+        delete db.arenaLinks[id];
+      }
+    }
+    return removed;
+  });
+}
+
+export async function listArenaMatches() {
+  return Object.values((await snapshot()).arenaMatches || {});
+}
+
+export async function saveArenaMatch(id, patch) {
+  return mutateDb((db) => {
+    db.arenaMatches = db.arenaMatches || {};
+    db.arenaMatches[id] = { ...(db.arenaMatches[id] || {}), ...patch, id };
+    return { ...db.arenaMatches[id] };
+  });
+}
+
+export async function deleteArenaMatch(id) {
+  return mutateDb((db) => {
+    if (db.arenaMatches) delete db.arenaMatches[id];
+    return true;
+  });
 }
 
 // Named running totals (e.g. how many times !FireCrown was used). Returns the new total.

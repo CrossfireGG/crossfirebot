@@ -241,6 +241,21 @@ export function getConfig() {
     rosterDoneReminderHours: Math.max(1, Number(process.env.ROSTER_DONE_REMINDER_HOURS || 3) || 3),
     rosterDoneReminderMax: Math.max(0, Number(process.env.ROSTER_DONE_REMINDER_MAX ?? 4) || 0),
     rosterDoneSoonMinutes: Math.max(15, Number(process.env.ROSTER_DONE_SOON_MINUTES || 120) || 120),
+    // Crossfire Arena 10mans: when the draft on FACEIT is done, each team gets a private voice
+    // channel in the Arena category and its players are dragged in; at the end everyone goes back
+    // to the Queue. ARENA_ENABLED=false turns it off. ARENA_HUB_ID is the "Arena Queue" hub (the
+    // games live there, not in the Crossfire Arena club itself).
+    arenaEnabled: !/^(false|0|off|no)$/i.test(process.env.ARENA_ENABLED || ''),
+    arenaHubId: process.env.ARENA_HUB_ID || 'ae1514c3-0041-4946-8d4f-10772d82e170',
+    arenaCategoryId: process.env.ARENA_CATEGORY_ID || '1457485148042821874',
+    arenaQueueChannelId: process.env.ARENA_QUEUE_CHANNEL_ID || '1457486037151518770',
+    arenaInfoChannelId: process.env.ARENA_INFO_CHANNEL_ID || '1457485691503251600',
+    arenaStaffRoleIds: parseCsvValue(process.env.ARENA_STAFF_ROLE_IDS || '1409219330855403660'),
+    // Where "someone tried to claim a FACEIT account that's already linked" goes (default: the
+    // calladmin alert channel; none = not posted).
+    arenaStaffLogChannelId: process.env.ARENA_STAFF_LOG_CHANNEL_ID || '',
+    arenaPollSeconds: Math.max(10, Number(process.env.ARENA_POLL_SECONDS || 20) || 20),
+    arenaTeamSize: Math.max(1, Number(process.env.ARENA_TEAM_SIZE || 5) || 5),
     // Support tickets: each ticket's transcript goes to Support Receipts when it closes. Ticket
     // channels are created in TICKET_CATEGORY_ID (the Support category).
     ticketReceiptsChannelId: process.env.TICKET_RECEIPTS_CHANNEL_ID || '1418723351073132594',

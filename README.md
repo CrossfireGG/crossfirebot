@@ -517,6 +517,26 @@ Idempotency-Key: caster-request-{request_id}
 - Reply `2xx`, optionally `{"id": "..."}` which is stored on the request for audit. `5xx`, `429`, and timeouts are retried with exponential backoff up to `WEBSITE_MAX_ATTEMPTS`; any other `4xx` is a hard failure surfaced to staff immediately.
 - To swap the integration, implement another publisher in `src/websitePublisher.js` with a single `publish(request, context)` method and select it in `createWebsitePublisher`. Nothing in the Discord code changes.
 
+## Crossfire Arena 10mans voice (`/arena`)
+
+Every `ARENA_POLL_SECONDS` (20) the bot checks the FACEIT **Arena Queue** hub (`ARENA_HUB_ID`, `ae1514c3-…`; the games live there, not in the Crossfire Arena club). When a game's captain draft is done (both teams full and past captain pick):
+
+- Two private voice channels are made in the Arena category (`ARENA_CATEGORY_ID`), e.g. **🔵 Arena 12 · Team Zoro** and **🔴 Arena 12 · Team Beta**. Only that team's linked players and the Arena staff roles (`ARENA_STAFF_ROLE_IDS`, 🛠️ Staff) can see and join each one.
+- Linked players who are in any voice channel are dragged into their team's channel. Discord doesn't let bots pull in people who aren't in voice, so anyone on the game who **connects to voice later, or joins the Queue** (`ARENA_QUEUE_CHANNEL_ID`), is moved then. Moving between other channels on purpose is left alone.
+- Players the bot can't place get a post in arena-info (`ARENA_INFO_CHANNEL_ID`) with one button per unknown FACEIT name: **click your name**, you're linked and moved. The post shrinks as people claim and is deleted when the game ends.
+- When FACEIT says the game is finished or cancelled, everyone in the two channels goes back to the Queue and the channels are deleted.
+
+**Who is who.** A FACEIT account is linked to one Discord account (and the other way round) and remembered:
+1. League players: their Steam ID (FACEIT sends it with each game) is looked up on Roster Tracking and the Discord cell found in the server.
+2. Name match: a FACEIT name that exactly matches the Discord name of one person sitting in Arena voice (case and symbols ignored).
+3. Clicking their name on the arena-info post, the **Link FACEIT** button (posted with `/arena panel`) or `/arena link faceit:<name>`.
+
+Claiming a FACEIT account that's already linked to someone else is refused and posted to `ARENA_STAFF_LOG_CHANNEL_ID` (default: the calladmin channel).
+
+**Commands:** `/arena link faceit:` (staff add `user:` to link or move someone else's link), `/arena unlink` (staff: `user:` or `faceit:`), `/arena whois`, and for staff `/arena status` (live games, channels, how many are linked), `/arena panel`, `/arena cleanup` (ends finished games and deletes leftover Arena channels; `everything:true` ends every game it's tracking). `ARENA_ENABLED=false` turns it all off.
+
+The bot needs Manage Channels, Manage Roles, Connect and Move Members in the Arena category (it's Administrator in the league server), and the Server Members and Voice States gateway intents (Voice States needs no approval).
+
 ## Important FACEIT Note
 
 The documented FACEIT Data API exposes public read operations; no documented schedule-write or veto-write operation was verified for this bot. Keep `FACEIT_SCHEDULE_ENDPOINT` unset. Discord scheduling and vetoes are stored locally, and staff must enter them into FACEIT manually.

@@ -23,6 +23,7 @@ import path from 'node:path';
 
 import { commands } from './commands.js';
 import { getConfig } from './config.js';
+import { createArena } from './arena.js';
 import { FaceitClient } from './faceit.js';
 import { SclClient } from './scl.js';
 import { findUniqueSclMatchChannel } from './sclChannelResolver.js';
@@ -440,13 +441,23 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessageReactions,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates
   ],
   partials: [
     Partials.Channel,
     Partials.Message,
     Partials.Reaction
   ]
+});
+
+// Crossfire Arena 10mans: team voice channels and auto-drag (src/arena.js).
+const arena = createArena({
+  client,
+  faceit,
+  config,
+  isAdminStaff: (member) => isAdminStaff(member),
+  memberForDiscordText: (guild, text) => rosterMemberFor(guild, text)
 });
 
 client.once(Events.ClientReady, async () => {
@@ -487,6 +498,7 @@ client.once(Events.ClientReady, async () => {
     }, PREP_VETO_RECHECK_MS);
     prepTimer.unref?.();
   }
+  arena.start();
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -527,6 +539,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isButton() && /^roster_(done|doneforce|undo|undoyes)(:|$)/.test(interaction.customId || '')) {
       await handleRosterDone(interaction);
+      return;
+    }
+    if (interaction.customId?.startsWith('arena_')) {
+      await arena.handleComponent(interaction);
+      return;
+    }
+    if (interaction.isChatInputCommand() && interaction.commandName === 'arena') {
+      await arena.handleCommand(interaction);
       return;
     }
     if (interaction.isChatInputCommand()) {
@@ -1478,6 +1498,14 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     await syncMirroredRoles(oldMember, newMember);
   } catch (error) {
     console.error('Role sync failed:', error);
+  }
+});
+
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  try {
+    await arena.onVoiceStateUpdate(oldState, newState);
+  } catch (error) {
+    console.error('Arena voice move failed:', error);
   }
 });
 

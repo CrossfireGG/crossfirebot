@@ -48,6 +48,17 @@ export class FaceitClient {
     }
   }
 
+  // Matches of a FACEIT hub (raw, with teams.faction1/2.roster): type 'ongoing' or 'past'.
+  async getHubMatches(hubId, type = 'ongoing', limit = 20) {
+    const body = await this.request(`/hubs/${encodeURIComponent(hubId)}/matches?type=${encodeURIComponent(type)}&offset=0&limit=${limit}`);
+    return Array.isArray(body?.items) ? body.items : [];
+  }
+
+  // One match exactly as FACEIT sends it (getMatch reshapes it for league matches).
+  async getMatchRaw(matchId) {
+    return this.request(`/matches/${encodeURIComponent(matchId)}`);
+  }
+
   // A FACEIT team: { team_id, name, leader (user_id), members: [{ user_id, nickname }] }.
   async getTeam(teamId) {
     return this.request(`/teams/${encodeURIComponent(teamId)}`);
