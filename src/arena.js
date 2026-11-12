@@ -687,6 +687,14 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
     await interaction.reply({ content: 'Unknown /arena option.', ephemeral: true });
   }
 
+  // The Link FACEIT / Unlink buttons, for the panel and for reposted messages.
+  function linkButtonsRow() {
+    return new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('arena_link').setLabel('Link FACEIT').setEmoji('🔗').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('arena_unlink').setLabel('Unlink').setStyle(ButtonStyle.Secondary)
+    );
+  }
+
   function panelMessage() {
     const embed = new EmbedBuilder()
       .setColor(0xff5500)
@@ -705,5 +713,5 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
     return { embeds: [embed], components: [row] };
   }
 
-  return { start, tick, handleCommand, handleComponent, onVoiceStateUpdate, isStaff };
+  return { start, tick, handleCommand, handleComponent, onVoiceStateUpdate, isStaff, linkButtonsRow };
 }

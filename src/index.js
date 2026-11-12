@@ -112,7 +112,8 @@ import {
   saveRosterChange,
   getRosterChange,
   listOpenRosterChanges,
-  listArenaLinks
+  listArenaLinks,
+  getReactionRoleMessages
 } from './store.js';
 import { arenaTeams } from './arenaLogic.js';
 import {
@@ -571,6 +572,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.customId?.startsWith('arena_')) {
       await arena.handleComponent(interaction);
+      return;
+    }
+    if (interaction.isMessageContextMenuCommand?.() && interaction.commandName === 'Repost with Link FACEIT button') {
+      await handleArenaRepost(interaction);
       return;
     }
     if (interaction.isMessageContextMenuCommand?.() && interaction.commandName === 'Add Arena role reactions') {
@@ -1577,6 +1582,46 @@ async function handleArenaRolesCommand(interaction, target = null) {
   const message = await reactionRoles.setUp({ channel: interaction.channel, existing });
   const list = config.arenaReactionRoles.map((entry) => `${entry.emoji} = <@&${entry.roleId}>`).join(', ');
   await interaction.editReply({ content: `✅ Reaction roles are on [this message](${message.url}): ${list}.`, allowedMentions: { parse: [] } });
+}
+
+// Right-click > Repost with Link FACEIT button: a copy of the message (text and images) posted by the
+// bot with the Link FACEIT / Unlink buttons. Role reactions on the original carry over to the copy.
+async function handleArenaRepost(interaction) {
+  if (!arena.isStaff(interaction.member)) {
+    await interaction.reply({ content: 'Only Arena staff can do that.', ephemeral: true });
+    return;
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const original = interaction.targetMessage;
+  const channel = original.channel || await client.channels.fetch(original.channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) {
+    await interaction.editReply("I can't post in that channel.");
+    return;
+  }
+  const files = [...original.attachments.values()].map((file) => ({ attachment: file.url, name: file.name }));
+  const embeds = original.author?.id === client.user.id ? original.embeds : [];
+  if (!original.content && !files.length && !embeds.length) {
+    await interaction.editReply('That message has nothing to copy.');
+    return;
+  }
+  const copy = await channel.send({
+    content: original.content || undefined,
+    embeds,
+    files,
+    components: [arena.linkButtonsRow()],
+    allowedMentions: { parse: [] }
+  }).catch((error) => error);
+  if (copy instanceof Error) {
+    await interaction.editReply(`Couldn't post the copy: ${copy.message}`);
+    return;
+  }
+  const hadRoles = Boolean((await getReactionRoleMessages())[original.id]);
+  if (hadRoles) await reactionRoles.setUp({ channel, existing: copy });
+  await interaction.editReply([
+    `✅ Reposted [here](${copy.url}) with the **Link FACEIT** button${hadRoles ? ' and the 🎮 / 🔔 role reactions' : ''}.`,
+    'Now delete your original message.',
+    hadRoles ? 'Anyone who reacted on the original keeps their role, but should react on the new one too so unreacting works.' : 'Want role reactions on it too? Right-click the new message > Apps > **Add Arena role reactions**.'
+  ].join('\n'));
 }
 
 client.on(Events.MessageReactionRemove, async (reaction, user) => {

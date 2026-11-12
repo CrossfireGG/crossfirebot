@@ -327,5 +327,10 @@ export const commands = [
   // Right-click a message > Apps > Add Arena role reactions: the bot adds 🎮 and 🔔 to it.
   new ContextMenuCommandBuilder()
     .setName('Add Arena role reactions')
+    .setType(ApplicationCommandType.Message),
+  // Right-click a message > Apps > Repost with Link FACEIT button: the bot posts a copy of it with the
+  // Link FACEIT / Unlink buttons (bots can't add buttons to someone else's message).
+  new ContextMenuCommandBuilder()
+    .setName('Repost with Link FACEIT button')
     .setType(ApplicationCommandType.Message)
 ].map((command) => command.toJSON());
