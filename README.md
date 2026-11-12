@@ -526,7 +526,7 @@ Idempotency-Key: caster-request-{request_id}
 
 Every `ARENA_POLL_SECONDS` (20) the bot checks the FACEIT **Arena Queue** hub (`ARENA_HUB_ID`, `ae1514c3-…`; the games live there, not in the Crossfire Arena club). When a game's captain draft is done (both teams full and past captain pick):
 
-- Two private voice channels are made in the Arena category (`ARENA_CATEGORY_ID`), e.g. **🔵 Arena 12 · Team Zoro** and **🔴 Arena 12 · Team Beta**. Only that team's linked players and the Arena staff roles (`ARENA_STAFF_ROLE_IDS`, 🛠️ Staff) can see and join each one.
+- Two team voice channels are made in the Arena category (`ARENA_CATEGORY_ID`), e.g. **🔵 Arena 12 · Team Zoro** and **🔴 Arena 12 · Team Beta**. Everyone can see them (so people know games are on, and who's playing), but only that team's linked players and the Arena staff roles (`ARENA_STAFF_ROLE_IDS`: 🛠️ Staff, Arena Admin, Arena Operations) can join each one; those roles can also use the staff `/arena` commands.
 - Linked players who are in any voice channel are dragged into their team's channel. Discord doesn't let bots pull in people who aren't in voice, so anyone on the game who **connects to voice later, or joins the Queue** (`ARENA_QUEUE_CHANNEL_ID`), is moved then. Moving between other channels on purpose is left alone.
 - Players the bot can't place get a post in arena-info (`ARENA_INFO_CHANNEL_ID`) with one button per unknown FACEIT name: **click your name**, you're linked and moved. The post shrinks as people claim and is deleted when the game ends.
 - When FACEIT says the game is finished or cancelled, everyone in the two channels goes back to the Queue and the channels are deleted.

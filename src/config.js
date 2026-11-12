@@ -250,7 +250,8 @@ export function getConfig() {
     arenaCategoryId: process.env.ARENA_CATEGORY_ID || '1457485148042821874',
     arenaQueueChannelId: process.env.ARENA_QUEUE_CHANNEL_ID || '1457486037151518770',
     arenaInfoChannelId: process.env.ARENA_INFO_CHANNEL_ID || '1457485691503251600',
-    arenaStaffRoleIds: parseCsvValue(process.env.ARENA_STAFF_ROLE_IDS || '1409219330855403660'),
+    // 🛠️ Staff, Arena Admin, Arena Operations: can join every Arena team channel and use the staff /arena commands.
+    arenaStaffRoleIds: parseCsvValue(process.env.ARENA_STAFF_ROLE_IDS || '1409219330855403660,1457619725390708890,1472418870705913976'),
     // Where "someone tried to claim a FACEIT account that's already linked" goes (default: the
     // calladmin alert channel; none = not posted).
     arenaStaffLogChannelId: process.env.ARENA_STAFF_LOG_CHANNEL_ID || '',

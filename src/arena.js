@@ -1,5 +1,5 @@
 // Crossfire Arena 10mans voice: when a game's draft is done on FACEIT, each team gets a private
-// voice channel in the Arena category (only its players and Arena staff can see it) and its
+// voice channel in the Arena category (everyone can see it; only its players and Arena staff can join) and its
 // players are dragged in. Anyone on the game who connects to voice later, or walks into the
 // Queue, is moved to their team. When the game ends everyone goes back to the Queue and the two
 // channels are deleted.
@@ -265,7 +265,8 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
 
   function teamOverwrites(guild, discordIds) {
     return [
-      { id: guild.roles.everyone.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect] },
+      // Everyone can see the channel (so people know games are on) but only the team and staff can join.
+      { id: guild.roles.everyone.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.Connect] },
       {
         id: client.user.id,
         type: OverwriteType.Member,
@@ -691,7 +692,7 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
       .setColor(0xff5500)
       .setTitle('🎮 Crossfire Arena voice')
       .setDescription([
-        'When your 10man\'s draft is done on FACEIT, I make a **private voice channel for each team** and move you into yours. When the game ends, everyone goes back to the **Queue**.',
+        'When your 10man\'s draft is done on FACEIT, I make a **voice channel for each team** (only that team can join) and move you into yours. When the game ends, everyone goes back to the **Queue**.',
         '',
         '**Link your FACEIT once** so I know who you are: click **Link FACEIT** below. League players are usually linked already.',
         '',

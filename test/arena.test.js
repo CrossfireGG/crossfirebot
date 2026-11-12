@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { PermissionFlagsBits } from 'discord.js';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -249,7 +250,8 @@ test('arena bot: draft done -> private team channels and drags; claim; late join
   const allowed = (channel) => channel.overwrites.filter((entry) => entry.allow?.length && entry.id !== 'bot').map((entry) => entry.id).sort();
   assert.deepEqual(allowed(teamA), ['d1', 'staff', 'zoro'], 'team A: its linked players (zoro by name) and staff');
   assert.deepEqual(allowed(teamB), ['d2', 'staff']);
-  assert.ok(teamA.overwrites.some((entry) => entry.id === 'g1' && entry.deny.length), 'everyone else is denied');
+  const everyone = teamA.overwrites.find((entry) => entry.id === 'g1');
+  assert.deepEqual(everyone.deny, [PermissionFlagsBits.Connect], 'everyone can see the channel but not join it');
   assert.deepEqual(world.moves, [['d1', teamA.id], ['zoro', teamA.id]], 'people in voice are dragged; d2 is not in voice');
   assert.equal((await store.listArenaLinks()).a5.source, 'name match');
 
