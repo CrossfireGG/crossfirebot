@@ -110,8 +110,10 @@ import {
   createRosterChange,
   saveRosterChange,
   getRosterChange,
-  listOpenRosterChanges
+  listOpenRosterChanges,
+  listArenaLinks
 } from './store.js';
+import { arenaTeams } from './arenaLogic.js';
 import {
   LEGACY_SEASON_SEED,
   PLAYOFF_ROUND_NAMES,
@@ -246,6 +248,16 @@ import {
   rosterReminderDue
 } from './rosterChange.js';
 import {
+  ARENA_APPEAL_TYPES,
+  ARENA_LINK_ISSUES,
+  ARENA_LIVE_PROBLEMS,
+  ARENA_REPORT_REASONS,
+  ARENA_TICKET_KINDS,
+  arenaMatchPlayersText,
+  arenaTicketKind,
+  arenaTicketPriority,
+  splitNames,
+  ticketTopicLabel,
   buildTicketHeader,
   buildTranscript,
   MATCH_STATES,
@@ -523,6 +535,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_topic') {
       await handleTicketTopic(interaction);
+      return;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_arena_kind') {
+      await handleArenaTicketKind(interaction);
       return;
     }
     if (interaction.isModalSubmit() && interaction.customId.startsWith('ticket_form:')) {
@@ -7234,7 +7250,7 @@ async function postTicketPanel(interaction) {
 
 // "Contact Support": the topic picker, visible only to the person who pressed it.
 async function handleTicketStart(interaction) {
-  if (config.ticketsStaffOnly && !isTicketStaff(interaction.member)) {
+  if (config.ticketsStaffOnly && !isTicketStaff(interaction.member) && !isArenaTicketStaff(interaction.member)) {
     await interaction.reply({ content: 'The new ticket system is being tested by staff right now. For now, please use the usual ticket channel.', ephemeral: true });
     return;
   }
@@ -7353,7 +7369,22 @@ function ticketAlertPayload(ticket) {
     if (ticket.channelId && ticket.guildId) buttons.push(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('Open ticket').setURL(`https://discord.com/channels/${ticket.guildId}/${ticket.channelId}`));
     components.push(new ActionRowBuilder().addComponents(buttons));
   }
-  return { content: ticketAlertText(ticket, { roleIds: config.ticketAlertRoleIds }), components, allowedMentions: { parse: [] } };
+  return { content: ticketAlertText(ticket, { roleIds: ticketAlertRolesFor(ticket) }), components, allowedMentions: { parse: [] } };
+}
+
+// Arena tickets go to the Arena staff; everything else to Tournament Operations.
+function ticketAlertRolesFor(ticket) {
+  return ticket?.topic === 'arena' ? config.arenaTicketAlertRoleIds : config.ticketAlertRoleIds;
+}
+
+// Arena Admin / Arena Operations in the league server, or the Arena role in CROSSFIRE INTERNAL.
+function isArenaTicketStaff(member) {
+  return [...config.arenaTicketRoleIds, ...config.arenaTicketAlertRoleIds].some((roleId) => member?.roles?.cache?.has?.(roleId));
+}
+
+// Who can claim, reassign, set priority and close a ticket: staff, plus the Arena roles on Arena tickets.
+function canHandleTicket(member, ticket) {
+  return isTicketStaff(member) || (ticket?.topic === 'arena' && isArenaTicketStaff(member));
 }
 
 async function refreshTicketAlert(ticket) {
@@ -7379,7 +7410,7 @@ async function refreshTicketHeader(ticket) {
 }
 
 // Creates the ticket channel and its header. Returns { ticket, channel } or { error }.
-async function openTicket({ guild, parentId, opener, topic, answers, priority, extra = {}, adminPings = false }) {
+async function openTicket({ guild, parentId, opener, topic, answers, priority, extra = {}, adminPings = false, note = null }) {
   const ticket = await createTicket({
     topic,
     openerId: opener.id,
@@ -7393,12 +7424,13 @@ async function openTicket({ guild, parentId, opener, topic, answers, priority, e
     ...extra
   });
   await guild.roles.fetch().catch(() => null);
-  const staffRoleIds = (config.authorizedStaffRoleIds || []).filter((roleId) => guild.roles.cache.has(roleId));
+  const viewerRoleIds = [...(config.authorizedStaffRoleIds || []), ...(topic === 'arena' ? config.arenaTicketRoleIds : [])];
+  const staffRoleIds = [...new Set(viewerRoleIds)].filter((roleId) => guild.roles.cache.has(roleId));
   const channel = await guild.channels.create({
-    name: ticketChannelName(topic, ticket.number, opener.username),
+    name: ticketChannelName(topic, ticket.number, opener.username, topic === 'arena' ? arenaTicketKind(ticket.arenaKind)?.prefix : null),
     type: ChannelType.GuildText,
     parent: config.ticketCategoryId || parentId || null,
-    topic: `${ticketNumberText(ticket.number)} · ${ticketTopic(topic)?.label || topic} · opened by ${opener.username}`.slice(0, 1024),
+    topic: `${ticketNumberText(ticket.number)} · ${ticketTopicLabel(ticket)} · opened by ${opener.username}`.slice(0, 1024),
     permissionOverwrites: [
       { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
       { id: client.user.id, allow: TICKET_BOT_PERMS },
@@ -7423,18 +7455,20 @@ async function openTicket({ guild, parentId, opener, topic, answers, priority, e
   }
   const content = [
     `<@${opener.id}>`,
-    adminPings ? '🔴 **Priority support:** this match is live or about to start, and the admins have been alerted.' : null
+    adminPings ? '🔴 **Priority support:** this match is live or about to start, and the admins have been alerted.' : null,
+    note
   ].filter(Boolean).join(' ');
   const saved = await saveTicket(ticket.id, { channelId: channel.id, adminPingUserIds, adminPingRoleIds });
   const header = await channel.send({ content, ...ticketHeaderPayload(saved), allowedMentions: { parse: [], users: [opener.id] } }).catch(() => null);
   const final = await saveTicket(ticket.id, { headerMessageId: header?.id || null });
   // Tell Tournament Operations (and, if urgent, the on-duty admins) a ticket needs help.
-  const alertChannel = config.ticketAlertChannelId ? await client.channels.fetch(config.ticketAlertChannelId).catch(() => null) : null;
+  const alertChannelId = topic === 'arena' ? config.arenaTicketAlertChannelId : config.ticketAlertChannelId;
+  const alertChannel = alertChannelId ? await client.channels.fetch(alertChannelId).catch(() => null) : null;
   let opened = final;
   if (alertChannel?.isTextBased?.()) {
     const alert = await alertChannel.send({
       ...ticketAlertPayload(final),
-      allowedMentions: { parse: [], users: adminPingUserIds, roles: [...config.ticketAlertRoleIds, ...adminPingRoleIds] }
+      allowedMentions: { parse: [], users: adminPingUserIds, roles: [...ticketAlertRolesFor(final), ...adminPingRoleIds] }
     }).catch((error) => {
       console.error(`[Tickets] alert for ${ticket.id} not posted: ${error.message || error}`);
       return null;
@@ -7447,13 +7481,24 @@ async function openTicket({ guild, parentId, opener, topic, answers, priority, e
 
 // The topic dropdown on the panel.
 async function handleTicketTopic(interaction) {
-  if (config.ticketsStaffOnly && !isTicketStaff(interaction.member)) {
+  if (config.ticketsStaffOnly && !isTicketStaff(interaction.member) && !isArenaTicketStaff(interaction.member)) {
     await interaction.reply({ content: 'The new ticket system is being tested by staff right now. For now, please use the usual ticket channel.', ephemeral: true });
     return;
   }
   const topic = interaction.values?.[0];
   if (!ticketTopic(topic)) {
     await interaction.reply({ content: 'Pick a topic from the list.', ephemeral: true });
+    return;
+  }
+  if (topic === 'arena') {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId('ticket_arena_kind')
+      .setPlaceholder('What is it about?')
+      .addOptions(ARENA_TICKET_KINDS.map((kind) => ({ label: kind.label, description: kind.description.slice(0, 100), value: kind.value, emoji: kind.emoji })));
+    await interaction.update({
+      content: '🎮 **Arena / 10mans.** What is it about?',
+      components: [new ActionRowBuilder().addComponents(select)]
+    });
     return;
   }
   const open = (await listTickets({ status: 'open' })).find((ticket) => ticket.openerId === interaction.user.id && ticket.topic === topic);
@@ -7476,6 +7521,140 @@ async function handleTicketTopic(interaction) {
   await interaction.editReply(result.error || `Your roster change ticket is open: <#${result.channel.id}>`);
 }
 
+// Arena / 10mans: the second dropdown (what it's about) opens that kind's form.
+async function handleArenaTicketKind(interaction) {
+  if (config.ticketsStaffOnly && !isTicketStaff(interaction.member) && !isArenaTicketStaff(interaction.member)) {
+    await interaction.reply({ content: 'The new ticket system is being tested by staff right now. For now, please use the usual ticket channel.', ephemeral: true });
+    return;
+  }
+  const kind = arenaTicketKind(interaction.values?.[0]);
+  if (!kind) {
+    await interaction.reply({ content: 'Pick an option from the list.', ephemeral: true });
+    return;
+  }
+  const open = (await listTickets({ status: 'open' })).find((ticket) => ticket.openerId === interaction.user.id && ticket.topic === 'arena' && ticket.arenaKind === kind.value);
+  if (open?.channelId && await client.channels.fetch(open.channelId).catch(() => null)) {
+    await interaction.reply({ content: `You already have an open **${kind.label}** ticket: <#${open.channelId}>.`, ephemeral: true });
+    return;
+  }
+  await interaction.showModal(arenaTicketModal(kind.value));
+}
+
+function arenaTicketModal(kind) {
+  const modal = new ModalBuilder().setCustomId(`ticket_form:arena:${kind}`);
+  const matchLink = (required) => ticketText('match', required ? 'FACEIT match link' : 'FACEIT match link (if you have it)', { required, placeholder: 'https://www.faceit.com/en/cs2/room/...' });
+  if (kind === 'report') {
+    return modal.setTitle('Arena: Report a player').addLabelComponents(
+      matchLink(true),
+      ticketText('who', 'Who are you reporting? (FACEIT names)', { max: 200, placeholder: 'One or more names, separated by commas' }),
+      ticketSelect('reason', 'Reason', ARENA_REPORT_REASONS),
+      ticketText('what', 'What happened?', { style: TextInputStyle.Paragraph, max: 1500, placeholder: 'Round numbers / timestamps help a lot' }),
+      ticketText('evidence', 'Clips or demo links (optional)', { required: false, style: TextInputStyle.Paragraph, max: 1000, placeholder: 'You can also post them in the ticket' })
+    );
+  }
+  if (kind === 'live') {
+    return modal.setTitle('Arena: Live game problem').addLabelComponents(
+      matchLink(false),
+      ticketSelect('problem', "What's wrong?", ARENA_LIVE_PROBLEMS),
+      ticketText('details', 'Details', { style: TextInputStyle.Paragraph, max: 1000, required: false })
+    );
+  }
+  if (kind === 'appeal') {
+    return modal.setTitle('Arena: Appeal').addLabelComponents(
+      ticketText('faceit', 'Your FACEIT name', { max: 120 }),
+      ticketSelect('type', 'What are you appealing?', ARENA_APPEAL_TYPES),
+      ticketText('when', 'When / which match (optional)', { required: false, max: 300, placeholder: 'Date, or the FACEIT match link' }),
+      ticketText('why', 'Why should it be lifted?', { style: TextInputStyle.Paragraph, max: 1500 })
+    );
+  }
+  return modal.setTitle('Arena: FACEIT link / voice help').addLabelComponents(
+    ticketText('faceit', 'Your FACEIT name or profile link', { max: 120 }),
+    ticketSelect('issue', "What's the problem?", ARENA_LINK_ISSUES),
+    ticketText('details', 'Details (optional)', { style: TextInputStyle.Paragraph, max: 1000, required: false })
+  );
+}
+
+// Reads the FACEIT match from a link: { line, teams, status, arena } or null.
+async function arenaTicketMatch(link) {
+  const room = parseFaceitMatchRoomLink(link);
+  if (!room) return null;
+  const raw = await faceit.getMatchRaw(room.matchId).catch(() => null);
+  if (!raw) return { line: `${link} (couldn't read it on FACEIT)`, teams: [], status: null, arena: false };
+  const arena = !config.arenaHubId || raw.competition_id === config.arenaHubId;
+  const url = String(raw.faceit_url || link).replace('{lang}', 'en');
+  return {
+    line: `[${raw.competition_name || 'FACEIT match'}](${url}) · FACEIT: ${String(raw.status || 'unknown').toLowerCase()}${arena ? '' : ' · ⚠️ not an Arena Queue game'}`,
+    teams: arenaTeams(raw),
+    status: raw.status || null,
+    arena
+  };
+}
+
+async function openArenaTicket(interaction, kind, text, picked) {
+  const links = await listArenaLinks().catch(() => ({}));
+  const linkOf = (discordId) => Object.values(links).find((link) => link.discordId === discordId) || null;
+  const mine = linkOf(interaction.user.id);
+  const myLinkLine = mine ? `**${mine.nickname}** on FACEIT` : 'Not linked yet';
+  let answers;
+  let priority;
+  if (kind === 'report' || kind === 'live') {
+    const match = text('match') ? await arenaTicketMatch(text('match')) : null;
+    const reported = kind === 'report' ? splitNames(text('who')) : [];
+    const inMatch = new Set((match?.teams || []).flatMap((team) => team.players.map((player) => player.nickname.toLowerCase())));
+    const notFound = match?.teams?.length ? reported.filter((name) => !inMatch.has(name.toLowerCase())) : [];
+    priority = arenaTicketPriority({ kind, reason: picked('reason'), faceitStatus: match?.status || null });
+    answers = kind === 'report'
+      ? [
+          { label: 'Reporting', value: reported.join(', ') + (notFound.length ? `\n⚠️ Not in that match: ${notFound.join(', ')}` : '') },
+          { label: 'Reason', value: picked('reason') },
+          { label: 'Match', value: match?.line || text('match') },
+          { label: 'Players in that match', value: match?.teams?.length ? arenaMatchPlayersText(match.teams, links, reported) : '' },
+          { label: 'What happened', value: text('what') },
+          { label: 'Clips / demo', value: text('evidence') },
+          { label: "Reporter's FACEIT", value: myLinkLine }
+        ]
+      : [
+          { label: "What's wrong", value: picked('problem') },
+          { label: 'Match', value: match?.line || text('match') || 'No link given' },
+          { label: 'Players in that match', value: match?.teams?.length ? arenaMatchPlayersText(match.teams, links) : '' },
+          { label: 'Details', value: text('details') },
+          { label: "Opener's FACEIT", value: myLinkLine }
+        ];
+  } else if (kind === 'appeal') {
+    priority = arenaTicketPriority({ kind });
+    answers = [
+      { label: 'Appealing', value: picked('type') },
+      { label: 'FACEIT name', value: text('faceit') + (mine && mine.nickname.toLowerCase() !== text('faceit').replace(/^@/, '').toLowerCase() ? `\n⚠️ Their Discord is linked to **${mine.nickname}**` : '') },
+      { label: 'When / which match', value: text('when') },
+      { label: 'Why it should be lifted', value: text('why') }
+    ];
+  } else {
+    priority = arenaTicketPriority({ kind });
+    const typed = String(text('faceit') || '').trim();
+    const nickname = (typed.match(/players\/([^/?#\s]+)/i)?.[1] || typed).replace(/^@/, '');
+    const holder = Object.values(links).find((link) => link.nickname.toLowerCase() === nickname.toLowerCase());
+    answers = [
+      { label: 'Problem', value: picked('issue') },
+      { label: 'FACEIT name they gave', value: typed },
+      { label: 'Linked to them now', value: myLinkLine },
+      { label: `Who has ${nickname || 'that FACEIT'} linked`, value: holder ? `<@${holder.discordId}> (${holder.source})` : 'Nobody' },
+      { label: 'Details', value: text('details') },
+      { label: 'Staff fix', value: '`/arena link faceit:<name> user:@them` moves a link; `/arena unlink` removes one.' }
+    ];
+  }
+  const note = priority.priority === 'urgent' ? '🔴 **Live game:** Arena staff have been alerted and will jump in as soon as possible.' : null;
+  return openTicket({
+    guild: interaction.guild,
+    parentId: interaction.channel?.parentId || null,
+    opener: interaction.user,
+    topic: 'arena',
+    answers,
+    priority,
+    extra: { arenaKind: kind },
+    note
+  });
+}
+
 async function handleTicketForm(interaction) {
   const topic = interaction.customId.slice('ticket_form:'.length);
   await interaction.deferReply({ ephemeral: true });
@@ -7493,6 +7672,11 @@ async function handleTicketForm(interaction) {
       return '';
     }
   };
+  if (topic.startsWith('arena:')) {
+    const result = await openArenaTicket(interaction, topic.slice('arena:'.length), text, picked);
+    await interaction.editReply(result.error || `Your ticket is open: <#${result.channel.id}>`);
+    return;
+  }
   if (topic === 'roster') {
     const lookup = await scheduleSheet.readRosterTeam({ spreadsheetId: config.rosterSpreadsheetId, sheetName: config.rosterSheetName, teamName: text('team') });
     if (!lookup.ok) {
@@ -8295,7 +8479,7 @@ async function handleTicketControl(interaction) {
     await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true });
     return;
   }
-  if (!isTicketStaff(interaction.member)) {
+  if (!canHandleTicket(interaction.member, ticket)) {
     await interaction.reply({ content: 'Only staff can do that.', ephemeral: true });
     return;
   }
@@ -8381,7 +8565,7 @@ async function handleTicketClose(interaction) {
     await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true });
     return;
   }
-  if (!isTicketStaff(interaction.member)) {
+  if (!canHandleTicket(interaction.member, ticket)) {
     await interaction.reply({ content: 'Only staff can close tickets.', ephemeral: true });
     return;
   }

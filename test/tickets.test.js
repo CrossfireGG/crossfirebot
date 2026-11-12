@@ -15,8 +15,8 @@ import {
 const NOW = Date.UTC(2026, 10, 11, 20);
 const HOUR = 60 * 60 * 1000;
 
-test('the panel has the four topics', () => {
-  assert.deepEqual(TICKET_TOPICS.map((topic) => topic.label), ['General Support', 'Match / FACEIT Issue', 'Roster Change', 'Apply to Crossfire']);
+test('the panel has the five topics', () => {
+  assert.deepEqual(TICKET_TOPICS.map((topic) => topic.label), ['General Support', 'Match / FACEIT Issue', 'Roster Change', 'Arena / 10mans', 'Apply to Crossfire']);
 });
 
 test('a live or about-to-start match issue is urgent and pings admins', () => {
@@ -96,4 +96,35 @@ test('the Tournament Operations alert names the ticket, links it and gives the p
     '🔴 Live or about to start: <@3> <@4> | Handled by <@9>', 'urgent: the on-duty admins are in the alert, and stay there after a claim');
   assert.match(ticketAlertText({ ...ticket, adminPingRoleIds: ['77'] }), /🔴 Live or about to start: <@&77>/, 'or the admin roles');
   assert.match(ticketAlertText({ ...ticket, claimedBy: '9', status: 'closed', closedBy: '7' }), /\n🔒 Closed by <@7>$/, 'and when it closes');
+});
+
+test('arena tickets: kinds, labels, channel names and priority', async () => {
+  const tickets = await import('../src/tickets.js');
+  assert.ok(tickets.ticketTopic('arena'), 'Arena / 10mans is on the panel');
+  assert.deepEqual(tickets.ARENA_TICKET_KINDS.map((kind) => kind.value), ['report', 'live', 'appeal', 'link']);
+  assert.equal(tickets.ticketTopicLabel({ topic: 'arena', arenaKind: 'report' }), 'Arena · Report a player');
+  assert.equal(tickets.ticketTopicLabel({ topic: 'support' }), 'General Support');
+  assert.equal(tickets.ticketChannelName('arena', 7, 'Zoro', 'arena-report'), 'arena-report-0007-zoro');
+  assert.match(tickets.buildTicketHeader({ number: 7, topic: 'arena', arenaKind: 'live', openerId: 'u', priority: 'urgent', answers: [] }).title, /Arena · Live game problem/);
+  assert.match(tickets.ticketAlertText({ number: 7, topic: 'arena', arenaKind: 'live', priority: 'urgent', status: 'open' }, { roleIds: ['r1', 'r2'] }), /<@&r1> <@&r2>.*Arena · Live game problem[\s\S]*Live game/);
+
+  assert.equal(tickets.arenaTicketPriority({ kind: 'live' }).priority, 'urgent');
+  assert.equal(tickets.arenaTicketPriority({ kind: 'live', faceitStatus: 'ONGOING' }).priority, 'urgent');
+  assert.equal(tickets.arenaTicketPriority({ kind: 'live', faceitStatus: 'FINISHED' }).priority, 'normal');
+  assert.equal(tickets.arenaTicketPriority({ kind: 'report', reason: 'Cheating' }).priority, 'priority');
+  assert.equal(tickets.arenaTicketPriority({ kind: 'report', reason: 'Toxic / harassment' }).priority, 'normal');
+  assert.equal(tickets.arenaTicketPriority({ kind: 'appeal' }).priority, 'normal');
+});
+
+test('arena tickets: reported names and the players in the match', async () => {
+  const { arenaMatchPlayersText, splitNames } = await import('../src/tickets.js');
+  assert.deepEqual(splitNames('zoro, @beta guy; x and y'), ['zoro', 'beta guy', 'x', 'y']);
+  const teams = [
+    { label: 'Team Zoro', players: [{ playerId: 'p1', nickname: 'zoro' }, { playerId: 'p2', nickname: 'Cheater' }] },
+    { label: 'Team Beta', players: [{ playerId: 'p3', nickname: 'beta' }] }
+  ];
+  assert.equal(
+    arenaMatchPlayersText(teams, { p1: { discordId: 'd1' } }, ['cheater']),
+    '**Team Zoro:** zoro (<@d1>), 🚩 Cheater\n**Team Beta:** beta'
+  );
 });

@@ -272,6 +272,12 @@ export function getConfig() {
     ticketAlertRoleIds: parseSnowflakeList(process.env.TICKET_ALERT_ROLE_IDS ?? tournamentOpsRoleIds.join(',')),
     // While testing, only staff can open tickets from the panel. Set TICKETS_STAFF_ONLY=false to open it to everyone.
     ticketsStaffOnly: process.env.TICKETS_STAFF_ONLY !== 'false',
+    // Arena / 10mans tickets: these league-server roles (Arena Admin, Arena Operations) can see,
+    // claim and close them. The alert goes to #arena-tickets in CROSSFIRE INTERNAL and pings that
+    // server's Arena role (who can also Claim from the alert).
+    arenaTicketRoleIds: parseSnowflakeList(process.env.ARENA_TICKET_ROLE_IDS || '1457619725390708890,1472418870705913976'),
+    arenaTicketAlertChannelId: process.env.ARENA_TICKET_ALERT_CHANNEL_ID || '1570564615321026682',
+    arenaTicketAlertRoleIds: parseSnowflakeList(process.env.ARENA_TICKET_ALERT_ROLE_IDS || '1474117600727535708'),
     casterApplicationChannelId: process.env.CASTER_APPLICATION_CHANNEL_ID || '1558684878743150693',
     casterApplicationPingIds: parseCsvValue(process.env.CASTER_APPLICATION_PING_IDS || '206446410042834945'),
     casterApplicationSheetUrl: process.env.CASTER_APPLICATION_SHEET_URL || 'https://docs.google.com/spreadsheets/d/1rQGdrdrrbh94ZR_EL12uCqcQwHR6A4VR9SBDbjXGJZY/edit?gid=37125937#gid=37125937',
