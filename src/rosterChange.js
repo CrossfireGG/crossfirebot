@@ -2,11 +2,12 @@
 // tab of the Crossfire Player Tracking sheet, removing a player or moving one to a sub slot, and the
 // admins are told to update FACEIT. Pure functions; index.js runs the Discord flow and the sheet calls.
 
-// The slots a roster change can use. The coach row is left alone.
-export const ROSTER_SLOT_LABELS = ['Starter 1', 'Starter 2', 'Starter 3', 'Starter 4', 'Starter 5', 'Sub 1', 'Sub 2'];
+// The slots a roster change can use.
+export const ROSTER_SLOT_LABELS = ['Starter 1', 'Starter 2', 'Starter 3', 'Starter 4', 'Starter 5', 'Sub 1', 'Sub 2', 'Coach'];
 
 export const isStarterSlot = (label) => /^starter/i.test(String(label || ''));
 export const isSubSlot = (label) => /^sub/i.test(String(label || ''));
+export const isCoachSlot = (label) => /^coach/i.test(String(label || ''));
 
 const PLACEHOLDER = /^(n\/?a|none|-|tbd|\.)$/i;
 
@@ -28,7 +29,7 @@ export function slotText(slot) {
   return `${slot.label} · ${alias || name}${alias && name ? ` (${name})` : ''}`;
 }
 
-// The roster slots of a team read from the sheet, in order (coach left out).
+// The roster slots of a team read from the sheet, in order: starters, subs, coach.
 export function rosterSlots(team) {
   return (team?.slots || []).filter((slot) => ROSTER_SLOT_LABELS.some((label) => label.toLowerCase() === String(slot.label || '').toLowerCase()));
 }
@@ -56,8 +57,8 @@ export function twitterLink(value) {
 
 // Checks the new player's details. Returns { ok, errors: [field messages], player }.
 // player: { alias, fullName, discord, discordId, twitter, nationality, faceit, hltv, steamId }
-// (twitter is optional).
-export function validateNewPlayer(input = {}) {
+// (twitter is optional; HLTV too for a coach: hltvOptional).
+export function validateNewPlayer(input = {}, { hltvOptional = false } = {}) {
   const player = {
     twitter: twitterLink(input.twitter),
     alias: String(input.alias || '').trim(),
@@ -76,8 +77,11 @@ export function validateNewPlayer(input = {}) {
   if (!player.nationality) errors.push('Nationality is required.');
   if (!player.faceit) errors.push('FACEIT Profile is required.');
   else if (!/faceit\.com/i.test(player.faceit)) errors.push('FACEIT Profile must be a faceit.com link.');
-  if (!player.hltv) errors.push('HLTV Profile is required.');
-  else if (!/hltv\.org/i.test(player.hltv)) errors.push('HLTV Profile must be an hltv.org link.');
+  if (!player.hltv) {
+    if (!hltvOptional) errors.push('HLTV Profile is required.');
+  } else if (!/hltv\.org/i.test(player.hltv)) {
+    errors.push('HLTV Profile must be an hltv.org link.');
+  }
   if (!player.steamId) errors.push('SteamID64 is required.');
   else if (!/^7656119\d{10}$/.test(player.steamId)) errors.push('SteamID64 must be 17 digits and start with 7656119.');
   return { ok: errors.length === 0, errors, player };
@@ -90,7 +94,7 @@ export function playerLines(player) {
     `**Full name:** ${player.fullName}`,
     `**Nationality:** ${player.nationality}`,
     `**FACEIT:** ${player.faceit}`,
-    `**HLTV:** ${player.hltv}`,
+    player.hltv ? `**HLTV:** ${player.hltv}` : null,
     `**SteamID64:** ${player.steamId}`,
     player.twitter ? `**Twitter:** ${player.twitter}` : null,
     `**Discord:** ${player.discordId ? `<@${player.discordId}>` : player.discord}${player.discordId && player.discord && player.discord !== player.discordId ? ` (${player.discord})` : ''}`
@@ -98,33 +102,44 @@ export function playerLines(player) {
 }
 
 // A roster change as sheet steps. change: { kind, slotLabel, swapLabel, player }
-//   kind 'add'     -> player joins in the first empty slot of change.joinAs ('starter' | 'sub')
+//   kind 'add'     -> player joins in the first empty slot of change.joinAs ('starter' | 'sub' | 'coach')
 //   kind 'remove'  -> slotLabel's player leaves; player (optional) takes their slot
 //   kind 'sub'     -> slotLabel's starter moves to the first empty sub slot; player (optional) takes
 //                     their starter slot. Both subs full: still sent, sheet left for an admin.
 //   kind 'promote' -> slotLabel's sub moves to the first empty starter slot (player optional takes
 //                     the sub slot), or swaps with swapLabel's starter when no starter slot is free.
+//   kind 'captain' -> slotLabel's player becomes the team captain (the Captain cell on the Team Info
+//                     row gets their Discord, else their IGN).
 // Returns { ok, error, needsSwap, ops, expect, summary, logLine, history, warning, sheetChange }.
 // ops: { op: 'write', row, player } | { op: 'clear', row } | { op: 'copy', from, to } | { op: 'swap', a, b }
+//      | { op: 'captain', value } (with expectCaptain: the Captain cell as it was read)
 // expect: [{ row, alias }] — every row the change reads; the sheet refuses if any moved.
 export function planRosterOps(team, change = {}) {
   const slots = rosterSlots(team);
   const find = (label) => slots.find((slot) => slot.label.toLowerCase() === String(label || '').toLowerCase()) || null;
-  const firstEmpty = (kind) => slots.find((slot) => (kind === 'starter' ? isStarterSlot(slot.label) : isSubSlot(slot.label)) && !slotTaken(slot)) || null;
+  const ofKind = (kind) => (kind === 'starter' ? isStarterSlot : kind === 'coach' ? isCoachSlot : isSubSlot);
+  const firstEmpty = (kind) => slots.find((slot) => ofKind(kind)(slot.label) && !slotTaken(slot)) || null;
   const who = (slot) => clean(slot.alias) || clean(slot.fullName);
   const expect = (...rows) => rows.filter(Boolean).map((slot) => ({ row: slot.row, alias: slot.alias || '' }));
   const player = change.player || null;
   const teamName = team?.teamName || 'Team';
   // Roster History rows: one per player affected. faceit is the new player's link; faceitRow is the
   // roster row to read an existing player's FACEIT link from (the sheet shows it as "…").
-  const added = (spot) => (player ? [{ action: 'Added', player: player.alias, spot, faceit: player.faceit || '' }] : []);
-  const moved = (from, action, spot) => ({ action, player: who(from), spot, faceitRow: from.row });
+  // The Role/Spot on a history line is just Starter, Sub or Coach: the role the player ends up in
+  // (for a removal, the role they had).
+  const role = (label) => (/^sub/i.test(String(label)) ? 'Sub' : /^coach/i.test(String(label)) ? 'Coach' : 'Starter');
+  const added = (label) => (player ? [{ action: 'Added', player: player.alias, spot: role(label), faceit: player.faceit || '' }] : []);
+  const moved = (from, action, label) => ({ action, player: who(from), spot: role(label), faceitRow: from.row });
 
   if (change.kind === 'add') {
-    const kind = change.joinAs === 'sub' ? 'sub' : 'starter';
+    const kind = ['sub', 'coach'].includes(change.joinAs) ? change.joinAs : 'starter';
     const target = firstEmpty(kind);
     if (!player) return { ok: false, error: 'Fill in the new player first.' };
-    if (!target) return { ok: false, error: `There's no open ${kind} slot. Pick a player to remove, move to sub or promote first.` };
+    if (!target) {
+      return { ok: false, error: kind === 'coach'
+        ? 'The team already has a coach. Pick the coach and remove them (you can add the new coach in their place).'
+        : `There's no open ${kind} slot. Pick a player to remove, move to sub or promote first.` };
+    }
     return {
       ok: true,
       ops: [{ op: 'write', row: target.row, player }],
@@ -158,7 +173,30 @@ export function planRosterOps(team, change = {}) {
     };
   }
 
+  if (change.kind === 'captain') {
+    const key = (value) => clean(value).replace(/^@/, '').toLowerCase();
+    const names = (entry) => [entry.discord, entry.alias, entry.fullName].map(key).filter(Boolean);
+    const current = key(team?.captain);
+    if (current && names(slot).includes(current)) return { ok: false, error: `${out} is already the captain.` };
+    const oldSlot = current ? slots.find((entry) => slotTaken(entry) && names(entry).includes(current)) || null : null;
+    const oldName = oldSlot ? who(oldSlot) : clean(team?.captain);
+    return {
+      ok: true,
+      ops: [{ op: 'captain', value: clean(slot.discord).replace(/^@/, '') || out }],
+      expect: expect(slot),
+      expectCaptain: String(team?.captain || ''),
+      summary: `Making **${out}** the captain${oldName ? ` (was **${oldName}**)` : ''}.`,
+      logLine: `${teamName}: captain${oldName ? ` "${oldName}"` : ''} → "${out}"`,
+      history: [moved(slot, 'Made captain', slot.label), ...(oldSlot ? [moved(oldSlot, 'No longer captain', oldSlot.label)] : [])],
+      warning: null,
+      sheetChange: true,
+      newSlotLabel: null,
+      captain: { slot, oldSlot, oldValue: clean(team?.captain) || null }
+    };
+  }
+
   if (change.kind === 'sub') {
+    if (isCoachSlot(slot.label)) return { ok: false, error: "The coach can't be moved to sub. Remove the coach instead." };
     if (!isStarterSlot(slot.label)) return { ok: false, error: `${out} is already a sub.` };
     const sub = firstEmpty('sub');
     if (!sub) {
@@ -168,7 +206,7 @@ export function planRosterOps(team, change = {}) {
         expect: [],
         summary: `Moving **${out}** to sub${replacement}.`,
         logLine: null,
-        history: [moved(slot, 'Sent to admin: move to sub (subs full)', `${slot.label} → sub`), ...(player ? [{ ...added(slot.label)[0], action: 'Sent to admin: add (subs full)' }] : [])],
+        history: [moved(slot, 'Sent to admin: move to sub (subs full)', 'Sub'), ...(player ? [{ ...added(slot.label)[0], action: 'Sent to admin: add (subs full)' }] : [])],
         warning: `Both sub slots are full. It will still be sent, but the sheet won't be changed: an admin will decide where ${out}${player ? ` and ${player.alias}` : ''} go.`,
         sheetChange: false,
         newSlotLabel: null
@@ -180,7 +218,7 @@ export function planRosterOps(team, change = {}) {
       expect: expect(slot, sub),
       summary: `Moving **${out}** to ${sub.label}${replacement}.`,
       logLine: `${teamName}: "${out}" to sub${replacementLog}`,
-      history: [moved(slot, 'Moved to sub', `${slot.label} → ${sub.label}`), ...added(slot.label)],
+      history: [moved(slot, 'Moved to sub', sub.label), ...added(slot.label)],
       warning: null,
       sheetChange: true,
       newSlotLabel: player ? slot.label : null
@@ -188,6 +226,7 @@ export function planRosterOps(team, change = {}) {
   }
 
   if (change.kind === 'promote') {
+    if (isCoachSlot(slot.label)) return { ok: false, error: "The coach can't be promoted. Remove the coach and add them as a player instead." };
     if (!isSubSlot(slot.label)) return { ok: false, error: `${out} is already a starter.` };
     const starter = firstEmpty('starter');
     if (starter) {
@@ -198,7 +237,7 @@ export function planRosterOps(team, change = {}) {
         expect: expect(slot, starter),
         summary: `Promoting **${out}** to ${starter.label}${subReplacement}.`,
         logLine: `${teamName}: "${out}" to starter${replacementLog}`,
-        history: [moved(slot, 'Promoted', `${slot.label} → ${starter.label}`), ...added(slot.label)],
+        history: [moved(slot, 'Promoted', starter.label), ...added(slot.label)],
         warning: null,
         sheetChange: true,
         newSlotLabel: player ? slot.label : null
@@ -214,7 +253,7 @@ export function planRosterOps(team, change = {}) {
       expect: expect(slot, swap),
       summary: `Promoting **${out}** to ${swap.label}, moving **${who(swap)}** to ${slot.label}.`,
       logLine: `${teamName}: "${out}" to starter, "${who(swap)}" to sub`,
-      history: [moved(slot, 'Promoted', `${slot.label} → ${swap.label}`), moved(swap, 'Moved to sub', `${swap.label} → ${slot.label}`)],
+      history: [moved(slot, 'Promoted', swap.label), moved(swap, 'Moved to sub', slot.label)],
       warning: player ? `${player.alias} wasn't added: a swap doesn't free a slot. Add them as a separate change.` : null,
       sheetChange: true,
       newSlotLabel: null
@@ -228,7 +267,7 @@ export function planRosterOps(team, change = {}) {
 // new player, a link to the ticket. sheetChange=false when nothing could be written (subs full).
 export function buildRosterChangePost({ teamName, group = null, requesterId, plan, player = null, ticketChannelId = null, roles = [], nowMs = Date.now() }) {
   const description = [
-    'Please update this roster on FACEIT.',
+    plan.captain ? 'Please make them the team leader on FACEIT.' : 'Please update this roster on FACEIT.',
     plan.sheetChange ? null : `\n⚠️ ${plan.warning || 'The sheet was not changed.'}`
   ].filter(Boolean).join('\n');
   const fields = [
@@ -237,7 +276,10 @@ export function buildRosterChangePost({ teamName, group = null, requesterId, pla
     { name: 'Requested by', value: `<@${requesterId}>`, inline: true },
     { name: 'Change', value: plan.summary.slice(0, 1024) }
   ];
-  if (player) fields.push({ name: `Player added${plan.newSlotLabel ? ` (${plan.newSlotLabel})` : ''}`, value: playerLines(player).join('\n').slice(0, 1024) });
+  if (player) {
+    const coach = isCoachSlot(plan.newSlotLabel);
+    fields.push({ name: coach ? 'Coach added' : `Player added${plan.newSlotLabel ? ` (${plan.newSlotLabel})` : ''}`, value: playerLines(player).join('\n').slice(0, 1024) });
+  }
   if (roles.length) fields.push({ name: 'Discord roles', value: roles.join('\n').slice(0, 1024) });
   if (ticketChannelId) fields.push({ name: 'Ticket', value: `<#${ticketChannelId}>`, inline: true });
   fields.push({ name: 'Submitted', value: `<t:${Math.floor(nowMs / 1000)}:f>`, inline: true });
@@ -283,12 +325,13 @@ export function playerFromFaceit(apiPlayer) {
   };
 }
 
-// The date on a roster history line, in the league's time zone: "Nov 11, 9:42 PM EST".
+// The date on a roster history line, in the league's time zone, no time: "Nov 11, 2026".
 export function historyWhenText(date = new Date(), timeZone = 'America/New_York') {
+  const options = { month: 'short', day: 'numeric', year: 'numeric' };
   try {
-    return new Intl.DateTimeFormat('en-US', { timeZone, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(date);
+    return new Intl.DateTimeFormat('en-US', { ...options, timeZone }).format(date);
   } catch {
-    return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(date);
+    return new Intl.DateTimeFormat('en-US', { ...options, timeZone: 'UTC' }).format(date);
   }
 }
 

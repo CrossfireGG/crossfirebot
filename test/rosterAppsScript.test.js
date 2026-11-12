@@ -165,12 +165,24 @@ test('roster sheet: clear, swap (links included) and the CHANGES log', () => {
   assert.equal(grid[2][9], 'Alpha: -"a4"', 'under the last CHANGES line');
 });
 
-test('roster sheet: refuses stale rows, the coach row, other teams and a moved block', () => {
-  const { call } = setup();
+test('roster sheet: refuses stale rows, other teams and a moved block; the coach row is allowed', () => {
+  const { call, grid } = setup();
   assert.match(call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: [{ row: 5, alias: 'someone' }], ops: [{ op: 'clear', row: 5 }] }).error, /changed on the sheet/);
-  assert.match(call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: [], ops: [{ op: 'clear', row: 11 }] }).error, /not a starter or sub/, 'the coach row');
-  assert.match(call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: [], ops: [{ op: 'clear', row: 15 }] }).error, /not a starter or sub/, "Beta's row");
+  assert.match(call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: [], ops: [{ op: 'clear', row: 15 }] }).error, /not a starter, sub or coach/, "Beta's row");
+  assert.equal(call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: [{ row: 11, alias: 'coachA' }], ops: [{ op: 'clear', row: 11 }] }).ok, true, 'the coach row');
+  assert.equal(grid[10][1], '');
   assert.match(call('applyRosterOps', { teamName: 'Alpha', headerRow: 13, expect: [], ops: [] }).error, /moved on the sheet/);
+});
+
+test('roster sheet: captain change writes the Captain cell, only if it is still what was read', () => {
+  const { call, grid } = setup();
+  const stale = call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: [{ row: 6, alias: 'a3' }], expectCaptain: 'someone', ops: [{ op: 'captain', value: 'a3#disc' }] });
+  assert.match(stale.error, /captain changed on the sheet/);
+  assert.equal(grid[1][2], 'a1');
+  const done = call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: [{ row: 6, alias: 'a3' }], expectCaptain: 'a1', ops: [{ op: 'captain', value: 'a3#disc' }] });
+  assert.equal(done.ok, true);
+  assert.equal(grid[1][2], 'a3#disc');
+  assert.equal(grid[5][1], 'a3', 'the roster rows are left alone');
 });
 
 test('roster sheet: with no history box, changes go on a Roster History tab, player names linked to FACEIT', () => {

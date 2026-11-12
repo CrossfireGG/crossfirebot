@@ -230,7 +230,8 @@ import {
   rosterSlots,
   slotTaken,
   slotText,
-  validateNewPlayer
+  validateNewPlayer,
+  isCoachSlot
 } from './rosterChange.js';
 import {
   buildTicketHeader,
@@ -7499,7 +7500,8 @@ async function handleTicketForm(interaction) {
 
 // --- Roster changes inside Roster Change tickets -------------------------------------------------
 // The ticket shows the team, group and roster from the Roster Tracking tab. The captain (or staff)
-// picks a player to remove, move to sub or promote, or adds a new player as a starter or sub; the
+// picks a player to remove, move to sub or promote, adds a new player as a starter, sub or coach, or
+// changes the captain; the
 // details form checks the fields; Confirm writes the sheet through the Apps Script, posts the change
 // in the ticket and in Roster Change Requests (with "Done on FACEIT"). Wizard steps are ephemeral and
 // live in memory for 30 minutes.
@@ -7537,7 +7539,58 @@ async function resolveCaptainTeam(user, member) {
   if (!mapping && !lookup.team.isCaptain) {
     return { error: 'Only team captains can request roster changes, and you are not listed as the captain of a team on the roster sheet.' };
   }
+  // The team sync may still list an old captain: once the sheet's Captain cell names another player
+  // on the roster (after a captain change), only that player counts.
+  if (mapping && !lookup.team.isCaptain) {
+    const sheetCaptain = rosterCaptainSlot(lookup.team);
+    if (sheetCaptain) {
+      return { error: `The roster sheet lists **${sheetCaptain.alias}** as the captain of ${lookup.team.teamName}, so only they can request roster changes. If that's wrong, open a General Support ticket.` };
+    }
+  }
   return { team: lookup.team };
+}
+
+// The roster player the Captain cell names (by Discord or IGN), or null.
+function rosterCaptainSlot(team) {
+  const key = (value) => String(value || '').replace(/^@/, '').trim().toLowerCase();
+  const captain = key(team?.captain);
+  if (!captain) return null;
+  return rosterSlots(team).find((slot) => slotTaken(slot) && [slot.discord, slot.alias].map(key).includes(captain)) || null;
+}
+
+// The server member for a roster slot's Discord cell (or a captain cell value), or null.
+async function rosterMemberFor(guild, discordText) {
+  const who = String(discordText || '').replace(/^@/, '').trim();
+  if (!guild || !who) return null;
+  const id = parseDiscordId(who) || await findMemberIdByName(guild, who).catch(() => null);
+  return id ? guild.members.fetch(id).catch(() => null) : null;
+}
+
+// After a captain change: the Team Captain role moves from the old captain to the new one.
+async function applyCaptainRoles({ guild, plan }) {
+  if (!guild || !plan.captain) return [];
+  await guild.roles.fetch().catch(() => null);
+  const roleName = String(config.teamCaptainRoleName || '').toLowerCase();
+  const role = (config.teamCaptainRoleId && guild.roles.cache.get(config.teamCaptainRoleId))
+    || guild.roles.cache.find((entry) => roleName && entry.name.toLowerCase() === roleName) || null;
+  if (!role) return ['⚠️ No Team Captain role was found, so captain roles weren\'t changed.'];
+  const lines = [];
+  const next = await rosterMemberFor(guild, plan.captain.slot.discord);
+  if (!next) {
+    lines.push(`⚠️ Couldn't find ${plan.captain.slot.alias} in this server from the sheet's Discord cell, so give them **${role.name}** by hand.`);
+  } else if (!next.roles.cache.has(role.id)) {
+    const ok = await next.roles.add(role, 'Roster change: made team captain').then(() => true).catch(() => false);
+    lines.push(ok ? `🎭 Gave <@${next.id}> **${role.name}**.` : `⚠️ Couldn't give <@${next.id}> **${role.name}** (the bot's role must be above it).`);
+  }
+  const oldText = plan.captain.oldSlot?.discord || plan.captain.oldValue;
+  const old = oldText ? await rosterMemberFor(guild, oldText) : null;
+  if (old && old.id !== next?.id && old.roles.cache.has(role.id)) {
+    const ok = await old.roles.remove(role, 'Roster change: no longer team captain').then(() => true).catch(() => false);
+    lines.push(ok ? `🎭 Removed **${role.name}** from <@${old.id}>.` : `⚠️ Couldn't remove **${role.name}** from <@${old.id}> (the bot's role must be above it).`);
+  } else if (oldText && !old) {
+    lines.push(`⚠️ Couldn't find the old captain (${plan.captain.oldSlot?.alias || oldText}) in this server, so remove their **${role.name}** role by hand if they have it.`);
+  }
+  return lines;
 }
 
 // After a confirmed roster change: the new player gets the team role and Season Participant role;
@@ -7641,7 +7694,14 @@ function rosterPanelPayload(ticket, team) {
   const slots = rosterSlots(team).filter(slotTaken);
   const embed = new EmbedBuilder()
     .setTitle(`🔁 ${team.teamName} roster`)
-    .setDescription(['**Current roster** (from the Roster Tracking tab)', rosterListText(team), '', 'Pick a player to remove, move to sub or promote, or add a new player.'].join('\n').slice(0, 4000))
+    .setDescription([
+      '**Current roster** (from the Roster Tracking tab)',
+      rosterListText(team),
+      '',
+      `**Captain:** ${rosterCaptainSlot(team)?.alias || team.captain || 'not set'}`,
+      '',
+      'Pick a player to remove, move to sub or promote, add a new player or coach, or change the captain.'
+    ].join('\n').slice(0, 4000))
     .setColor(0x5865f2);
   const rows = [];
   if (slots.length) {
@@ -7652,6 +7712,7 @@ function rosterPanelPayload(ticket, team) {
   }
   rows.push(new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`troster_add:${ticket.id}`).setLabel('Add a new player').setStyle(ButtonStyle.Success),
+    ...(slots.length ? [new ButtonBuilder().setCustomId(`troster_captain:${ticket.id}`).setLabel('Change captain').setStyle(ButtonStyle.Primary)] : []),
     new ButtonBuilder().setCustomId(`troster_reload:${ticket.id}`).setLabel('Reload roster').setStyle(ButtonStyle.Secondary)
   ));
   return { embeds: [embed], components: rows };
@@ -7669,10 +7730,17 @@ async function freshRosterTeam(ticket) {
   return { team: lookup.team };
 }
 
+// Whether the person being added is the coach (HLTV is optional for coaches).
+function rosterAddingCoach(wizard) {
+  const change = wizard?.change || {};
+  return change.kind === 'add' ? change.joinAs === 'coach' : change.kind === 'remove' && isCoachSlot(change.slotLabel);
+}
+
 // Page 1: the FACEIT link (IGN, SteamID64 and country come from FACEIT), Discord user, full name,
 // HLTV and Twitter.
 function rosterPlayerModalA(wizard) {
   const values = wizard.draft || {};
+  const coach = rosterAddingCoach(wizard);
   const text = (id, label, value, placeholder, { required = true, max = 200, description = null } = {}) => {
     const input = new TextInputBuilder().setCustomId(id).setStyle(TextInputStyle.Short).setRequired(required).setMaxLength(max).setPlaceholder(placeholder);
     if (value) input.setValue(String(value).slice(0, max));
@@ -7684,12 +7752,14 @@ function rosterPlayerModalA(wizard) {
   if (values.pickedId) picker.setDefaultUsers(values.pickedId);
   return new ModalBuilder()
     .setCustomId(`troster_formA:${wizard.ticketId}`)
-    .setTitle('New player')
+    .setTitle(coach ? 'New coach' : 'New player')
     .addLabelComponents(
       text('faceit', 'FACEIT profile link', values.faceitInput, 'https://www.faceit.com/en/players/...', { description: 'Their IGN, SteamID64 and country are filled in from FACEIT.' }),
       new LabelBuilder().setLabel('Discord user').setDescription("Not in this server? Leave empty; you'll be asked for their ID.").setUserSelectMenuComponent(picker),
       text('fullName', 'Full name', values.fullName, 'First and last name', { max: 100 }),
-      text('hltv', 'HLTV profile link', values.hltv, 'https://www.hltv.org/player/...'),
+      coach
+        ? text('hltv', 'HLTV profile link (optional for coaches)', values.hltv, 'https://www.hltv.org/coach/...', { required: false })
+        : text('hltv', 'HLTV profile link', values.hltv, 'https://www.hltv.org/player/...'),
       text('twitter', 'Twitter / X (optional)', values.twitterInput, '@handle or link', { required: false, max: 100 })
     );
 }
@@ -7722,7 +7792,7 @@ async function finishRosterPlayer(interaction, wizard, ticket) {
     alias: draft.alias, fullName: draft.fullName, faceit: draft.faceit || draft.faceitInput, hltv: draft.hltv, steamId: draft.steamId,
     nationality: draft.nationality, twitter: draft.twitterInput,
     discordId: draft.pickedId || typed, discord: draft.pickedName || typed || ''
-  });
+  }, { hltvOptional: rosterAddingCoach(wizard) });
   if (draft.typedDiscordId && !typed && !draft.pickedId) checked.errors.push('Discord ID must be 17–20 digits (Developer Mode → right-click them → Copy User ID).');
   if (checked.errors.length) {
     wizard.player = null;
@@ -7779,7 +7849,7 @@ async function rosterWizardNext(interaction, wizard, ticket, { update = true } =
       )]
     });
   }
-  const plan = planRosterOps(fresh.team, { ...wizard.change, player: wizard.change.kind === 'promote' ? null : wizard.player });
+  const plan = planRosterOps(fresh.team, { ...wizard.change, player: ['promote', 'captain'].includes(wizard.change.kind) ? null : wizard.player });
   if (!plan.ok && plan.needsSwap) {
     const starters = rosterSlots(fresh.team).filter((slot) => isStarterSlot(slot.label) && slotTaken(slot));
     return respond({
@@ -7826,9 +7896,10 @@ async function handleTicketRoster(interaction) {
       await interaction.reply({ content: fresh.error || 'That player is not on the sheet any more. Press Reload roster.', ephemeral: true });
       return;
     }
-    const buttons = [new ButtonBuilder().setCustomId(`troster_kind:${ticketId}:remove`).setLabel('Remove from team').setStyle(ButtonStyle.Danger)];
+    const buttons = [new ButtonBuilder().setCustomId(`troster_kind:${ticketId}:remove`).setLabel(isCoachSlot(slot.label) ? 'Remove as coach' : 'Remove from team').setStyle(ButtonStyle.Danger)];
+    // The coach can only be removed (or replaced).
     if (isStarterSlot(slot.label)) buttons.push(new ButtonBuilder().setCustomId(`troster_kind:${ticketId}:sub`).setLabel('Move to sub').setStyle(ButtonStyle.Primary));
-    else buttons.push(new ButtonBuilder().setCustomId(`troster_kind:${ticketId}:promote`).setLabel('Promote to starter').setStyle(ButtonStyle.Primary));
+    else if (!isCoachSlot(slot.label)) buttons.push(new ButtonBuilder().setCustomId(`troster_kind:${ticketId}:promote`).setLabel('Promote to starter').setStyle(ButtonStyle.Primary));
     buttons.push(new ButtonBuilder().setCustomId(`troster_cancel:${ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary));
     await interaction.reply({ content: `**${slotText(slot)}**: what happens to them?`, components: [new ActionRowBuilder().addComponents(buttons)], ephemeral: true });
     return;
@@ -7838,12 +7909,40 @@ async function handleTicketRoster(interaction) {
     wizard.change = { kind: 'add' };
     wizard.player = null;
     await interaction.reply({
-      content: 'Is the new player joining as a starter or a sub?',
+      content: 'Is the new player joining as a starter, a sub or the coach?',
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`troster_join:${ticketId}:starter`).setLabel('Starter').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId(`troster_join:${ticketId}:sub`).setLabel('Sub').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`troster_join:${ticketId}:coach`).setLabel('Coach').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId(`troster_cancel:${ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
       )],
+      ephemeral: true
+    });
+    return;
+  }
+  if (kind === 'troster_captain') {
+    const fresh = await freshRosterTeam(ticket);
+    if (fresh.error) {
+      await interaction.reply({ content: fresh.error, ephemeral: true });
+      return;
+    }
+    const current = rosterCaptainSlot(fresh.team);
+    const choices = rosterSlots(fresh.team).filter((slot) => slotTaken(slot) && slot.label !== current?.label);
+    if (!choices.length) {
+      await interaction.reply({ content: 'There is no one else on the roster to make captain.', ephemeral: true });
+      return;
+    }
+    const wizard = rosterWizardFor(ticketId, interaction.user.id, { create: true });
+    wizard.change = { kind: 'captain' };
+    wizard.player = null;
+    wizard.needsPlayer = false;
+    await interaction.reply({
+      content: `Who is the new captain? (now: **${current?.alias || fresh.team.captain || 'not set'}**)`,
+      components: [
+        new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`troster_captainpick:${ticketId}`).setPlaceholder('New captain…')
+          .addOptions(choices.map((slot) => ({ label: slotText(slot).slice(0, 100), value: slot.label })))),
+        new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`troster_cancel:${ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary))
+      ],
       ephemeral: true
     });
     return;
@@ -7862,8 +7961,13 @@ async function handleTicketRoster(interaction) {
     await interaction.update({ content: 'Cancelled. Nothing was changed.', embeds: [], components: [] });
     return;
   }
+  if (kind === 'troster_captainpick') {
+    wizard.change = { kind: 'captain', slotLabel: interaction.values?.[0] };
+    await rosterWizardNext(interaction, wizard, ticket);
+    return;
+  }
   if (kind === 'troster_join') {
-    wizard.change.joinAs = extra === 'sub' ? 'sub' : 'starter';
+    wizard.change.joinAs = ['sub', 'coach'].includes(extra) ? extra : 'starter';
     wizard.needsPlayer = true;
     await rosterWizardNext(interaction, wizard, ticket);
     return;
@@ -7876,7 +7980,7 @@ async function handleTicketRoster(interaction) {
       return;
     }
     await interaction.update({
-      content: extra === 'remove' ? 'Add a new player in their slot?' : 'Add a new player in their starter slot?',
+      content: extra === 'remove' ? (isCoachSlot(wizard.change.slotLabel) ? 'Add a new coach in their place?' : 'Add a new player in their slot?') : 'Add a new player in their starter slot?',
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`troster_replace:${ticketId}:yes`).setLabel('Yes, add a player').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId(`troster_replace:${ticketId}:no`).setLabel('No, just this change').setStyle(ButtonStyle.Secondary),
@@ -7991,7 +8095,7 @@ async function handleTicketRoster(interaction) {
       await interaction.editReply({ content: fresh.error });
       return;
     }
-    const player = wizard.change.kind === 'promote' ? null : wizard.player;
+    const player = ['promote', 'captain'].includes(wizard.change.kind) ? null : wizard.player;
     const plan = planRosterOps(fresh.team, { ...wizard.change, player });
     const removedSlot = wizard.change.kind === 'remove' ? rosterSlots(fresh.team).find((slot) => slot.label === wizard.change.slotLabel) || null : null;
     if (!plan.ok) {
@@ -8008,6 +8112,7 @@ async function handleTicketRoster(interaction) {
         teamName: fresh.team.teamName,
         headerRow: fresh.team.headerRow,
         expect: plan.sheetChange ? plan.expect : [],
+        expectCaptain: plan.expectCaptain ?? null,
         ops: plan.sheetChange ? plan.ops : [],
         linkLabel: config.rosterLinkLabel,
         logLine: plan.sheetChange ? plan.logLine : null,
@@ -8026,9 +8131,15 @@ async function handleTicketRoster(interaction) {
     }
     rosterWizards.delete(wizardKey(ticketId, interaction.user.id));
     // Discord roles only follow a change that was written to the sheet.
-    const roleLines = plan.sheetChange
-      ? await applyRosterRoles({ guild: interaction.guild, team: fresh.team, player, removedSlot }).catch((error) => [`⚠️ Roles not changed: ${error.message || error}`])
-      : [];
+    const roleLines = !plan.sheetChange
+      ? []
+      : plan.captain
+        ? await applyCaptainRoles({ guild: interaction.guild, plan }).catch((error) => [`⚠️ Roles not changed: ${error.message || error}`])
+        : await applyRosterRoles({ guild: interaction.guild, team: fresh.team, player, removedSlot }).catch((error) => [`⚠️ Roles not changed: ${error.message || error}`]);
+    // Removing the captain leaves the team without one on the sheet.
+    if (removedSlot && rosterCaptainSlot(fresh.team)?.label === removedSlot.label) {
+      roleLines.push(`⚠️ ${removedSlot.alias} was the captain. Use **Change captain** to pick a new one.`);
+    }
     const post = buildRosterChangePost({ teamName: fresh.team.teamName, group: ticket.group, requesterId: interaction.user.id, plan, player, ticketChannelId: ticket.channelId, roles: roleLines });
     const embed = () => new EmbedBuilder().setTitle(post.title).setDescription(post.description).addFields(post.fields).setColor(plan.sheetChange ? 0x5865f2 : 0xf1c40f);
     const ticketChannel = await client.channels.fetch(ticket.channelId).catch(() => null);

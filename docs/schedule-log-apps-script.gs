@@ -561,6 +561,7 @@ function readRosterTeam(body) {
 //   { op: 'clear', row }          empties B-I
 //   { op: 'copy', from, to }      copies B-I with links (copyTo keeps them)
 //   { op: 'swap', a, b }          swaps two rows' B-I through a temporary row below the data
+//   { op: 'captain', value }      the team's Captain cell (checked against body.expectCaptain)
 function applyRosterOps(body) {
   const sheet = rosterSheet(body);
   if (!sheet) return reply(500, { ok: false, error: 'roster tab "' + body.sheetName + '" not found' });
@@ -571,12 +572,12 @@ function applyRosterOps(body) {
     return reply(409, { ok: false, error: 'the team block moved on the sheet; start the roster change again' });
   }
   const rosterRows = {};
-  block.slots.forEach((slot) => { if (!/^coach/i.test(slot.label)) rosterRows[slot.row] = slot; });
+  block.slots.forEach((slot) => { rosterRows[slot.row] = slot; });
   const ops = Array.isArray(body.ops) ? body.ops : [];
   const touched = [];
   ops.forEach((op) => { [op.row, op.from, op.to, op.a, op.b].forEach((row) => { if (row !== undefined) touched.push(Number(row)); }); });
   for (let i = 0; i < touched.length; i++) {
-    if (!rosterRows[touched[i]]) return reply(409, { ok: false, error: 'row ' + touched[i] + ' is not a starter or sub slot of ' + block.teamName });
+    if (!rosterRows[touched[i]]) return reply(409, { ok: false, error: 'row ' + touched[i] + ' is not a starter, sub or coach slot of ' + block.teamName });
   }
   const expect = Array.isArray(body.expect) ? body.expect : [];
   for (let i = 0; i < expect.length; i++) {
@@ -584,6 +585,10 @@ function applyRosterOps(body) {
     if (!slot || rosterKey(slot.alias) !== rosterKey(expect[i].alias)) {
       return reply(409, { ok: false, error: (slot ? slot.label : 'a slot') + ' changed on the sheet since the roster was loaded; start the roster change again' });
     }
+  }
+  // A captain change: the Captain cell must still be what the bot read.
+  if (ops.some((op) => op.op === 'captain') && rosterKey(block.captain) !== rosterKey(body.expectCaptain)) {
+    return reply(409, { ok: false, error: 'the captain changed on the sheet since the roster was loaded; start the roster change again' });
   }
   const width = ROSTER_FIELDS.length;
   const range = (row) => sheet.getRange(Number(row), ROSTER_FIRST_FIELD_COLUMN, 1, width);
@@ -601,7 +606,10 @@ function applyRosterOps(body) {
     return { action: String(entry.action || ''), player: String(entry.player || ''), spot: String(entry.spot || ''), faceit: faceit };
   });
   ops.forEach((op) => {
-    if (op.op === 'clear') {
+    if (op.op === 'captain') {
+      // The Captain cell: column C of the Team Info row.
+      sheet.getRange(block.headerRow, 3).setValue(String(op.value || ''));
+    } else if (op.op === 'clear') {
       range(op.row).clearContent();
     } else if (op.op === 'copy') {
       range(op.from).copyTo(range(op.to));

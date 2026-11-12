@@ -53,11 +53,47 @@ test('typed Discord IDs must be 17-20 digits; Twitter handles become links', () 
   assert.equal(twitterLink(''), '');
 });
 
-test('the roster list: starters and subs, coach left out', () => {
+test('the roster list: starters, subs and the coach', () => {
   assert.deepEqual(rosterSlots(team()).map(slotText), [
     'Starter 1 · cap (Name cap)', 'Starter 2 · two (Name two)', 'Starter 3 · calamity (Name calamity)',
-    'Starter 4 · four (Name four)', 'Starter 5 · five (Name five)', 'Sub 1 · empty', 'Sub 2 · empty'
+    'Starter 4 · four (Name four)', 'Starter 5 · five (Name five)', 'Sub 1 · empty', 'Sub 2 · empty',
+    'Coach · coachy (Coach Person)'
   ]);
+});
+
+test('coach: HLTV is optional, added into an empty coach slot, removed or replaced, never moved', () => {
+  const coach = validateNewPlayer({ ...GOOD, hltv: '' }, { hltvOptional: true });
+  assert.equal(coach.ok, true);
+  assert.equal(validateNewPlayer({ ...GOOD, hltv: '' }).ok, false, 'players still need HLTV');
+  assert.match(planRosterOps(team(), { kind: 'add', joinAs: 'coach', player }).error, /already has a coach/);
+  const noCoach = team();
+  noCoach.slots[7] = slot('Coach', '', 11);
+  const added = planRosterOps(noCoach, { kind: 'add', joinAs: 'coach', player });
+  assert.deepEqual(added.ops, [{ op: 'write', row: 11, player }]);
+  assert.equal(added.history[0].spot, 'Coach');
+  const replaced = planRosterOps(team(), { kind: 'remove', slotLabel: 'Coach', player });
+  assert.deepEqual(replaced.ops, [{ op: 'write', row: 11, player }]);
+  assert.deepEqual(replaced.history.map((entry) => [entry.action, entry.player, entry.spot]), [['Removed', 'coachy', 'Coach'], ['Added', 'zoro-', 'Coach']]);
+  assert.match(planRosterOps(team(), { kind: 'sub', slotLabel: 'Coach' }).error, /coach can't be moved to sub/);
+  assert.match(planRosterOps(team(), { kind: 'promote', slotLabel: 'Coach' }).error, /coach can't be promoted/);
+});
+
+test('captain: the Captain cell gets the new captain, checked against what was read', () => {
+  const captained = { ...team(), captain: 'cap' };
+  const swap = planRosterOps(captained, { kind: 'captain', slotLabel: 'Starter 3' });
+  assert.deepEqual(swap.ops, [{ op: 'captain', value: 'calamity' }]);
+  assert.deepEqual(swap.expect, [{ row: 6, alias: 'calamity' }]);
+  assert.equal(swap.expectCaptain, 'cap');
+  assert.equal(swap.summary, 'Making **calamity** the captain (was **cap**).');
+  assert.deepEqual(swap.history.map((entry) => [entry.action, entry.player, entry.spot]), [['Made captain', 'calamity', 'Starter'], ['No longer captain', 'cap', 'Starter']]);
+  assert.equal(swap.captain.oldSlot.label, 'Starter 1');
+  assert.match(planRosterOps(captained, { kind: 'captain', slotLabel: 'Starter 1' }).error, /already the captain/);
+  const withDiscord = team();
+  withDiscord.slots[2] = { ...withDiscord.slots[2], discord: '@calamity_dc' };
+  assert.deepEqual(planRosterOps(withDiscord, { kind: 'captain', slotLabel: 'Starter 3' }).ops, [{ op: 'captain', value: 'calamity_dc' }], 'their Discord name when there is one');
+  const none = planRosterOps(team(), { kind: 'captain', slotLabel: 'Coach' });
+  assert.equal(none.summary, 'Making **coachy** the captain.');
+  assert.equal(none.history.length, 1);
 });
 
 test('add: into the first open starter or sub slot', () => {
@@ -156,23 +192,23 @@ test('the admin post lists the Discord role changes', () => {
 test('Roster History rows: one per player affected, with their FACEIT link or roster row', () => {
   const remove = planRosterOps(team(), { kind: 'remove', slotLabel: 'Starter 3', player });
   assert.deepEqual(remove.history, [
-    { action: 'Removed', player: 'calamity', spot: 'Starter 3', faceitRow: 6 },
-    { action: 'Added', player: 'zoro-', spot: 'Starter 3', faceit: 'https://www.faceit.com/en/players/zoro-' }
+    { action: 'Removed', player: 'calamity', spot: 'Starter', faceitRow: 6 },
+    { action: 'Added', player: 'zoro-', spot: 'Starter', faceit: 'https://www.faceit.com/en/players/zoro-' }
   ]);
   assert.deepEqual(planRosterOps(team({ subs: ['benchy', ''] }), { kind: 'sub', slotLabel: 'Starter 3' }).history,
-    [{ action: 'Moved to sub', player: 'calamity', spot: 'Starter 3 → Sub 2', faceitRow: 6 }]);
+    [{ action: 'Moved to sub', player: 'calamity', spot: 'Sub', faceitRow: 6 }]);
   assert.deepEqual(planRosterOps(team({ subs: ['benchy', ''] }), { kind: 'promote', slotLabel: 'Sub 1', swapLabel: 'Starter 2' }).history, [
-    { action: 'Promoted', player: 'benchy', spot: 'Sub 1 → Starter 2', faceitRow: 9 },
-    { action: 'Moved to sub', player: 'two', spot: 'Starter 2 → Sub 1', faceitRow: 5 }
+    { action: 'Promoted', player: 'benchy', spot: 'Starter', faceitRow: 9 },
+    { action: 'Moved to sub', player: 'two', spot: 'Sub', faceitRow: 5 }
   ]);
   assert.deepEqual(planRosterOps(team(), { kind: 'add', joinAs: 'sub', player }).history,
-    [{ action: 'Added', player: 'zoro-', spot: 'Sub 1', faceit: 'https://www.faceit.com/en/players/zoro-' }]);
+    [{ action: 'Added', player: 'zoro-', spot: 'Sub', faceit: 'https://www.faceit.com/en/players/zoro-' }]);
   const full = planRosterOps(team({ subs: ['a', 'b'] }), { kind: 'sub', slotLabel: 'Starter 3', player });
   assert.deepEqual(full.history.map((row) => row.action), ['Sent to admin: move to sub (subs full)', 'Sent to admin: add (subs full)'], 'still recorded when the sheet is left for an admin');
 });
 
-test('roster history dates are in Eastern time with the zone', () => {
-  assert.equal(historyWhenText(new Date('2026-11-12T02:42:00Z'), 'America/New_York'), 'Nov 11, 9:42 PM EST');
-  assert.equal(historyWhenText(new Date('2026-07-12T02:42:00Z'), 'America/New_York'), 'Jul 11, 10:42 PM EDT');
-  assert.equal(historyWhenText(new Date('2026-11-12T02:42:00Z'), 'Not/AZone'), 'Nov 12, 2:42 AM UTC', 'a bad zone falls back to UTC');
+test('roster history dates: the day in Eastern time, no time of day', () => {
+  assert.equal(historyWhenText(new Date('2026-11-12T02:42:00Z'), 'America/New_York'), 'Nov 11, 2026', '9:42 PM Eastern is still Nov 11');
+  assert.equal(historyWhenText(new Date('2026-11-12T15:00:00Z'), 'America/New_York'), 'Nov 12, 2026');
+  assert.equal(historyWhenText(new Date('2026-11-12T02:42:00Z'), 'Not/AZone'), 'Nov 12, 2026', 'a bad zone falls back to UTC');
 });
