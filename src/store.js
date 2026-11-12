@@ -48,7 +48,8 @@ function normalizeDb(db) {
     rosterChanges: db.rosterChanges || {},
     arenaLinks: db.arenaLinks || {},
     arenaMatches: db.arenaMatches || {},
-    voiceRooms: { setup: db.voiceRooms?.setup || null, rooms: db.voiceRooms?.rooms || {} }
+    voiceRooms: { setup: db.voiceRooms?.setup || null, rooms: db.voiceRooms?.rooms || {} },
+    reactionRoleMessages: db.reactionRoleMessages || {}
   };
 }
 
@@ -985,6 +986,18 @@ export async function deleteVoiceRoom(channelId) {
   return mutateDb((db) => {
     delete db.voiceRooms.rooms[channelId];
     return true;
+  });
+}
+
+// Reaction-role messages: { [messageId]: { guildId, channelId, roles: [{ emoji, roleId }] } }.
+export async function getReactionRoleMessages() {
+  return (await snapshot()).reactionRoleMessages || {};
+}
+
+export async function saveReactionRoleMessage(messageId, record) {
+  return mutateDb((db) => {
+    db.reactionRoleMessages[messageId] = { ...(db.reactionRoleMessages[messageId] || {}), ...record };
+    return { ...db.reactionRoleMessages[messageId] };
   });
 }
 

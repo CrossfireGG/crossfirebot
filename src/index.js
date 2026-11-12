@@ -25,6 +25,7 @@ import { commands } from './commands.js';
 import { getConfig } from './config.js';
 import { createArena } from './arena.js';
 import { createVoiceRooms } from './voiceRooms.js';
+import { createReactionRoles, parseMessageLink } from './reactionRoles.js';
 import { FaceitClient } from './faceit.js';
 import { SclClient } from './scl.js';
 import { findUniqueSclMatchChannel } from './sclChannelResolver.js';
@@ -472,6 +473,8 @@ const arena = createArena({
   isAdminStaff: (member) => isAdminStaff(member),
   memberForDiscordText: (guild, text) => rosterMemberFor(guild, text)
 });
+// React-for-roles messages (src/reactionRoles.js): Crossfire Arena and Game Ping.
+const reactionRoles = createReactionRoles({ client, roles: config.arenaReactionRoles });
 // Join To Create personal voice channels (src/voiceRooms.js).
 const voiceRooms = createVoiceRooms({ client, config, isAdminStaff: (member) => isAdminStaff(member) });
 
@@ -515,6 +518,7 @@ client.once(Events.ClientReady, async () => {
   }
   arena.start();
   await voiceRooms.start().catch((error) => console.error('Join To Create start failed:', error));
+  reactionRoles.sync().catch((error) => console.error('Reaction roles catch-up failed:', error));
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -567,6 +571,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.customId?.startsWith('arena_')) {
       await arena.handleComponent(interaction);
+      return;
+    }
+    if (interaction.isMessageContextMenuCommand?.() && interaction.commandName === 'Add Arena role reactions') {
+      await handleArenaRolesCommand(interaction, interaction.targetMessage);
+      return;
+    }
+    if (interaction.isChatInputCommand() && interaction.commandName === 'arena' && interaction.options.getSubcommand(false) === 'roles') {
+      await handleArenaRolesCommand(interaction);
       return;
     }
     if (interaction.isChatInputCommand() && interaction.commandName === 'arena') {
@@ -1539,8 +1551,45 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   }
 });
 
+// /arena roles: post the react-for-roles message in this channel, or set up an existing message.
+// From the right-click menu, target is the message that was clicked.
+async function handleArenaRolesCommand(interaction, target = null) {
+  if (!arena.isStaff(interaction.member)) {
+    await interaction.reply({ content: 'Only Arena staff can do that.', ephemeral: true });
+    return;
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const linkText = target ? null : interaction.options.getString('message_link');
+  let existing = target;
+  if (linkText) {
+    const link = parseMessageLink(linkText);
+    const channel = link ? await client.channels.fetch(link.channelId).catch(() => null) : null;
+    existing = channel?.messages ? await channel.messages.fetch(link.messageId).catch(() => null) : null;
+    if (!existing) {
+      await interaction.editReply('I couldn\'t open that message. Right-click the message > **Copy Message Link** and paste it here.');
+      return;
+    }
+  }
+  if (!existing && !interaction.channel?.isTextBased?.()) {
+    await interaction.editReply('Run this in a text channel.');
+    return;
+  }
+  const message = await reactionRoles.setUp({ channel: interaction.channel, existing });
+  const list = config.arenaReactionRoles.map((entry) => `${entry.emoji} = <@&${entry.roleId}>`).join(', ');
+  await interaction.editReply({ content: `✅ Reaction roles are on [this message](${message.url}): ${list}.`, allowedMentions: { parse: [] } });
+}
+
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+  try {
+    await reactionRoles.onReaction(reaction, user, false);
+  } catch (error) {
+    console.error('Reaction role removal failed:', error);
+  }
+});
+
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   try {
+    if (await reactionRoles.onReaction(reaction, user, true)) return;
     await handleCallAdminReaction(reaction, user);
   } catch (error) {
     console.error('Call admin reaction failed:', error);

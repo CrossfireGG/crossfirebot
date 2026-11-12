@@ -257,6 +257,11 @@ export function getConfig() {
     arenaStaffLogChannelId: process.env.ARENA_STAFF_LOG_CHANNEL_ID || '',
     arenaPollSeconds: Math.max(10, Number(process.env.ARENA_POLL_SECONDS || 20) || 20),
     arenaTeamSize: Math.max(1, Number(process.env.ARENA_TEAM_SIZE || 5) || 5),
+    // Reaction roles on the /arena roles message: react to get the role, unreact to drop it.
+    arenaReactionRoles: [
+      { emoji: '🎮', roleId: process.env.ARENA_ROLE_ID || '1457613938844766300', label: 'Crossfire Arena', description: '' },
+      { emoji: '🔔', roleId: process.env.ARENA_GAME_PING_ROLE_ID || '1457613942443475080', label: 'Game Ping', description: 'get pinged when there are games' }
+    ],
     // Join To Create voice: joining the channel makes a personal voice channel next to it and
     // moves you in; it's deleted when empty. With no JOIN_TO_CREATE_CHANNEL_ID the bot makes the
     // category and channel itself (once) and remembers them.

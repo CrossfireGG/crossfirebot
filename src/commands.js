@@ -1,4 +1,4 @@
-import { SlashCommandBuilder } from 'discord.js';
+import { ApplicationCommandType, ContextMenuCommandBuilder, SlashCommandBuilder } from 'discord.js';
 
 const roundChoices = [
   { name: 'All detected rounds', value: 'all' },
@@ -319,6 +319,13 @@ export const commands = [
       .addUserOption((option) => option.setName('user').setDescription('Who (default: you)').setRequired(false)))
     .addSubcommand((subcommand) => subcommand.setName('status').setDescription('Staff: games with voice channels right now, and how many players are linked'))
     .addSubcommand((subcommand) => subcommand.setName('panel').setDescription('Staff: post the Link FACEIT panel in arena-info'))
+    .addSubcommand((subcommand) => subcommand.setName('roles').setDescription('Staff: post the react-for-roles message here (Crossfire Arena, Game Ping)')
+      .addStringOption((option) => option.setName('message_link').setDescription('Use an existing message instead (right-click it > Copy Message Link)').setRequired(false)))
     .addSubcommand((subcommand) => subcommand.setName('cleanup').setDescription('Staff: end finished games and delete leftover Arena voice channels')
       .addBooleanOption((option) => option.setName('everything').setDescription('End every game the bot is tracking, even ones still live').setRequired(false)))
+  ,
+  // Right-click a message > Apps > Add Arena role reactions: the bot adds 🎮 and 🔔 to it.
+  new ContextMenuCommandBuilder()
+    .setName('Add Arena role reactions')
+    .setType(ApplicationCommandType.Message)
 ].map((command) => command.toJSON());
