@@ -104,7 +104,11 @@ import {
   updateSheetSync,
   getOpenMatchesDigest,
   claimOpenMatchesDigest,
-  saveOpenMatchesDigest
+  saveOpenMatchesDigest,
+  createRosterChange,
+  saveRosterChange,
+  getRosterChange,
+  listOpenRosterChanges
 } from './store.js';
 import {
   LEGACY_SEASON_SEED,
@@ -231,7 +235,13 @@ import {
   slotTaken,
   slotText,
   validateNewPlayer,
-  isCoachSlot
+  isCoachSlot,
+  faceitTeamPageUrl,
+  rosterUndoPlan,
+  rosterFaceitExpectations,
+  checkFaceitRoster,
+  duplicatePlayerLines,
+  rosterReminderDue
 } from './rosterChange.js';
 import {
   buildTicketHeader,
@@ -515,7 +525,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleTicketRoster(interaction);
       return;
     }
-    if (interaction.isButton() && interaction.customId === 'roster_done') {
+    if (interaction.isButton() && /^roster_(done|doneforce|undo|undoyes)(:|$)/.test(interaction.customId || '')) {
       await handleRosterDone(interaction);
       return;
     }
@@ -7567,7 +7577,7 @@ async function rosterMemberFor(guild, discordText) {
 }
 
 // After a captain change: the Team Captain role moves from the old captain to the new one.
-async function applyCaptainRoles({ guild, plan }) {
+async function applyCaptainRoles({ guild, plan, record = null }) {
   if (!guild || !plan.captain) return [];
   await guild.roles.fetch().catch(() => null);
   const roleName = String(config.teamCaptainRoleName || '').toLowerCase();
@@ -7580,12 +7590,14 @@ async function applyCaptainRoles({ guild, plan }) {
     lines.push(`⚠️ Couldn't find ${plan.captain.slot.alias} in this server from the sheet's Discord cell, so give them **${role.name}** by hand.`);
   } else if (!next.roles.cache.has(role.id)) {
     const ok = await next.roles.add(role, 'Roster change: made team captain').then(() => true).catch(() => false);
+    if (ok) record?.push({ userId: next.id, roleIds: [role.id], action: 'add' });
     lines.push(ok ? `🎭 Gave <@${next.id}> **${role.name}**.` : `⚠️ Couldn't give <@${next.id}> **${role.name}** (the bot's role must be above it).`);
   }
   const oldText = plan.captain.oldSlot?.discord || plan.captain.oldValue;
   const old = oldText ? await rosterMemberFor(guild, oldText) : null;
   if (old && old.id !== next?.id && old.roles.cache.has(role.id)) {
     const ok = await old.roles.remove(role, 'Roster change: no longer team captain').then(() => true).catch(() => false);
+    if (ok) record?.push({ userId: old.id, roleIds: [role.id], action: 'remove' });
     lines.push(ok ? `🎭 Removed **${role.name}** from <@${old.id}>.` : `⚠️ Couldn't remove **${role.name}** from <@${old.id}> (the bot's role must be above it).`);
   } else if (oldText && !old) {
     lines.push(`⚠️ Couldn't find the old captain (${plan.captain.oldSlot?.alias || oldText}) in this server, so remove their **${role.name}** role by hand if they have it.`);
@@ -7596,7 +7608,7 @@ async function applyCaptainRoles({ guild, plan }) {
 // After a confirmed roster change: the new player gets the team role and Season Participant role;
 // a removed player loses the team role, and Season Participant too unless they're on another team.
 // Returns lines for the captain and the admin post.
-async function applyRosterRoles({ guild, team, player, removedSlot }) {
+async function applyRosterRoles({ guild, team, player, removedSlot, record = null }) {
   if (!guild) return [];
   await guild.roles.fetch().catch(() => null);
   const mappings = await listTeamMappings(teamMappingScope());
@@ -7620,6 +7632,7 @@ async function applyRosterRoles({ guild, team, player, removedSlot }) {
       const add = [teamRole, participantRole].filter((role) => role && !member.roles.cache.has(role.id));
       if (add.length) {
         const ok = await member.roles.add(add, `Roster change: added to ${team.teamName}`).then(() => true).catch(() => false);
+        if (ok) record?.push({ userId: member.id, roleIds: add.map((role) => role.id), action: 'add' });
         lines.push(ok ? `🎭 Gave <@${member.id}> ${add.map((role) => `**${role.name}**`).join(' and ')}.` : `⚠️ Couldn't give <@${member.id}> their roles (the bot's role must be above them).`);
       }
     }
@@ -7637,6 +7650,7 @@ async function applyRosterRoles({ guild, team, player, removedSlot }) {
       const remove = [teamRole, onOtherTeam ? null : participantRole].filter((role) => role && member.roles.cache.has(role.id));
       if (remove.length) {
         const ok = await member.roles.remove(remove, `Roster change: removed from ${team.teamName}`).then(() => true).catch(() => false);
+        if (ok) record?.push({ userId: member.id, roleIds: remove.map((role) => role.id), action: 'remove' });
         lines.push(ok ? `🎭 Removed ${remove.map((role) => `**${role.name}**`).join(' and ')} from <@${member.id}>.` : `⚠️ Couldn't remove <@${member.id}>'s roles (the bot's role must be above them).`);
       }
     }
@@ -7802,6 +7816,35 @@ async function finishRosterPlayer(interaction, wizard, ticket) {
     await interaction.editReply({ content: ['Some details need fixing:', ...checked.errors.map((error) => `• ${error}`), '', 'Your answers are kept.'].join('\n'), embeds: [], components: [new ActionRowBuilder().addComponents(buttons)] });
     return;
   }
+  // The same player on another team (or already on this one): captains are stopped, staff are warned.
+  const found = await scheduleSheet.findRosterPlayer({
+    spreadsheetId: config.rosterSpreadsheetId,
+    sheetName: config.rosterSheetName,
+    steamId: checked.player.steamId,
+    faceit: checked.player.faceit,
+    discord: checked.player.discord
+  }).catch((error) => ({ ok: false, error: error.message || String(error), matches: [] }));
+  const replacing = wizard.change.kind === 'remove' ? wizard.change.slotLabel : null;
+  const duplicates = (found.matches || []).filter((match) => !(replacing && match.label === replacing && normalizeTeamKey(match.teamName) === normalizeTeamKey(ticket.teamName)));
+  wizard.duplicates = duplicates;
+  wizard.duplicateCheckFailed = !found.ok;
+  if (duplicates.length && !isTicketStaff(interaction.member)) {
+    wizard.player = null;
+    await interaction.editReply({
+      content: [
+        `**${checked.player.alias}** is already on the roster sheet:`,
+        ...duplicatePlayerLines(duplicates),
+        '',
+        'A player can only be on one team. If they are leaving that team, its captain has to remove them first (or ask the staff in this ticket). Wrong player? Fix the details.'
+      ].join('\n'),
+      embeds: [],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`troster_formA_open:${wizard.ticketId}`).setLabel('Fix the details').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`troster_cancel:${wizard.ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+      )]
+    });
+    return;
+  }
   wizard.player = { ...checked.player, fromFaceit: Boolean(draft.fromFaceit) };
   await rosterWizardNext(interaction, wizard, ticket, { update: false });
 }
@@ -7820,9 +7863,12 @@ function rosterWizardFor(ticketId, userId, { create = false } = {}) {
 
 function rosterConfirmView(wizard, plan) {
   const lines = [plan.summary, plan.warning ? `\n⚠️ ${plan.warning}` : null];
-  if (wizard.player && wizard.change.kind !== 'promote') {
+  const adding = wizard.player && !['promote', 'captain'].includes(wizard.change.kind);
+  if (adding) {
     lines.push('', '**New player**', ...playerLines(wizard.player));
     if (wizard.player.fromFaceit) lines.push('*IGN, SteamID64 and nationality are from their FACEIT profile.*');
+    if (wizard.duplicates?.length) lines.push('', '⚠️ **Already on the roster sheet** (staff can still confirm):', ...duplicatePlayerLines(wizard.duplicates));
+    else if (wizard.duplicateCheckFailed) lines.push('', "⚠️ Couldn't check whether this player is on another team.");
   }
   return {
     content: '',
@@ -7836,7 +7882,9 @@ function rosterConfirmView(wizard, plan) {
 
 // Shows the next step of the wizard: the player form, a swap pick, or the confirm view.
 async function rosterWizardNext(interaction, wizard, ticket, { update = true } = {}) {
-  const respond = (payload) => (update && interaction.isMessageComponent?.() ? interaction.update(payload) : interaction.editReply(payload));
+  // Reading the sheet can take longer than Discord's 3 seconds, so acknowledge the click first.
+  if (update && interaction.isMessageComponent?.() && !interaction.deferred && !interaction.replied) await interaction.deferUpdate();
+  const respond = (payload) => interaction.editReply(payload);
   const fresh = await freshRosterTeam(ticket);
   if (fresh.error) return respond({ content: fresh.error, embeds: [], components: [] });
   if (wizard.needsPlayer && !wizard.player) {
@@ -7890,10 +7938,11 @@ async function handleTicketRoster(interaction) {
     const wizard = rosterWizardFor(ticketId, interaction.user.id, { create: true });
     wizard.change = { slotLabel: interaction.values?.[0] };
     wizard.player = null;
+    await interaction.deferReply({ ephemeral: true });
     const fresh = await freshRosterTeam(ticket);
     const slot = fresh.team ? rosterSlots(fresh.team).find((entry) => entry.label === wizard.change.slotLabel) : null;
     if (!slot || !slotTaken(slot)) {
-      await interaction.reply({ content: fresh.error || 'That player is not on the sheet any more. Press Reload roster.', ephemeral: true });
+      await interaction.editReply({ content: fresh.error || 'That player is not on the sheet any more. Press Reload roster.' });
       return;
     }
     const buttons = [new ButtonBuilder().setCustomId(`troster_kind:${ticketId}:remove`).setLabel(isCoachSlot(slot.label) ? 'Remove as coach' : 'Remove from team').setStyle(ButtonStyle.Danger)];
@@ -7901,7 +7950,7 @@ async function handleTicketRoster(interaction) {
     if (isStarterSlot(slot.label)) buttons.push(new ButtonBuilder().setCustomId(`troster_kind:${ticketId}:sub`).setLabel('Move to sub').setStyle(ButtonStyle.Primary));
     else if (!isCoachSlot(slot.label)) buttons.push(new ButtonBuilder().setCustomId(`troster_kind:${ticketId}:promote`).setLabel('Promote to starter').setStyle(ButtonStyle.Primary));
     buttons.push(new ButtonBuilder().setCustomId(`troster_cancel:${ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary));
-    await interaction.reply({ content: `**${slotText(slot)}**: what happens to them?`, components: [new ActionRowBuilder().addComponents(buttons)], ephemeral: true });
+    await interaction.editReply({ content: `**${slotText(slot)}**: what happens to them?`, components: [new ActionRowBuilder().addComponents(buttons)] });
     return;
   }
   if (kind === 'troster_add') {
@@ -7921,29 +7970,29 @@ async function handleTicketRoster(interaction) {
     return;
   }
   if (kind === 'troster_captain') {
+    await interaction.deferReply({ ephemeral: true });
     const fresh = await freshRosterTeam(ticket);
     if (fresh.error) {
-      await interaction.reply({ content: fresh.error, ephemeral: true });
+      await interaction.editReply({ content: fresh.error });
       return;
     }
     const current = rosterCaptainSlot(fresh.team);
     const choices = rosterSlots(fresh.team).filter((slot) => slotTaken(slot) && slot.label !== current?.label);
     if (!choices.length) {
-      await interaction.reply({ content: 'There is no one else on the roster to make captain.', ephemeral: true });
+      await interaction.editReply({ content: 'There is no one else on the roster to make captain.' });
       return;
     }
     const wizard = rosterWizardFor(ticketId, interaction.user.id, { create: true });
     wizard.change = { kind: 'captain' };
     wizard.player = null;
     wizard.needsPlayer = false;
-    await interaction.reply({
+    await interaction.editReply({
       content: `Who is the new captain? (now: **${current?.alias || fresh.team.captain || 'not set'}**)`,
       components: [
         new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`troster_captainpick:${ticketId}`).setPlaceholder('New captain…')
           .addOptions(choices.map((slot) => ({ label: slotText(slot).slice(0, 100), value: slot.label })))),
         new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`troster_cancel:${ticketId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary))
-      ],
-      ephemeral: true
+      ]
     });
     return;
   }
@@ -8105,8 +8154,9 @@ async function handleTicketRoster(interaction) {
     // The sheet call also adds the Roster History rows, so a change sent to an admin (subs full,
     // nothing written to the roster) still goes in the history.
     let historyWarning = null;
+    let written = null;
     if (plan.sheetChange || plan.history?.length) {
-      const written = await scheduleSheet.applyRosterOps({
+      written = await scheduleSheet.applyRosterOps({
         spreadsheetId: config.rosterSpreadsheetId,
         sheetName: config.rosterSheetName,
         teamName: fresh.team.teamName,
@@ -8131,16 +8181,18 @@ async function handleTicketRoster(interaction) {
     }
     rosterWizards.delete(wizardKey(ticketId, interaction.user.id));
     // Discord roles only follow a change that was written to the sheet.
+    const roleChanges = [];
     const roleLines = !plan.sheetChange
       ? []
       : plan.captain
-        ? await applyCaptainRoles({ guild: interaction.guild, plan }).catch((error) => [`⚠️ Roles not changed: ${error.message || error}`])
-        : await applyRosterRoles({ guild: interaction.guild, team: fresh.team, player, removedSlot }).catch((error) => [`⚠️ Roles not changed: ${error.message || error}`]);
+        ? await applyCaptainRoles({ guild: interaction.guild, plan, record: roleChanges }).catch((error) => [`⚠️ Roles not changed: ${error.message || error}`])
+        : await applyRosterRoles({ guild: interaction.guild, team: fresh.team, player, removedSlot, record: roleChanges }).catch((error) => [`⚠️ Roles not changed: ${error.message || error}`]);
     // Removing the captain leaves the team without one on the sheet.
     if (removedSlot && rosterCaptainSlot(fresh.team)?.label === removedSlot.label) {
       roleLines.push(`⚠️ ${removedSlot.alias} was the captain. Use **Change captain** to pick a new one.`);
     }
-    const post = buildRosterChangePost({ teamName: fresh.team.teamName, group: ticket.group, requesterId: interaction.user.id, plan, player, ticketChannelId: ticket.channelId, roles: roleLines });
+    const teamUrl = faceitTeamPageUrl(fresh.team.faceitUrl || ticket.teamFaceitUrl);
+    const post = buildRosterChangePost({ teamName: fresh.team.teamName, group: ticket.group, requesterId: interaction.user.id, plan, player, ticketChannelId: ticket.channelId, roles: roleLines, teamUrl });
     const embed = () => new EmbedBuilder().setTitle(post.title).setDescription(post.description).addFields(post.fields).setColor(plan.sheetChange ? 0x5865f2 : 0xf1c40f);
     const ticketChannel = await client.channels.fetch(ticket.channelId).catch(() => null);
     await ticketChannel?.send?.({ embeds: [embed()] }).catch(() => null);
@@ -8148,20 +8200,38 @@ async function handleTicketRoster(interaction) {
     // A claimed ticket pings only the admin handling it; otherwise the roster change roles.
     const handler = (await getTicket(ticketId).catch(() => null))?.claimedBy || ticket.claimedBy || null;
     const pings = handler ? `<@${handler}>` : config.rosterChangePingRoleIds.map((roleId) => `<@&${roleId}>`).join(' ');
+    const snapshot = plan.sheetChange ? written?.snapshot || null : null;
+    const record = await createRosterChange({
+      ticketId,
+      ticketChannelId: ticket.channelId,
+      requesterId: interaction.user.id,
+      teamName: fresh.team.teamName,
+      headerRow: fresh.team.headerRow,
+      teamFaceitUrl: fresh.team.faceitUrl || ticket.teamFaceitUrl || null,
+      teamUrl,
+      kind: wizard.change.kind,
+      summary: plan.summary,
+      history: plan.history || [],
+      sheetChange: plan.sheetChange,
+      snapshot,
+      roleChanges,
+      faceit: rosterFaceitExpectations({ kind: wizard.change.kind, player, removedSlot, captainSlot: plan.captain?.slot || null, snapshot }),
+      adminChannelId: adminChannel?.id || null
+    }).catch((error) => {
+      console.error(`[Roster] change record not saved: ${error.message || error}`);
+      return null;
+    });
     const adminPost = adminChannel?.isTextBased?.()
       ? await adminChannel.send({
         content: pings || undefined,
         embeds: [embed()],
-        components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('roster_done').setLabel('Done on FACEIT').setStyle(ButtonStyle.Success))],
+        components: [rosterAdminButtons(record, { teamUrl })],
         allowedMentions: handler ? { parse: [], users: [handler] } : { parse: [], roles: config.rosterChangePingRoleIds }
       }).catch(() => null)
       : null;
+    if (record && adminPost) await saveRosterChange(record.id, { adminMessageId: adminPost.id }).catch(() => null);
     // The roster list in the ticket shows the new roster.
-    const reloaded = await freshRosterTeam(ticket);
-    if (reloaded.team && ticketChannel) {
-      const panel = (await ticketChannel.messages.fetch({ limit: 20 }).catch(() => null))?.find((message) => message.author.id === client.user.id && message.embeds?.[0]?.title?.endsWith(' roster'));
-      if (panel) await panel.edit(rosterPanelPayload(ticket, reloaded.team)).catch(() => null);
-    }
+    await refreshRosterPanel(ticket, ticketChannel);
     await appendAuditLog({ type: 'roster_change', ticketId, actorId: interaction.user.id, team: fresh.team.teamName, kind: wizard.change.kind, summary: plan.summary, sheetChange: plan.sheetChange, posted: Boolean(adminPost) }).catch(() => null);
     await interaction.editReply({
       content: [
@@ -8332,20 +8402,250 @@ async function syncTicketPriorities(now = Date.now()) {
 }
 
 // "Done on FACEIT" on the admin post: staff only; marks who did it and when, then disables the button.
+// The buttons under a roster change post: Done on FACEIT, Undo (when the bot can undo it) and the
+// team's FACEIT page. Old posts (no record) only have "roster_done".
+function rosterAdminButtons(record, { teamUrl = null, done = false, undone = false } = {}) {
+  const id = record?.id ? `:${record.id}` : '';
+  const buttons = [new ButtonBuilder().setCustomId(`roster_done${id}`).setLabel('Done on FACEIT').setStyle(ButtonStyle.Success).setDisabled(done || undone)];
+  if (record?.snapshot) buttons.push(new ButtonBuilder().setCustomId(`roster_undo${id}`).setLabel(undone ? 'Undone' : 'Undo').setStyle(ButtonStyle.Danger).setDisabled(undone));
+  const url = teamUrl || record?.teamUrl;
+  if (url) buttons.push(new ButtonBuilder().setLabel('Open team on FACEIT').setStyle(ButtonStyle.Link).setURL(url));
+  return new ActionRowBuilder().addComponents(buttons);
+}
+
+// The roster list in a roster ticket, refreshed from the sheet.
+async function refreshRosterPanel(ticket, channel = null) {
+  const ticketChannel = channel || await client.channels.fetch(ticket.channelId).catch(() => null);
+  if (!ticketChannel?.messages) return;
+  const reloaded = await freshRosterTeam(ticket);
+  if (!reloaded.team) return;
+  const panel = (await ticketChannel.messages.fetch({ limit: 30 }).catch(() => null))?.find((message) => message.author.id === client.user.id && message.embeds?.[0]?.title?.endsWith(' roster'));
+  if (panel) await panel.edit(rosterPanelPayload(ticket, reloaded.team)).catch(() => null);
+}
+
+// Tells the captain in their ticket (or by DM when the ticket is gone).
+async function tellRosterRequester(record, content) {
+  const payload = { content: `<@${record.requesterId}> ${content}`, allowedMentions: { users: [record.requesterId] } };
+  const channel = record.ticketChannelId ? await client.channels.fetch(record.ticketChannelId).catch(() => null) : null;
+  if (channel?.isTextBased?.() && await channel.send(payload).then(() => true).catch(() => false)) return true;
+  const user = await client.users.fetch(record.requesterId).catch(() => null);
+  return Boolean(user && await user.send({ content }).then(() => true).catch(() => false));
+}
+
+async function rosterAdminMessage(record) {
+  if (!record?.adminChannelId || !record.adminMessageId) return null;
+  const channel = await client.channels.fetch(record.adminChannelId).catch(() => null);
+  return channel?.messages ? channel.messages.fetch(record.adminMessageId).catch(() => null) : null;
+}
+
+// Stamps the admin post "Done on FACEIT" and tells the captain.
+async function markRosterDone(record, actorId, note = null) {
+  const now = Date.now();
+  const saved = await saveRosterChange(record.id, { doneAt: new Date(now).toISOString(), doneBy: actorId, doneNote: note });
+  const message = await rosterAdminMessage(record);
+  if (message) {
+    const original = message.embeds?.[0];
+    const embed = original ? EmbedBuilder.from(original) : new EmbedBuilder().setTitle('Roster change');
+    embed.addFields({ name: 'Done on FACEIT', value: [`<@${actorId}> · <t:${Math.floor(now / 1000)}:f>`, note].filter(Boolean).join('\n').slice(0, 1024) }).setColor(0x2ecc71);
+    await message.edit({ embeds: [embed], components: [rosterAdminButtons(saved || record, { done: true })], allowedMentions: { parse: [] } }).catch(() => null);
+  }
+  const told = await tellRosterRequester(record, `✅ Your roster change for **${record.teamName}** is done on FACEIT: ${record.summary}`);
+  await appendAuditLog({ type: 'roster_change_done', actorId, rosterChangeId: record.id, toldCaptain: told }).catch(() => null);
+  return told;
+}
+
+// The FACEIT team compared with what the change should have done there.
+async function faceitRosterProblems(record) {
+  const teamId = faceitTeamIdFromUrl(record.teamFaceitUrl);
+  if (!teamId || !faceit || !config.faceitApiKey) return { checked: false, problems: [], note: null };
+  try {
+    const result = checkFaceitRoster(record.faceit, await faceit.getTeam(teamId));
+    return { ...result, note: result.checked && !result.problems.length ? '✅ FACEIT roster checked' : null };
+  } catch (error) {
+    return { checked: false, problems: [], note: `⚠️ Couldn't check FACEIT (${String(error.message || error).slice(0, 80)})` };
+  }
+}
+
 async function handleRosterDone(interaction) {
   if (!isTicketStaff(interaction.member)) {
-    await interaction.reply({ content: 'Only admins can mark a roster change done.', ephemeral: true });
+    await interaction.reply({ content: 'Only admins can do that.', ephemeral: true });
     return;
   }
-  const original = interaction.message.embeds?.[0];
-  const embed = original ? EmbedBuilder.from(original) : new EmbedBuilder().setTitle('Roster change');
-  embed.addFields({ name: 'Done on FACEIT', value: `<@${interaction.user.id}> · <t:${Math.floor(Date.now() / 1000)}:f>` }).setColor(0x2ecc71);
-  await interaction.update({
-    embeds: [embed],
-    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('roster_done').setLabel('Done on FACEIT').setStyle(ButtonStyle.Success).setDisabled(true))],
-    allowedMentions: { parse: [] }
-  });
-  await appendAuditLog({ type: 'roster_change_done', actorId: interaction.user.id, messageId: interaction.message.id }).catch(() => null);
+  const [kind, recordId] = interaction.customId.split(':');
+
+  // Posts from before change records: stamp the post, nothing else.
+  if (kind === 'roster_done' && !recordId) {
+    const original = interaction.message.embeds?.[0];
+    const embed = original ? EmbedBuilder.from(original) : new EmbedBuilder().setTitle('Roster change');
+    embed.addFields({ name: 'Done on FACEIT', value: `<@${interaction.user.id}> · <t:${Math.floor(Date.now() / 1000)}:f>` }).setColor(0x2ecc71);
+    await interaction.update({
+      embeds: [embed],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('roster_done').setLabel('Done on FACEIT').setStyle(ButtonStyle.Success).setDisabled(true),
+        ...(interaction.message.components?.[0]?.components || []).filter((button) => button.url).map((button) => new ButtonBuilder().setLabel(button.label || 'Open team on FACEIT').setStyle(ButtonStyle.Link).setURL(button.url))
+      )],
+      allowedMentions: { parse: [] }
+    });
+    await appendAuditLog({ type: 'roster_change_done', actorId: interaction.user.id, messageId: interaction.message.id }).catch(() => null);
+    return;
+  }
+
+  const record = recordId ? await getRosterChange(recordId) : null;
+  if (!record) {
+    await interaction.reply({ content: "That roster change isn't in the bot's records any more.", ephemeral: true });
+    return;
+  }
+  if (record.undoneAt) {
+    await interaction.reply({ content: `This change was undone by <@${record.undoneBy}>.`, ephemeral: true, allowedMentions: { parse: [] } });
+    return;
+  }
+
+  if (kind === 'roster_done' || kind === 'roster_doneforce') {
+    if (record.doneAt) {
+      await interaction.reply({ content: `Already marked done by <@${record.doneBy}>.`, ephemeral: true, allowedMentions: { parse: [] } });
+      return;
+    }
+    if (kind === 'roster_doneforce') {
+      await interaction.update({ content: 'Marking it done…', components: [] });
+      const told = await markRosterDone(record, interaction.user.id, '⚠️ Marked done while FACEIT still differed');
+      await interaction.editReply({ content: `Marked done.${told ? ' The captain was told.' : " Couldn't reach the captain."}` });
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const check = await faceitRosterProblems(record);
+    if (check.problems.length) {
+      await interaction.editReply({
+        content: ['FACEIT doesn\'t match this change yet:', ...check.problems.map((problem) => `• ${problem}`), '', 'Fix it on FACEIT and press **Done on FACEIT** again, or mark it done anyway.'].join('\n'),
+        components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`roster_doneforce:${record.id}`).setLabel('Mark done anyway').setStyle(ButtonStyle.Secondary))]
+      });
+      return;
+    }
+    const told = await markRosterDone(record, interaction.user.id, check.note);
+    await interaction.editReply({ content: [`Marked done.${told ? ' The captain was told.' : " Couldn't reach the captain."}`, check.note].filter(Boolean).join('\n') });
+    return;
+  }
+
+  if (kind === 'roster_undo') {
+    const undo = rosterUndoPlan(record);
+    if (!undo.ok) {
+      await interaction.reply({ content: undo.error, ephemeral: true });
+      return;
+    }
+    await interaction.reply({
+      content: [
+        `Undo this change for **${record.teamName}**?`,
+        record.summary,
+        '',
+        'The roster sheet goes back to how it was, the Discord roles the change gave or took are reversed, and the captain is told.',
+        record.doneAt ? '⚠️ It was already marked done, so change FACEIT back too.' : null
+      ].filter((line) => line !== null).join('\n'),
+      components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`roster_undoyes:${record.id}`).setLabel('Yes, undo it').setStyle(ButtonStyle.Danger))],
+      ephemeral: true
+    });
+    return;
+  }
+
+  if (kind === 'roster_undoyes') {
+    await interaction.update({ content: 'Undoing…', components: [] });
+    const undo = rosterUndoPlan(record);
+    if (!undo.ok) {
+      await interaction.editReply({ content: undo.error });
+      return;
+    }
+    const written = await scheduleSheet.applyRosterOps({
+      spreadsheetId: config.rosterSpreadsheetId,
+      sheetName: config.rosterSheetName,
+      teamName: record.teamName,
+      headerRow: record.headerRow,
+      expect: undo.expect,
+      expectCaptain: undo.expectCaptain,
+      ops: undo.ops,
+      linkLabel: config.rosterLinkLabel,
+      logLine: undo.logLine,
+      history: undo.history,
+      historySheetName: config.rosterHistorySheetName,
+      requestedBy: interaction.member?.displayName || interaction.user.globalName || interaction.user.username,
+      when: new Date().toISOString(),
+      whenText: historyWhenText(new Date(), config.defaultTimezone)
+    });
+    if (!written.ok) {
+      await interaction.editReply({ content: `❌ Couldn't undo it on the sheet: ${written.error}\nIf a later change touched the same players, undo that one first, or fix the sheet by hand.` });
+      return;
+    }
+    // Discord roles back the other way, newest first.
+    const roleLines = [];
+    const guild = interaction.guild;
+    for (const change of [...(record.roleChanges || [])].reverse()) {
+      const member = guild ? await guild.members.fetch(change.userId).catch(() => null) : null;
+      if (!member) {
+        roleLines.push(`⚠️ <@${change.userId}> isn't in the server, so their roles weren't changed back.`);
+        continue;
+      }
+      const ok = change.action === 'add'
+        ? await member.roles.remove(change.roleIds, 'Roster change undone').then(() => true).catch(() => false)
+        : await member.roles.add(change.roleIds, 'Roster change undone').then(() => true).catch(() => false);
+      const roles = change.roleIds.map((roleId) => `<@&${roleId}>`).join(' ');
+      roleLines.push(ok ? `🎭 ${change.action === 'add' ? 'Removed' : 'Gave back'} ${roles} ${change.action === 'add' ? 'from' : 'to'} <@${member.id}>.` : `⚠️ Couldn't change <@${member.id}>'s roles back (${roles}).`);
+    }
+    const now = Date.now();
+    const saved = await saveRosterChange(record.id, { undoneAt: new Date(now).toISOString(), undoneBy: interaction.user.id });
+    const message = await rosterAdminMessage(record);
+    if (message) {
+      const original = message.embeds?.[0];
+      const embed = original ? EmbedBuilder.from(original) : new EmbedBuilder().setTitle('Roster change');
+      embed.addFields({ name: 'Undone', value: [`<@${interaction.user.id}> · <t:${Math.floor(now / 1000)}:f>`, ...roleLines].join('\n').slice(0, 1024) }).setColor(0x95a5a6);
+      await message.edit({ embeds: [embed], components: [rosterAdminButtons(saved || record, { undone: true })], allowedMentions: { parse: [] } }).catch(() => null);
+    }
+    const ticket = await getTicket(record.ticketId).catch(() => null);
+    if (ticket?.status === 'open') await refreshRosterPanel(ticket);
+    const told = await tellRosterRequester(record, `↩️ An admin undid your roster change for **${record.teamName}**: ${record.summary}`);
+    await appendAuditLog({ type: 'roster_change_undone', actorId: interaction.user.id, rosterChangeId: record.id, toldCaptain: told }).catch(() => null);
+    await interaction.editReply({
+      content: ['↩️ Undone. The roster sheet is back to how it was.', ...roleLines, told ? 'The captain was told.' : "⚠️ Couldn't reach the captain.", record.doneAt ? '⚠️ It was already done on FACEIT, so change FACEIT back too.' : null].filter(Boolean).join('\n'),
+      allowedMentions: { parse: [] }
+    });
+  }
+}
+
+// Every 10 minutes: roster changes not marked "Done on FACEIT" get a reminder (a reply to the admin
+// post, pinging the admin handling the ticket, else the roster change roles).
+let lastRosterReminderCheckAt = 0;
+async function remindRosterChanges(now = Date.now()) {
+  if (now - lastRosterReminderCheckAt < 10 * 60 * 1000) return;
+  lastRosterReminderCheckAt = now;
+  for (const record of await listOpenRosterChanges()) {
+    const ticket = record.ticketId ? await getTicket(record.ticketId).catch(() => null) : null;
+    const nextMatchMs = Date.parse(ticket?.nextMatchIso || '') || null;
+    const due = rosterReminderDue(record, {
+      now,
+      nextMatchMs,
+      everyHours: config.rosterDoneReminderHours,
+      maxReminders: config.rosterDoneReminderMax,
+      soonMinutes: config.rosterDoneSoonMinutes
+    });
+    if (!due) continue;
+    const message = await rosterAdminMessage(record);
+    if (!message) {
+      // The post was deleted (or Discord is down): give up after a few tries.
+      const misses = Number(record.adminMessageMisses || 0) + 1;
+      await saveRosterChange(record.id, misses >= 3 ? { adminMessageMisses: misses, adminMessageId: null } : { adminMessageMisses: misses }).catch(() => null);
+      continue;
+    }
+    const handler = ticket?.claimedBy || null;
+    const ping = handler ? `<@${handler}>` : config.rosterChangePingRoleIds.map((roleId) => `<@&${roleId}>`).join(' ');
+    const asked = Date.parse(record.createdAt || '') || now;
+    const text = due === 'soon'
+      ? `⏰ ${ping} **${record.teamName}** plays <t:${Math.floor(nextMatchMs / 1000)}:R> and this roster change isn't done on FACEIT yet.`
+      : `⏰ ${ping} This roster change for **${record.teamName}** (asked <t:${Math.floor(asked / 1000)}:R>) isn't done on FACEIT yet.`;
+    const sent = await message.reply({
+      content: text,
+      allowedMentions: handler ? { parse: [], users: [handler], repliedUser: false } : { parse: [], roles: config.rosterChangePingRoleIds, repliedUser: false }
+    }).then(() => true).catch(() => false);
+    if (!sent) continue;
+    await saveRosterChange(record.id, due === 'soon'
+      ? { soonRemindedAt: new Date(now).toISOString() }
+      : { lastRemindedAt: new Date(now).toISOString(), reminderCount: Number(record.reminderCount || 0) + 1 }).catch(() => null);
+  }
 }
 
 // --- Streaming applications -------------------------------------------------------------------
@@ -9288,6 +9588,7 @@ async function runStreamOperationsTick(now = Date.now()) {
   await syncSheetResultsAndStats(now).catch((error) => console.error('Sheet results/stats sync failed:', error));
   await postNewCasterApplications(now).catch((error) => console.error('Caster applications failed:', error));
   await syncTicketPriorities(now).catch((error) => console.error('Ticket priorities failed:', error));
+  await remindRosterChanges(now).catch((error) => console.error('Roster change reminders failed:', error));
   await syncCrewAvailability(now).catch((error) => console.error('Crew availability sync failed:', error));
   await sendCrewAvailabilityReminders(now).catch((error) => console.error('Crew availability reminders failed:', error));
   const active = (await listStreamRequests()).filter((request) =>

@@ -55,6 +55,7 @@
  *   One-time (run from the editor, not called by the bot): previewRosterMigration() and
  *                         migrateRosterTracking() copy this season's teams from the old
  *                         "HLTV Tracking" tab into the new "Roster Tracking" layout.
+ *   "rosterFindPlayer"    every roster slot (any team) holding a player, by SteamID64 / FACEIT / Discord
  *   "rosterApply"         applies a roster change from a Roster Change ticket as steps (write a
  *                         new player, clear, copy, swap rows), plus a line in a "CHANGES" column
  *                         if the tab has one, and one line per player in the "ROSTER CHANGE HISTORY"
@@ -137,6 +138,7 @@ function doPost(e) {
     if (action === 'casterApplications') return readCasterApplications(body.afterRow);
     if (action === 'rosterTeam') return readRosterTeam(body);
     if (action === 'rosterApply') return applyRosterOps(body);
+    if (action === 'rosterFindPlayer') return findRosterPlayer(body);
     if (action === 'availability') return readAvailability();
     if (action === 'teamInfo') return readTeamInfo();
     if (action === 'teamInfoUpdate') return updateTeamInfo(body.team, body.fields || {});
@@ -518,6 +520,7 @@ function readRosterBlocks(sheet) {
       if (!/^(starter|sub|coach)/i.test(label)) continue;
       const slot = { label: label, row: i + k + 1 };
       ROSTER_FIELDS.forEach((field, index) => { slot[field] = String(row[ROSTER_FIRST_FIELD_COLUMN - 1 + index]).trim(); });
+      slot.faceitLink = linkAt(i + k);
       slots.push(slot);
     }
     blocks.push({
@@ -562,6 +565,10 @@ function readRosterTeam(body) {
 //   { op: 'copy', from, to }      copies B-I with links (copyTo keeps them)
 //   { op: 'swap', a, b }          swaps two rows' B-I through a temporary row below the data
 //   { op: 'captain', value }      the team's Captain cell (checked against body.expectCaptain)
+//   { op: 'restore', row, values, links }  puts a row back as it was (an undo): B-I text, and the
+//                                 link behind each cell ('' for none)
+// The reply has a snapshot for undoing the change: { rows: [{ row, values, links }] (the changed
+// rows before), after: [{ row, alias }] (changed and checked rows after), captainBefore, captainAfter }.
 function applyRosterOps(body) {
   const sheet = rosterSheet(body);
   if (!sheet) return reply(500, { ok: false, error: 'roster tab "' + body.sheetName + '" not found' });
@@ -576,6 +583,7 @@ function applyRosterOps(body) {
   const ops = Array.isArray(body.ops) ? body.ops : [];
   const touched = [];
   ops.forEach((op) => { [op.row, op.from, op.to, op.a, op.b].forEach((row) => { if (row !== undefined) touched.push(Number(row)); }); });
+  const unique = (rows) => rows.filter((row, index) => rows.indexOf(row) === index);
   for (let i = 0; i < touched.length; i++) {
     if (!rosterRows[touched[i]]) return reply(409, { ok: false, error: 'row ' + touched[i] + ' is not a starter, sub or coach slot of ' + block.teamName });
   }
@@ -593,6 +601,16 @@ function applyRosterOps(body) {
   const width = ROSTER_FIELDS.length;
   const range = (row) => sheet.getRange(Number(row), ROSTER_FIRST_FIELD_COLUMN, 1, width);
   const linkLabel = String(body.linkLabel || '…');
+  // For undo: the changed rows as they are now (text and links), before any step runs.
+  const snapshotRow = (row) => {
+    const cells = range(row);
+    const shown = (typeof cells.getDisplayValues === 'function' ? cells.getDisplayValues() : cells.getValues())[0].map((value) => String(value));
+    const rich = typeof cells.getRichTextValues === 'function' ? cells.getRichTextValues()[0] : [];
+    return { row: Number(row), values: shown, links: shown.map((_, index) => (rich[index] && typeof rich[index].getLinkUrl === 'function' && rich[index].getLinkUrl()) || '') };
+  };
+  const changedRows = unique(touched);
+  const before = changedRows.map(snapshotRow);
+  const captainBefore = String(sheet.getRange(block.headerRow, 3).getValues()[0][0]).trim();
   // Roster History: existing players' FACEIT links are read now, before any row moves (the roster
   // shows them as "…" with the link behind).
   const history = (Array.isArray(body.history) ? body.history : []).map((entry) => {
@@ -609,6 +627,15 @@ function applyRosterOps(body) {
     if (op.op === 'captain') {
       // The Captain cell: column C of the Team Info row.
       sheet.getRange(block.headerRow, 3).setValue(String(op.value || ''));
+    } else if (op.op === 'restore') {
+      const values = ROSTER_FIELDS.map((_, index) => String((op.values || [])[index] || ''));
+      sheet.getRange(Number(op.row), ROSTER_FIRST_FIELD_COLUMN + ROSTER_FIELDS.indexOf('steamId')).setNumberFormat('@');
+      range(op.row).setValues([values]);
+      (op.links || []).forEach((url, index) => {
+        if (!/^https?:\/\//i.test(String(url || '')) || index >= width) return;
+        const link = SpreadsheetApp.newRichTextValue().setText(values[index] || linkLabel).setLinkUrl(String(url)).build();
+        sheet.getRange(Number(op.row), ROSTER_FIRST_FIELD_COLUMN + index).setRichTextValue(link);
+      });
     } else if (op.op === 'clear') {
       range(op.row).clearContent();
     } else if (op.op === 'copy') {
@@ -644,7 +671,43 @@ function applyRosterOps(body) {
     sheet.getRange(at, changesColumn).setValue(String(body.logLine));
   }
   const historyRows = history.length ? appendRosterHistory(body, block.teamName, history) : 0;
-  return reply(200, { ok: true, applied: ops.length, logged: Boolean(changesColumn), historyRows: historyRows });
+  const after = unique(changedRows.concat(expect.map((entry) => Number(entry.row)))).map((row) => ({
+    row: row,
+    alias: String(sheet.getRange(row, ROSTER_FIRST_FIELD_COLUMN).getValues()[0][0]).trim()
+  }));
+  const snapshot = {
+    rows: before,
+    after: after,
+    captainBefore: captainBefore,
+    captainAfter: String(sheet.getRange(block.headerRow, 3).getValues()[0][0]).trim()
+  };
+  return reply(200, { ok: true, applied: ops.length, logged: Boolean(changesColumn), historyRows: historyRows, snapshot: snapshot });
+}
+
+// Every roster slot (any team) holding this player, by SteamID64, FACEIT profile or Discord.
+// body: { steamId, faceit, discord } -> { matches: [{ teamName, label, alias, row, headerRow, matchedOn }] }
+function findRosterPlayer(body) {
+  const sheet = rosterSheet(body);
+  if (!sheet) return reply(500, { ok: false, error: 'roster tab "' + body.sheetName + '" not found' });
+  const digits = (value) => String(value || '').replace(/\D/g, '');
+  const key = (value) => String(value || '').replace(/^@/, '').trim().toLowerCase();
+  const nickname = (url) => {
+    const match = String(url || '').match(/players(?:-modal)?\/([^\/?#\s]+)/i);
+    if (!match) return '';
+    try { return decodeURIComponent(match[1]).toLowerCase(); } catch (error) { return match[1].toLowerCase(); }
+  };
+  const want = { steamId: digits(body.steamId), faceit: nickname(body.faceit), discord: key(body.discord) };
+  const matches = [];
+  readRosterBlocks(sheet).forEach((block) => {
+    block.slots.forEach((slot) => {
+      const on = [];
+      if (want.steamId.length >= 17 && digits(slot.steamId) === want.steamId) on.push('SteamID64');
+      if (want.faceit && nickname(slot.faceitLink || slot.faceit) === want.faceit) on.push('FACEIT');
+      if (want.discord && key(slot.discord) === want.discord) on.push('Discord');
+      if (on.length) matches.push({ teamName: block.teamName, label: slot.label, alias: slot.alias, row: slot.row, headerRow: block.headerRow, matchedOn: on });
+    });
+  });
+  return reply(200, { ok: true, matches: matches });
 }
 
 // Roster history, one entry per player a change affects.

@@ -8,6 +8,12 @@ import {
   historyWhenText,
   playerFromFaceit,
   faceitTeamIdFromUrl,
+  faceitTeamPageUrl,
+  rosterUndoPlan,
+  rosterFaceitExpectations,
+  checkFaceitRoster,
+  duplicatePlayerLines,
+  rosterReminderDue,
   parseDiscordId,
   planRosterOps,
   rosterSlots,
@@ -146,7 +152,7 @@ test('promote: into an open starter slot, or swap with a starter', () => {
 
 test('the admin post: team, group, requester, change, new player, ticket link', () => {
   const plan = planRosterOps(team(), { kind: 'remove', slotLabel: 'Starter 3', player });
-  const post = buildRosterChangePost({ teamName: 'CLUB 333', group: 'Group C', requesterId: '42', plan, player, ticketChannelId: '777', nowMs: Date.UTC(2026, 10, 11) });
+  const post = buildRosterChangePost({ teamName: 'CLUB 333', group: 'Group C', requesterId: '42', plan, player, ticketChannelId: '777', teamUrl: 'https://www.faceit.com/en/teams/t1', nowMs: Date.UTC(2026, 10, 11) });
   assert.equal(post.title, '🔁 Roster change · CLUB 333');
   assert.equal(post.description, 'Please update this roster on FACEIT.');
   const field = (name) => post.fields.find((entry) => entry.name.startsWith(name))?.value;
@@ -154,10 +160,19 @@ test('the admin post: team, group, requester, change, new player, ticket link', 
   assert.equal(field('Change'), 'Removing **calamity** (Starter 3), adding **zoro-** as Starter 3.');
   assert.match(field('Player added (Starter 3)'), /\*\*IGN:\*\* zoro-[\s\S]*\*\*SteamID64:\*\* 76561198000000001[\s\S]*\*\*Discord:\*\* <@123456789012345678> \(zoro\)/);
   assert.equal(field('Ticket'), '<#777>');
+  assert.equal(field('FACEIT team page'), 'https://www.faceit.com/en/teams/t1');
   assert.equal(field('Sheet'), 'Updated');
   const full = buildRosterChangePost({ teamName: 'CLUB 333', requesterId: '42', plan: planRosterOps(team({ subs: ['a', 'b'] }), { kind: 'sub', slotLabel: 'Starter 3' }) });
   assert.match(full.description, /⚠️ Both sub slots are full/);
   assert.equal(full.fields.find((entry) => entry.name === 'Group').value, 'Unknown');
+  assert.equal(full.fields.some((entry) => entry.name === 'FACEIT team page'), false, 'no link, no field');
+});
+
+test('the FACEIT team page link', () => {
+  assert.equal(faceitTeamPageUrl('https://www.faceit.com/en/team-home/ee2358dc-3699-4a4d-b701-615d049d2a38/overview'), 'https://www.faceit.com/en/teams/ee2358dc-3699-4a4d-b701-615d049d2a38');
+  assert.equal(faceitTeamPageUrl('https://www.faceit.com/en/teams/some-name'), 'https://www.faceit.com/en/teams/some-name');
+  assert.equal(faceitTeamPageUrl('faceit.com/...'), null);
+  assert.equal(faceitTeamPageUrl(''), null);
 });
 
 test('FACEIT team IDs come out of the Team Faceit link', () => {
@@ -211,4 +226,53 @@ test('roster history dates: the day in Eastern time, no time of day', () => {
   assert.equal(historyWhenText(new Date('2026-11-12T02:42:00Z'), 'America/New_York'), 'Nov 11, 2026', '9:42 PM Eastern is still Nov 11');
   assert.equal(historyWhenText(new Date('2026-11-12T15:00:00Z'), 'America/New_York'), 'Nov 12, 2026');
   assert.equal(historyWhenText(new Date('2026-11-12T02:42:00Z'), 'Not/AZone'), 'Nov 12, 2026', 'a bad zone falls back to UTC');
+});
+
+test('undo: needs a snapshot; restores rows, and the captain only when it changed', () => {
+  assert.equal(rosterUndoPlan({ teamName: 'T' }).ok, false);
+  const plan = rosterUndoPlan({
+    teamName: 'T',
+    summary: 'Removing **x**',
+    snapshot: { rows: [{ row: 6, values: ['x'], links: [] }], after: [{ row: 6, alias: '' }], captainBefore: 'cap', captainAfter: 'cap' }
+  });
+  assert.deepEqual(plan.ops, [{ op: 'restore', row: 6, values: ['x'], links: [] }]);
+  assert.deepEqual(plan.expect, [{ row: 6, alias: '' }]);
+  assert.equal(plan.expectCaptain, null);
+  assert.equal(plan.logLine, 'T: undo (Removing x)');
+});
+
+test('FACEIT check: who should be on, off, and lead the FACEIT team', () => {
+  const removed = { label: 'Starter 3', row: 6, alias: 'calamity', faceitLink: 'https://www.faceit.com/en/players/Calamity' };
+  const expectations = rosterFaceitExpectations({ kind: 'remove', player, removedSlot: removed });
+  assert.deepEqual(expectations, { on: [{ nickname: 'zoro-', alias: 'zoro-' }], off: [{ nickname: 'calamity', alias: 'calamity' }], leader: null });
+  const team = (nicknames, leader = null) => ({ leader, members: nicknames.map((nickname, index) => ({ user_id: `u${index}`, nickname })) });
+  assert.deepEqual(checkFaceitRoster(expectations, team(['zoro-', 'two'])), { problems: [], checked: true });
+  assert.deepEqual(checkFaceitRoster(expectations, team(['Calamity', 'two'])).problems, [
+    "**zoro-** isn't on the FACEIT team yet (have they accepted the invite?).",
+    '**calamity** is still on the FACEIT team.'
+  ]);
+  const captain = rosterFaceitExpectations({ kind: 'captain', captainSlot: { alias: 'two', faceitLink: 'https://www.faceit.com/en/players/two' } });
+  assert.deepEqual(checkFaceitRoster(captain, team(['one', 'two'], 'u0')).problems, ["**two** isn't the team leader on FACEIT yet."]);
+  assert.deepEqual(checkFaceitRoster(captain, team(['one', 'two'], 'u1')).problems, []);
+  assert.equal(checkFaceitRoster(rosterFaceitExpectations({ kind: 'sub' }), team(['one'])).checked, false, 'a bench move has nothing to check');
+  const fromSnapshot = rosterFaceitExpectations({ kind: 'remove', removedSlot: { row: 6, alias: 'x' }, snapshot: { rows: [{ row: 6, links: ['', '', '', 'https://faceit.com/en/players/xx'] }] } });
+  assert.deepEqual(fromSnapshot.off, [{ nickname: 'xx', alias: 'x' }], 'the removed player link can come from the snapshot');
+});
+
+test('duplicate player lines', () => {
+  assert.deepEqual(duplicatePlayerLines([{ teamName: 'Beta', label: 'Sub 1', alias: 'b6', matchedOn: ['SteamID64', 'FACEIT'] }]), ['• **Beta** · Sub 1 (b6) · same SteamID64 and FACEIT']);
+});
+
+test('reminders: every few hours up to a limit, and once when the match is close', () => {
+  const now = Date.UTC(2026, 10, 12, 18);
+  const hoursAgo = (hours) => new Date(now - hours * 3600 * 1000).toISOString();
+  const record = { adminMessageId: 'm1', createdAt: hoursAgo(1) };
+  assert.equal(rosterReminderDue(record, { now }), null);
+  assert.equal(rosterReminderDue({ ...record, createdAt: hoursAgo(3) }, { now }), 'late');
+  assert.equal(rosterReminderDue({ ...record, createdAt: hoursAgo(9), lastRemindedAt: hoursAgo(1), reminderCount: 1 }, { now }), null);
+  assert.equal(rosterReminderDue({ ...record, createdAt: hoursAgo(20), lastRemindedAt: hoursAgo(5), reminderCount: 4 }, { now }), null, 'stops after the limit');
+  assert.equal(rosterReminderDue(record, { now, nextMatchMs: now + 90 * 60 * 1000 }), 'soon');
+  assert.equal(rosterReminderDue({ ...record, soonRemindedAt: hoursAgo(0.5) }, { now, nextMatchMs: now + 60 * 60 * 1000 }), null);
+  assert.equal(rosterReminderDue({ ...record, createdAt: hoursAgo(5), doneAt: hoursAgo(1) }, { now }), null);
+  assert.equal(rosterReminderDue({ ...record, createdAt: hoursAgo(5), undoneAt: hoursAgo(1) }, { now }), null);
 });

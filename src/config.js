@@ -236,6 +236,11 @@ export function getConfig() {
     // Twitter, FACEIT and HLTV are written as hyperlinks showing this text (the tab uses "…").
     rosterLinkLabel: process.env.ROSTER_LINK_LABEL || '…',
     rosterChangePingRoleIds: parseCsvValue(process.env.ROSTER_CHANGE_PING_ROLE_IDS || process.env.ADMIN_ALERT_ROLE_IDS || ''),
+    // Roster changes not marked "Done on FACEIT": remind every N hours (at most M times), and once
+    // when the team's next match is within the soon window.
+    rosterDoneReminderHours: Math.max(1, Number(process.env.ROSTER_DONE_REMINDER_HOURS || 3) || 3),
+    rosterDoneReminderMax: Math.max(0, Number(process.env.ROSTER_DONE_REMINDER_MAX ?? 4) || 0),
+    rosterDoneSoonMinutes: Math.max(15, Number(process.env.ROSTER_DONE_SOON_MINUTES || 120) || 120),
     // Support tickets: each ticket's transcript goes to Support Receipts when it closes. Ticket
     // channels are created in TICKET_CATEGORY_ID (the Support category).
     ticketReceiptsChannelId: process.env.TICKET_RECEIPTS_CHANNEL_ID || '1418723351073132594',

@@ -43,7 +43,8 @@ function normalizeDb(db) {
     teamInfoCache: db.teamInfoCache || {},
     counters: db.counters || {},
     mainStreamForms: db.mainStreamForms || {},
-    tickets: db.tickets || {}
+    tickets: db.tickets || {},
+    rosterChanges: db.rosterChanges || {}
   };
 }
 
@@ -864,6 +865,37 @@ export async function getTicketByChannel(channelId) {
 
 export async function listTickets({ status = null } = {}) {
   return Object.values((await snapshot()).tickets || {}).filter((ticket) => !status || ticket.status === status);
+}
+
+// Confirmed roster changes (one per admin post in Roster Change Requests): what to undo, what
+// FACEIT should show, and the Done / Undo / reminder state. Keyed "rc12".
+export async function createRosterChange(fields) {
+  return mutateDb((db) => {
+    db.counters = db.counters || {};
+    db.rosterChanges = db.rosterChanges || {};
+    db.counters.rosterChange = Number(db.counters.rosterChange || 0) + 1;
+    const id = `rc${db.counters.rosterChange}`;
+    db.rosterChanges[id] = { ...fields, id, createdAt: new Date().toISOString() };
+    return { ...db.rosterChanges[id] };
+  });
+}
+
+export async function saveRosterChange(id, patch) {
+  return mutateDb((db) => {
+    const record = db.rosterChanges?.[id];
+    if (!record) return null;
+    db.rosterChanges[id] = { ...record, ...patch, updatedAt: new Date().toISOString() };
+    return { ...db.rosterChanges[id] };
+  });
+}
+
+export async function getRosterChange(id) {
+  return (await snapshot()).rosterChanges?.[id] || null;
+}
+
+// Changes still waiting for "Done on FACEIT" (not undone).
+export async function listOpenRosterChanges() {
+  return Object.values((await snapshot()).rosterChanges || {}).filter((record) => !record.doneAt && !record.undoneAt);
 }
 
 // Named running totals (e.g. how many times !FireCrown was used). Returns the new total.

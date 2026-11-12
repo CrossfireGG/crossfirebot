@@ -48,6 +48,11 @@ export class FaceitClient {
     }
   }
 
+  // A FACEIT team: { team_id, name, leader (user_id), members: [{ user_id, nickname }] }.
+  async getTeam(teamId) {
+    return this.request(`/teams/${encodeURIComponent(teamId)}`);
+  }
+
   // The map veto of a match: every ban and pick and which faction made it, from FACEIT's public
   // veto history (what the match room shows; the Data API only has the final picks). Raw payload
   // ({ tickets: [...] }), or null when FACEIT has none for the match.

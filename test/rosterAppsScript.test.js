@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
+import { rosterUndoPlan } from '../src/rosterChange.js';
+
 // Runs the Apps Script's roster functions (docs/schedule-log-apps-script.gs) on a fake
 // "Roster Tracking" tab laid out like the real one: 11-row team blocks (header row, Team Info row,
 // Player Info row, Starter 1-5, Sub 1-2, Coach), player columns B-I: IGN, Discord, Twitter, FACEIT,
@@ -87,7 +89,7 @@ function loadScript(grid, links = {}, { merged = [] } = {}) {
   };
   globalThis.ContentService = { createTextOutput: (text) => ({ setMimeType: () => ({ text }), text }), MimeType: { JSON: 'json' } };
   const source = fs.readFileSync(new URL('../docs/schedule-log-apps-script.gs', import.meta.url), 'utf8');
-  const fns = new Function(`${source}; return { readRosterTeam, applyRosterOps };`)();
+  const fns = new Function(`${source}; return { readRosterTeam, applyRosterOps, findRosterPlayer };`)();
   const call = (name, body) => JSON.parse(fns[name]({ spreadsheetId: 'x', sheetName: 'Roster Tracking', ...body }).text);
   return { call, formats, history, merges, formatCopies, partialLinks };
 }
@@ -260,4 +262,49 @@ test('roster sheet: history goes in the ROSTER CHANGE HISTORY box, one line per 
   assert.equal(grid[4][10], 'Nov 12, 6:15 PM EST · Beta · Sent to admin: move to sub (subs full) · b2 · Starter 2 → sub · by tatmcs');
   assert.ok(formatCopies.some((copy) => copy.from === '2:11' && copy.to === '5:11' && copy.cols === 6), 'row 5 (past the box) gets the look of the box');
   assert.ok(merges.includes('5:11:1x6'), 'and is merged across K:P');
+});
+
+test('roster sheet: a change returns a snapshot, and undo puts the rows and links back', () => {
+  const { call, grid, links } = setup();
+  links['6:5'] = 'https://www.faceit.com/en/players/a3';
+  const original = grid[5].slice();
+  const done = call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: [{ row: 6, alias: 'a3' }], ops: [{ op: 'write', row: 6, player: NEW }] });
+  assert.equal(done.ok, true);
+  assert.deepEqual(done.snapshot.rows, [{ row: 6, values: original.slice(1, 9), links: ['', '', '', 'https://www.faceit.com/en/players/a3', '', '', '', ''] }]);
+  assert.deepEqual(done.snapshot.after, [{ row: 6, alias: 'newguy' }]);
+  assert.equal(done.snapshot.captainBefore, 'a1');
+  assert.equal(grid[5][1], 'newguy');
+
+  const undo = rosterUndoPlan({ teamName: 'Alpha', summary: 'x', snapshot: done.snapshot, history: [{ action: 'Removed', player: 'a3', spot: 'Starter', faceitRow: 6 }] });
+  assert.deepEqual(undo.history, [{ action: 'Undone: Removed', player: 'a3', spot: 'Starter', faceit: 'https://www.faceit.com/en/players/a3' }]);
+  const undone = call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: undo.expect, expectCaptain: undo.expectCaptain, ops: undo.ops });
+  assert.equal(undone.ok, true);
+  assert.deepEqual(grid[5].slice(1, 9), original.slice(1, 9));
+  assert.equal(links['6:5'], 'https://www.faceit.com/en/players/a3', 'the FACEIT link is back');
+
+  const again = call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: undo.expect, ops: undo.ops });
+  assert.match(again.error, /changed on the sheet/, 'a second undo is refused: the row no longer holds what the change left');
+});
+
+test('roster sheet: undoing a captain change puts the Captain cell back', () => {
+  const { call, grid } = setup();
+  const done = call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: [{ row: 6, alias: 'a3' }], expectCaptain: 'a1', ops: [{ op: 'captain', value: 'a3#disc' }] });
+  assert.deepEqual(done.snapshot.rows, []);
+  assert.equal(done.snapshot.captainAfter, 'a3#disc');
+  const undo = rosterUndoPlan({ teamName: 'Alpha', summary: 'x', snapshot: done.snapshot });
+  assert.deepEqual(undo.ops, [{ op: 'captain', value: 'a1' }]);
+  assert.equal(call('applyRosterOps', { teamName: 'Alpha', headerRow: 2, expect: undo.expect, expectCaptain: undo.expectCaptain, ops: undo.ops }).ok, true);
+  assert.equal(grid[1][2], 'a1');
+});
+
+test('roster sheet: finds a player on any team by SteamID64, FACEIT link or Discord', () => {
+  const { call, grid, links } = setup();
+  grid[17][7] = '76561198000000042'; // Beta Starter 4 (row 18)
+  links['18:5'] = 'https://www.faceit.com/en/players/B4Nick';
+  const bySteam = call('findRosterPlayer', { steamId: '7656 1198 0000 0004 2' });
+  assert.deepEqual(bySteam.matches.map((match) => [match.teamName, match.label, match.alias, match.matchedOn]), [['Beta', 'Starter 4', 'b4', ['SteamID64']]]);
+  const byAll = call('findRosterPlayer', { steamId: '76561198000000042', faceit: 'https://faceit.com/en/players/b4nick', discord: '@B4#disc' });
+  assert.deepEqual(byAll.matches[0].matchedOn, ['SteamID64', 'FACEIT', 'Discord']);
+  assert.deepEqual(call('findRosterPlayer', { steamId: '76561198000000099', discord: 'nobody' }).matches, []);
+  assert.equal(call('readRosterTeam', { teamName: 'Beta' }).team.slots[3].faceitLink, 'https://www.faceit.com/en/players/B4Nick', 'player FACEIT links come with the roster');
 });

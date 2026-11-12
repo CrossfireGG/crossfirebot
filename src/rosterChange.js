@@ -265,7 +265,7 @@ export function planRosterOps(team, change = {}) {
 
 // The post in the roster change channel (and the ticket): team, group, who asked, the change, the
 // new player, a link to the ticket. sheetChange=false when nothing could be written (subs full).
-export function buildRosterChangePost({ teamName, group = null, requesterId, plan, player = null, ticketChannelId = null, roles = [], nowMs = Date.now() }) {
+export function buildRosterChangePost({ teamName, group = null, requesterId, plan, player = null, ticketChannelId = null, roles = [], teamUrl = null, nowMs = Date.now() }) {
   const description = [
     plan.captain ? 'Please make them the team leader on FACEIT.' : 'Please update this roster on FACEIT.',
     plan.sheetChange ? null : `\n⚠️ ${plan.warning || 'The sheet was not changed.'}`
@@ -276,6 +276,7 @@ export function buildRosterChangePost({ teamName, group = null, requesterId, pla
     { name: 'Requested by', value: `<@${requesterId}>`, inline: true },
     { name: 'Change', value: plan.summary.slice(0, 1024) }
   ];
+  if (teamUrl) fields.push({ name: 'FACEIT team page', value: teamUrl });
   if (player) {
     const coach = isCoachSlot(plan.newSlotLabel);
     fields.push({ name: coach ? 'Coach added' : `Player added${plan.newSlotLabel ? ` (${plan.newSlotLabel})` : ''}`, value: playerLines(player).join('\n').slice(0, 1024) });
@@ -338,4 +339,93 @@ export function historyWhenText(date = new Date(), timeZone = 'America/New_York'
 // The FACEIT team ID in a team link ("…/team-home/<id>/…" or "…/teams/<id>…").
 export function faceitTeamIdFromUrl(url) {
   return String(url || '').match(/(?:team-home|teams)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)?.[1]?.toLowerCase() || null;
+}
+
+// The team's FACEIT page from the sheet's Team FACEIT link, or null.
+export function faceitTeamPageUrl(url) {
+  const id = faceitTeamIdFromUrl(url);
+  if (id) return `https://www.faceit.com/en/teams/${id}`;
+  return /^https?:\/\/(www\.)?faceit\.com\//i.test(String(url || '').trim()) ? String(url).trim() : null;
+}
+
+// --- After a confirmed change: undo, the FACEIT check, reminders ---------------------------------
+
+// The steps that put a change back, from the snapshot the sheet script returned with it. The rows
+// must still hold what the change left (else someone changed them since, and undo stops).
+export function rosterUndoPlan(record) {
+  const snapshot = record?.snapshot;
+  if (!snapshot || !Array.isArray(snapshot.rows) || !Array.isArray(snapshot.after)) {
+    return { ok: false, error: "This change can't be undone by the bot (it was saved before undo existed, or nothing on the sheet changed)." };
+  }
+  const ops = snapshot.rows.map((row) => ({ op: 'restore', row: row.row, values: row.values, links: row.links }));
+  const captainChanged = String(snapshot.captainBefore || '') !== String(snapshot.captainAfter || '');
+  if (captainChanged) ops.push({ op: 'captain', value: snapshot.captainBefore || '' });
+  if (!ops.length) return { ok: false, error: 'Nothing on the sheet changed, so there is nothing to undo.' };
+  // Player links come from the saved rows (the rows now hold what the change put there).
+  const linkAt = (row) => snapshot.rows.find((entry) => Number(entry.row) === Number(row))?.links?.[3] || '';
+  const history = (record.history || []).map(({ faceitRow, ...entry }) => ({ ...entry, action: `Undone: ${entry.action}`, faceit: entry.faceit || linkAt(faceitRow) }));
+  return {
+    ok: true,
+    ops,
+    expect: snapshot.after.map((entry) => ({ row: entry.row, alias: entry.alias })),
+    expectCaptain: captainChanged ? String(snapshot.captainAfter || '') : null,
+    history,
+    logLine: `${record.teamName}: undo (${String(record.summary || '').replace(/\*\*/g, '')})`
+  };
+}
+
+const nicknameKey = (url) => String(faceitNicknameFromUrl(url) || '').toLowerCase();
+
+// What FACEIT should show once the change is done there: who must be on the team, who must be off,
+// and who leads it. Players without a FACEIT link on the sheet are left out.
+export function rosterFaceitExpectations({ kind, player = null, removedSlot = null, captainSlot = null, snapshot = null }) {
+  const on = [];
+  const off = [];
+  if (player?.faceit && nicknameKey(player.faceit)) on.push({ nickname: nicknameKey(player.faceit), alias: player.alias });
+  if (kind === 'remove' && removedSlot) {
+    const fromSnapshot = snapshot?.rows?.find((row) => Number(row.row) === Number(removedSlot.row))?.links?.[3];
+    const link = removedSlot.faceitLink || fromSnapshot || removedSlot.faceit;
+    const nickname = nicknameKey(link);
+    if (nickname && !on.some((entry) => entry.nickname === nickname)) off.push({ nickname, alias: removedSlot.alias });
+  }
+  const leaderNickname = captainSlot ? nicknameKey(captainSlot.faceitLink || captainSlot.faceit) : '';
+  return { on, off, leader: leaderNickname ? { nickname: leaderNickname, alias: captainSlot.alias } : null };
+}
+
+// Compares those expectations with the FACEIT team (Data API /teams/{id}). Returns the problems
+// (empty when FACEIT matches) and whether there was anything to check.
+export function checkFaceitRoster(expectations, faceitTeam) {
+  const members = Array.isArray(faceitTeam?.members) ? faceitTeam.members : [];
+  const byNickname = new Map(members.map((member) => [String(member.nickname || '').toLowerCase(), member]));
+  const problems = [];
+  for (const entry of expectations?.on || []) {
+    if (!byNickname.has(entry.nickname)) problems.push(`**${entry.alias || entry.nickname}** isn't on the FACEIT team yet (have they accepted the invite?).`);
+  }
+  for (const entry of expectations?.off || []) {
+    if (byNickname.has(entry.nickname)) problems.push(`**${entry.alias || entry.nickname}** is still on the FACEIT team.`);
+  }
+  const leader = expectations?.leader;
+  if (leader) {
+    const member = byNickname.get(leader.nickname);
+    if (!member) problems.push(`**${leader.alias || leader.nickname}** (the new captain) isn't on the FACEIT team.`);
+    else if (faceitTeam?.leader && String(faceitTeam.leader) !== String(member.user_id)) problems.push(`**${leader.alias || leader.nickname}** isn't the team leader on FACEIT yet.`);
+  }
+  const checked = Boolean((expectations?.on || []).length || (expectations?.off || []).length || leader);
+  return { problems, checked };
+}
+
+// "Team X (Starter 2, same SteamID64 and FACEIT)" lines for a duplicate-player warning.
+export function duplicatePlayerLines(matches = []) {
+  return matches.map((match) => `• **${match.teamName}** · ${match.label}${match.alias ? ` (${match.alias})` : ''} · same ${(match.matchedOn || []).join(' and ')}`);
+}
+
+// When an unfinished roster change (no "Done on FACEIT" yet) needs a reminder: 'soon' once when the
+// team's next match is within soonMinutes, else 'late' every everyHours (at most maxReminders).
+export function rosterReminderDue(record, { now = Date.now(), nextMatchMs = null, everyHours = 3, maxReminders = 4, soonMinutes = 120 } = {}) {
+  if (!record || record.doneAt || record.undoneAt || !record.adminMessageId) return null;
+  if (nextMatchMs && nextMatchMs > now && nextMatchMs - now <= soonMinutes * 60 * 1000 && !record.soonRemindedAt) return 'soon';
+  const count = Number(record.reminderCount || 0);
+  if (count >= maxReminders) return null;
+  const since = Date.parse(record.lastRemindedAt || record.createdAt || '') || now;
+  return now - since >= everyHours * 60 * 60 * 1000 ? 'late' : null;
 }

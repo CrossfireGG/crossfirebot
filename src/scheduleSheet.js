@@ -156,6 +156,10 @@ export class LogOnlyScheduleSheet {
     return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)' };
   }
 
+  async findRosterPlayer() {
+    return { ok: false, skipped: true, error: 'no Google Sheet connected (SCHEDULE_SHEET_WEBHOOK_URL is empty)', matches: [] };
+  }
+
   // Without a sheet there is nothing to look in, so no form is ever confirmed here.
   async lookupPostCastForms(requestIds) {
     this.log.info?.(`Schedule sheet (log-only): cannot look up post-cast forms for ${(requestIds || []).join(', ')}`);
@@ -241,7 +245,14 @@ export class AppsScriptScheduleSheet {
   async applyRosterOps(change) {
     const { body, ...result } = await this.post('rosterApply', null, change);
     if (!result.ok) return result;
-    return { ...result, applied: body.applied ?? 0, logged: Boolean(body.logged) };
+    return { ...result, applied: body.applied ?? 0, logged: Boolean(body.logged), snapshot: body.snapshot || null };
+  }
+
+  // Every roster slot (any team) holding a player: query { spreadsheetId, sheetName, steamId, faceit, discord }.
+  async findRosterPlayer(query) {
+    const { body, ...result } = await this.post('rosterFindPlayer', null, query);
+    if (!result.ok) return { ...result, matches: [] };
+    return { ...result, matches: Array.isArray(body.matches) ? body.matches : [] };
   }
 
   // The crew availability tabs: { tabs: [{ name, values, backgrounds }] }.
