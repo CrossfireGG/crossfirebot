@@ -221,6 +221,7 @@ import {
   buildRosterChangePost,
   faceitNicknameFromUrl,
   faceitTeamIdFromUrl,
+  historyWhenText,
   playerFromFaceit,
   isStarterSlot,
   parseDiscordId,
@@ -8013,7 +8014,8 @@ async function handleTicketRoster(interaction) {
         history: plan.history || [],
         historySheetName: config.rosterHistorySheetName,
         requestedBy: interaction.member?.displayName || interaction.user.globalName || interaction.user.username,
-        when: new Date().toISOString()
+        when: new Date().toISOString(),
+        whenText: historyWhenText(new Date(), config.defaultTimezone)
       });
       if (!written.ok && plan.sheetChange) {
         await appendAuditLog({ type: 'roster_change_failed', ticketId, actorId: interaction.user.id, error: written.error }).catch(() => null);

@@ -5,6 +5,7 @@ import {
   buildRosterChangePost,
   countryName,
   faceitNicknameFromUrl,
+  historyWhenText,
   playerFromFaceit,
   faceitTeamIdFromUrl,
   parseDiscordId,
@@ -168,4 +169,10 @@ test('Roster History rows: one per player affected, with their FACEIT link or ro
     [{ action: 'Added', player: 'zoro-', spot: 'Sub 1', faceit: 'https://www.faceit.com/en/players/zoro-' }]);
   const full = planRosterOps(team({ subs: ['a', 'b'] }), { kind: 'sub', slotLabel: 'Starter 3', player });
   assert.deepEqual(full.history.map((row) => row.action), ['Sent to admin: move to sub (subs full)', 'Sent to admin: add (subs full)'], 'still recorded when the sheet is left for an admin');
+});
+
+test('roster history dates are in Eastern time with the zone', () => {
+  assert.equal(historyWhenText(new Date('2026-11-12T02:42:00Z'), 'America/New_York'), 'Nov 11, 9:42 PM EST');
+  assert.equal(historyWhenText(new Date('2026-07-12T02:42:00Z'), 'America/New_York'), 'Jul 11, 10:42 PM EDT');
+  assert.equal(historyWhenText(new Date('2026-11-12T02:42:00Z'), 'Not/AZone'), 'Nov 12, 2:42 AM UTC', 'a bad zone falls back to UTC');
 });

@@ -6,8 +6,13 @@ import fs from 'node:fs';
 // "Roster Tracking" tab laid out like the real one: 11-row team blocks (header row, Team Info row,
 // Player Info row, Starter 1-5, Sub 1-2, Coach), player columns B-I: IGN, Discord, Twitter, FACEIT,
 // HLTV, Nationality, SteamID64, Full Name.
-function loadScript(grid, links = {}) {
+function loadScript(grid, links = {}, { merged = [] } = {}) {
   const formats = {};
+  const merges = [];
+  const formatCopies = [];
+  const partialLinks = {};
+  // Cells that are the top-left of a merge across 6 columns ("row:col"), like the history box rows.
+  const mergedAt = new Set(merged);
   const width = () => Math.max(...grid.map((row) => row.length));
   const ensure = (r) => { while (grid.length < r) grid.push(Array(width()).fill('')); };
   const sheet = {
@@ -21,17 +26,30 @@ function loadScript(grid, links = {}) {
     getRange: (r, c, nr = 1, nc = 1) => ({
       r,
       c,
+      nr,
+      nc,
       getValues: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => (grid[r - 1 + i] || [])[c - 1 + j] ?? '')),
       getRichTextValues: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => ({ getLinkUrl: () => links[`${r + i}:${c + j}`] || null }))),
       getRichTextValue: () => ({ getLinkUrl: () => links[`${r}:${c}`] || null }),
-      setValues: (vals) => vals.forEach((row, i) => row.forEach((v, j) => { grid[r - 1 + i][c - 1 + j] = v; delete links[`${r + i}:${c + j}`]; })),
+      setValues: (vals) => {
+        ensure(r + vals.length - 1);
+        vals.forEach((row, i) => row.forEach((v, j) => { grid[r - 1 + i][c - 1 + j] = v; delete links[`${r + i}:${c + j}`]; }));
+        const chain = { setFontWeight: () => chain, setHorizontalAlignment: () => chain };
+        return chain;
+      },
+      merge: () => { merges.push(`${r}:${c}:${nr}x${nc}`); mergedAt.add(`${r}:${c}`); },
+      getMergedRanges: () => (mergedAt.has(`${r}:${c}`) ? [{ getNumColumns: () => 6 }] : []),
       setValue: (v) => { grid[r - 1][c - 1] = v; },
       setNumberFormat: (format) => { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) formats[`${r + i}:${c + j}`] = format; },
-      setRichTextValue: (rich) => { grid[r - 1][c - 1] = rich.text; links[`${r}:${c}`] = rich.url; },
+      setRichTextValue: (rich) => { grid[r - 1][c - 1] = rich.text; if (rich.partial) partialLinks[`${r}:${c}`] = rich.partial; else links[`${r}:${c}`] = rich.url; },
       clearContent: () => { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) { grid[r - 1 + i][c - 1 + j] = ''; delete links[`${r + i}:${c + j}`]; } },
       clear: () => { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) { grid[r - 1 + i][c - 1 + j] = ''; delete links[`${r + i}:${c + j}`]; } },
-      copyTo: (dest) => {
-        ensure(dest.r + nr - 1);
+      copyTo: (dest, type) => {
+        ensure(dest.r + (dest.nr || nr) - 1);
+        if (type === 'format') {
+          formatCopies.push({ from: `${r}:${c}`, to: `${dest.r}:${dest.c}`, rows: dest.nr || nr, cols: dest.nc || nc });
+          return;
+        }
         for (let i = 0; i < nr; i++) {
           for (let j = 0; j < nc; j++) {
             grid[dest.r - 1 + i][dest.c - 1 + j] = grid[r - 1 + i][c - 1 + j];
@@ -49,6 +67,7 @@ function loadScript(grid, links = {}) {
     getLastRow: () => history.rows.length,
     setFrozenRows: (count) => { history.frozen = count; },
     getRange: (r, c, nr = 1, nc = 1) => ({
+      getValues: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => (history.rows[r - 1 + i] || [])[c - 1 + j] ?? '')),
       setValues: (vals) => { vals.forEach((row, i) => { history.rows[r - 1 + i] = row.slice(); }); return { setFontWeight: () => {} }; },
       setNumberFormat: (format) => { for (let i = 0; i < nr; i++) history.formats[`${r + i}:${c}`] = format; },
       setRichTextValue: (rich) => { history.rows[r - 1][c - 1] = rich.text; history.links[`${r}:${c}`] = rich.url; }
@@ -59,9 +78,10 @@ function loadScript(grid, links = {}) {
       getSheetByName: (name) => (name === 'Roster Tracking' ? sheet : name === 'Roster History' && history.created ? historySheet : null),
       insertSheet: (name) => { if (name === 'Roster History') history.created = true; return historySheet; }
     }),
+    CopyPasteType: { PASTE_FORMAT: 'format' },
     newRichTextValue: () => {
       const rich = { text: '', url: null };
-      const builder = { setText: (text) => { rich.text = text; return builder; }, setLinkUrl: (url) => { rich.url = url; return builder; }, build: () => rich };
+      const builder = { setText: (text) => { rich.text = text; return builder; }, setLinkUrl: (...args) => { if (args.length === 3) rich.partial = { start: args[0], end: args[1], url: args[2] }; else rich.url = args[0]; return builder; }, build: () => rich };
       return builder;
     }
   };
@@ -69,7 +89,7 @@ function loadScript(grid, links = {}) {
   const source = fs.readFileSync(new URL('../docs/schedule-log-apps-script.gs', import.meta.url), 'utf8');
   const fns = new Function(`${source}; return { readRosterTeam, applyRosterOps };`)();
   const call = (name, body) => JSON.parse(fns[name]({ spreadsheetId: 'x', sheetName: 'Roster Tracking', ...body }).text);
-  return { call, formats, history };
+  return { call, formats, history, merges, formatCopies, partialLinks };
 }
 
 function block(team, teamId, players, captain = '') {
@@ -153,7 +173,7 @@ test('roster sheet: refuses stale rows, the coach row, other teams and a moved b
   assert.match(call('applyRosterOps', { teamName: 'Alpha', headerRow: 13, expect: [], ops: [] }).error, /moved on the sheet/);
 });
 
-test('roster sheet: each change adds Roster History rows, player names linked to FACEIT', () => {
+test('roster sheet: with no history box, changes go on a Roster History tab, player names linked to FACEIT', () => {
   const { call, history } = setup();
   // Starter 2 (a2) has a FACEIT link behind its "…" cell (5:5); the new player brings their own.
   const res = call('applyRosterOps', {
@@ -185,4 +205,47 @@ test('roster sheet: each change adds Roster History rows, player names linked to
   assert.equal(history.rows.length, 4);
   assert.equal(history.rows[3][2], 'Sent to admin: move to sub (subs full)');
   assert.equal(history.links['4:4'], 'https://faceit.com/p', 'a FACEIT link typed as plain text in the cell is used too');
+});
+
+test('roster sheet: history goes in the ROSTER CHANGE HISTORY box, one line per player in its merged rows', () => {
+  const grid = [
+    ...block('Alpha', '11111111-1111-1111-1111-111111111111', ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', '', 'coachA'], 'a1'),
+    ...block('Beta', '22222222-2222-2222-2222-222222222222', ['b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7'], 'betaboss')
+  ];
+  // Like the real tab: title in K1, rows 1-4 of the box each merged across K:P (a short box, to test
+  // what happens past it).
+  for (const row of grid) while (row.length < 16) row.push('');
+  grid[0][10] = 'ROSTER CHANGE HISTORY';
+  const links = { '5:5': 'https://faceit.com/a2-link' };
+  const merged = ['1:11', '2:11', '3:11', '4:11'];
+  const { call, history, merges, formatCopies, partialLinks } = loadScript(grid, links, { merged });
+  const first = call('applyRosterOps', {
+    teamName: 'Alpha', headerRow: 2, linkLabel: '…', requestedBy: 'krakenshort', whenText: 'Nov 11, 9:42 PM EST',
+    expect: [{ row: 5, alias: 'a2' }, { row: 10, alias: '' }],
+    ops: [{ op: 'copy', from: 5, to: 10 }, { op: 'clear', row: 5 }],
+    history: [{ action: 'Moved to sub', player: 'a2', spot: 'Starter 2 → Sub 2', faceitRow: 5 }]
+  });
+  assert.equal(first.ok, true);
+  assert.equal(history.created, false, 'no separate tab when the box is there');
+  assert.equal(grid[1][10], 'Nov 11, 9:42 PM EST · Alpha · Moved to sub · a2 · Starter 2 → Sub 2 · by krakenshort', 'one line, right under the title (row 2)');
+  const line = grid[1][10];
+  assert.deepEqual(partialLinks['2:11'], { start: line.indexOf('a2 ·'), end: line.indexOf('a2 ·') + 2, url: 'https://faceit.com/a2-link' }, 'only the player name is linked, to their FACEIT');
+  assert.deepEqual(grid[1].slice(0, 2), ['Team Info', 'Alpha'], 'the roster block beside it is untouched');
+
+  // Two players in one change take two lines; the one past the drawn box gets its look and is merged.
+  const second = call('applyRosterOps', {
+    teamName: 'Beta', headerRow: 13, requestedBy: 'tatmcs', whenText: 'Nov 12, 6:10 PM EST',
+    expect: [{ row: 15, alias: 'b1' }],
+    ops: [{ op: 'clear', row: 15 }],
+    history: [{ action: 'Removed', player: 'b1', spot: 'Starter 1', faceitRow: 15 }, { action: 'Added', player: 'newguy', spot: 'Starter 1', faceit: 'https://faceit.com/n' }]
+  });
+  assert.deepEqual([second.ok, second.historyRows], [true, 2]);
+  assert.equal(grid[2][10], 'Nov 12, 6:10 PM EST · Beta · Removed · b1 · Starter 1 · by tatmcs');
+  assert.equal(grid[3][10], 'Nov 12, 6:10 PM EST · Beta · Added · newguy · Starter 1 · by tatmcs');
+  assert.equal(partialLinks['4:11'].url, 'https://faceit.com/n');
+  assert.ok(!formatCopies.some((copy) => copy.to === '3:11' || copy.to === '4:11'), 'rows inside the drawn box are left as they are');
+  call('applyRosterOps', { teamName: 'Beta', headerRow: 13, requestedBy: 'tatmcs', whenText: 'Nov 12, 6:15 PM EST', expect: [], ops: [], history: [{ action: 'Sent to admin: move to sub (subs full)', player: 'b2', spot: 'Starter 2 → sub', faceitRow: 16 }] });
+  assert.equal(grid[4][10], 'Nov 12, 6:15 PM EST · Beta · Sent to admin: move to sub (subs full) · b2 · Starter 2 → sub · by tatmcs');
+  assert.ok(formatCopies.some((copy) => copy.from === '2:11' && copy.to === '5:11' && copy.cols === 6), 'row 5 (past the box) gets the look of the box');
+  assert.ok(merges.includes('5:11:1x6'), 'and is merged across K:P');
 });

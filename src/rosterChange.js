@@ -283,6 +283,15 @@ export function playerFromFaceit(apiPlayer) {
   };
 }
 
+// The date on a roster history line, in the league's time zone: "Nov 11, 9:42 PM EST".
+export function historyWhenText(date = new Date(), timeZone = 'America/New_York') {
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(date);
+  }
+}
+
 // The FACEIT team ID in a team link ("…/team-home/<id>/…" or "…/teams/<id>…").
 export function faceitTeamIdFromUrl(url) {
   return String(url || '').match(/(?:team-home|teams)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i)?.[1]?.toLowerCase() || null;

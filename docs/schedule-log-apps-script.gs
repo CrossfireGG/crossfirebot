@@ -57,8 +57,9 @@
  *                         "HLTV Tracking" tab into the new "Roster Tracking" layout.
  *   "rosterApply"         applies a roster change from a Roster Change ticket as steps (write a
  *                         new player, clear, copy, swap rows), plus a line in a "CHANGES" column
- *                         if the tab has one, and one row per player on the "Roster History" tab
- *                         (Date, Team, Action, Player linked to FACEIT, Role/Spot, Requested by).
+ *                         if the tab has one, and one line per player in the "ROSTER CHANGE HISTORY"
+ *                         box on the roster tab (or a "Roster History" tab if there's no box):
+ *                         date · team · action · player (linked to FACEIT) · spot · by who.
  *                         Refuses if any row changed since it was read.
  *
  * Everything else in columns H–M is left for staff and is never touched.
@@ -638,24 +639,85 @@ function applyRosterOps(body) {
   return reply(200, { ok: true, applied: ops.length, logged: Boolean(changesColumn), historyRows: historyRows });
 }
 
-// The "Roster History" tab (made with its header the first time): one row per player a change
-// affects. Date | Team | Action | Player (linked to their FACEIT profile) | Role/Spot | Requested by.
+// Roster history, one entry per player a change affects.
+// In the "ROSTER CHANGE HISTORY" box on the roster tab (found by its title, wherever it is): each
+// entry is one line in the box's next empty row (the rows under the title are merged across the box),
+// e.g. "Nov 11, 9:42 PM EST · Addice · Moved to sub · AJaxz · Starter 2 → Sub 1 · by krakenshort",
+// with the player's name linked to their FACEIT profile. Rows past the drawn box get its look.
+// With no such box, it goes on a "Roster History" tab instead (one column per field, made the first
+// time): Date | Team | Action | Player | Role/Spot | Requested by.
 const ROSTER_HISTORY_HEADERS = ['Date', 'Team', 'Action', 'Player', 'Role/Spot', 'Requested by'];
+const ROSTER_HISTORY_TITLE = /roster\s*change\s*hist/i;
+
+function findRosterHistoryBox(sheet) {
+  const lastColumn = sheet.getLastColumn();
+  if (lastColumn < 1) return null;
+  const rows = Math.min(sheet.getLastRow(), 10);
+  if (rows < 1) return null;
+  const values = sheet.getRange(1, 1, rows, lastColumn).getValues();
+  for (let r = 0; r < values.length; r++) {
+    for (let c = 0; c < values[r].length; c++) {
+      if (!ROSTER_HISTORY_TITLE.test(String(values[r][c]))) continue;
+      const title = sheet.getRange(r + 1, c + 1);
+      const merged = typeof title.getMergedRanges === 'function' ? title.getMergedRanges() : [];
+      return { row: r + 1, column: c + 1, width: merged.length ? merged[0].getNumColumns() : ROSTER_HISTORY_HEADERS.length };
+    }
+  }
+  return null;
+}
+
+function rosterHistoryLine(body, teamName, entry) {
+  const when = String(body.whenText || '') || Utilities.formatDate(body.when ? new Date(body.when) : new Date(), Session.getScriptTimeZone(), 'MMM d, h:mm a');
+  const parts = [when, teamName, entry.action, entry.player, entry.spot, body.requestedBy ? 'by ' + body.requestedBy : ''].filter((part) => String(part || '').trim());
+  return parts.join(' · ');
+}
 
 function appendRosterHistory(body, teamName, entries) {
   const book = SpreadsheetApp.openById(body.spreadsheetId);
+  const roster = book.getSheetByName(body.sheetName);
+  const box = roster ? findRosterHistoryBox(roster) : null;
+  if (box) {
+    const sheet = roster;
+    // The next empty row under the title, in the box's first column.
+    const scan = Math.max(sheet.getLastRow() - box.row, 0);
+    let start = box.row + 1;
+    if (scan > 0) {
+      const existing = sheet.getRange(box.row + 1, box.column, scan, 1).getValues();
+      for (let i = existing.length - 1; i >= 0; i--) {
+        if (String(existing[i][0]).trim()) { start = box.row + 2 + i; break; }
+      }
+    }
+    entries.forEach((entry, index) => {
+      const row = start + index;
+      const cell = sheet.getRange(row, box.column, 1, box.width);
+      const merged = typeof cell.getMergedRanges === 'function' ? cell.getMergedRanges() : [];
+      if (!merged.length) {
+        // Past the drawn box: same look as its first row, merged across the box.
+        sheet.getRange(box.row + 1, box.column, 1, box.width).copyTo(cell, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+        cell.merge();
+      }
+      const line = rosterHistoryLine(body, teamName, entry);
+      const builder = SpreadsheetApp.newRichTextValue().setText(line);
+      const at = entry.player ? line.indexOf(' · ' + entry.player + ' · ') : -1;
+      if (at >= 0 && /^https?:\/\//i.test(entry.faceit)) builder.setLinkUrl(at + 3, at + 3 + entry.player.length, entry.faceit);
+      sheet.getRange(row, box.column).setRichTextValue(builder.build());
+    });
+    return entries.length;
+  }
+
+  const width = ROSTER_HISTORY_HEADERS.length;
   const name = String(body.historySheetName || 'Roster History');
   let sheet = book.getSheetByName(name);
   if (!sheet) {
     sheet = book.insertSheet(name);
-    sheet.getRange(1, 1, 1, ROSTER_HISTORY_HEADERS.length).setValues([ROSTER_HISTORY_HEADERS]).setFontWeight('bold');
+    sheet.getRange(1, 1, 1, width).setValues([ROSTER_HISTORY_HEADERS]).setFontWeight('bold');
     sheet.setFrozenRows(1);
   }
   const start = Math.max(sheet.getLastRow(), 1) + 1;
   const when = body.when ? new Date(body.when) : new Date();
   const requestedBy = String(body.requestedBy || '');
   const rows = entries.map((entry) => [when, teamName, entry.action, entry.player, entry.spot, requestedBy]);
-  sheet.getRange(start, 1, rows.length, ROSTER_HISTORY_HEADERS.length).setValues(rows);
+  sheet.getRange(start, 1, rows.length, width).setValues(rows);
   sheet.getRange(start, 1, rows.length, 1).setNumberFormat('mmm d, yyyy h:mm am/pm');
   entries.forEach((entry, index) => {
     if (!entry.player || !/^https?:\/\//i.test(entry.faceit)) return;
