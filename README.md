@@ -537,6 +537,20 @@ Claiming a FACEIT account that's already linked to someone else is refused and p
 
 The bot needs Manage Channels, Manage Roles, Connect and Move Members in the Arena category (it's Administrator in the league server), and the Server Members and Voice States gateway intents (Voice States needs no approval).
 
+## Join To Create voice
+
+Joining **➕ Join To Create** makes a new voice channel called "<name>'s channel" in the same category, owned by that person, and moves them into it. A settings panel is posted in the channel's chat with buttons for the owner (staff can use them too):
+
+- **Rename** (Discord allows 2 renames per channel every 10 minutes) and **Limit** (max people, 0 = no limit).
+- **Lock / Unlock**: locked means nobody new can join except people the owner **Invites**.
+- **Hide / Show**: hidden takes it off the channel list for everyone except the people in it and invited people.
+- **Invite** lets picked people in even when it's locked or hidden. **Kick** disconnects picked people and keeps them out until they're invited again.
+- **Transfer** hands the channel to someone in it. **Claim** lets anyone in the channel take it over once the owner has left.
+
+The channel is deleted as soon as the last person leaves (and every 2 minutes the bot clears any empty ones, e.g. after a restart). Someone who already owns a channel and joins Join To Create again is sent back to theirs. Rejoining within 10 seconds of making one disconnects them, to stop spam. Arena players in a live game are moved to their team channel instead.
+
+The first time the bot starts with this on, it makes a **🔊 Voice** category with **➕ Join To Create** in it and remembers them. If staff delete them, they aren't made again; set `JOIN_TO_CREATE_CHANNEL_ID` to use a different channel. New channels copy the category's permissions. `JOIN_TO_CREATE_ENABLED=false` turns it off.
+
 ## Important FACEIT Note
 
 The documented FACEIT Data API exposes public read operations; no documented schedule-write or veto-write operation was verified for this bot. Keep `FACEIT_SCHEDULE_ENDPOINT` unset. Discord scheduling and vetoes are stored locally, and staff must enter them into FACEIT manually.

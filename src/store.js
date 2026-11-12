@@ -47,7 +47,8 @@ function normalizeDb(db) {
     tickets: db.tickets || {},
     rosterChanges: db.rosterChanges || {},
     arenaLinks: db.arenaLinks || {},
-    arenaMatches: db.arenaMatches || {}
+    arenaMatches: db.arenaMatches || {},
+    voiceRooms: { setup: db.voiceRooms?.setup || null, rooms: db.voiceRooms?.rooms || {} }
   };
 }
 
@@ -957,6 +958,32 @@ export async function saveArenaMatch(id, patch) {
 export async function deleteArenaMatch(id) {
   return mutateDb((db) => {
     if (db.arenaMatches) delete db.arenaMatches[id];
+    return true;
+  });
+}
+
+// Join To Create voice: { setup: { categoryId, channelId } | null, rooms: { [channelId]: room } }.
+export async function getVoiceRooms() {
+  return (await snapshot()).voiceRooms;
+}
+
+export async function saveVoiceRoomSetup(setup) {
+  return mutateDb((db) => {
+    db.voiceRooms.setup = { ...(db.voiceRooms.setup || {}), ...setup };
+    return { ...db.voiceRooms.setup };
+  });
+}
+
+export async function saveVoiceRoom(channelId, patch) {
+  return mutateDb((db) => {
+    db.voiceRooms.rooms[channelId] = { ...(db.voiceRooms.rooms[channelId] || {}), ...patch, channelId };
+    return { ...db.voiceRooms.rooms[channelId] };
+  });
+}
+
+export async function deleteVoiceRoom(channelId) {
+  return mutateDb((db) => {
+    delete db.voiceRooms.rooms[channelId];
     return true;
   });
 }

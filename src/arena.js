@@ -543,21 +543,25 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
 
   // ---------- voice ----------
 
+  // Returns true when it moved them (so Join To Create leaves them alone).
   async function onVoiceStateUpdate(oldState, newState) {
-    if (!enabled() || !active.size) return;
-    if (!arenaDragOnJoin(oldState.channelId, newState.channelId, config.arenaQueueChannelId)) return;
+    if (!enabled() || !active.size) return false;
+    if (!arenaDragOnJoin(oldState.channelId, newState.channelId, config.arenaQueueChannelId)) return false;
     for (const record of active.values()) {
       if (record.guildId !== newState.guild.id) continue;
       for (const [faction, ids] of Object.entries(record.members || {})) {
         if (!ids.includes(newState.id)) continue;
         const channelId = record.channels?.[faction];
-        if (channelId && newState.channelId !== channelId) {
-          await newState.setChannel(channelId, 'Crossfire Arena: your team\'s voice channel')
-            .catch((error) => warn(`move:${newState.id}`, `couldn't move ${newState.id}: ${error.message}`));
-        }
-        return;
+        if (!channelId || newState.channelId === channelId) return false;
+        return newState.setChannel(channelId, 'Crossfire Arena: your team\'s voice channel')
+          .then(() => true)
+          .catch((error) => {
+            warn(`move:${newState.id}`, `couldn't move ${newState.id}: ${error.message}`);
+            return false;
+          });
       }
     }
+    return false;
   }
 
   // ---------- /arena ----------

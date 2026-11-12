@@ -256,6 +256,13 @@ export function getConfig() {
     arenaStaffLogChannelId: process.env.ARENA_STAFF_LOG_CHANNEL_ID || '',
     arenaPollSeconds: Math.max(10, Number(process.env.ARENA_POLL_SECONDS || 20) || 20),
     arenaTeamSize: Math.max(1, Number(process.env.ARENA_TEAM_SIZE || 5) || 5),
+    // Join To Create voice: joining the channel makes a personal voice channel next to it and
+    // moves you in; it's deleted when empty. With no JOIN_TO_CREATE_CHANNEL_ID the bot makes the
+    // category and channel itself (once) and remembers them.
+    joinToCreateEnabled: !/^(false|0|off|no)$/i.test(process.env.JOIN_TO_CREATE_ENABLED || ''),
+    joinToCreateChannelId: process.env.JOIN_TO_CREATE_CHANNEL_ID || '',
+    joinToCreateCategoryName: process.env.JOIN_TO_CREATE_CATEGORY_NAME || '🔊 Voice',
+    joinToCreateChannelName: process.env.JOIN_TO_CREATE_CHANNEL_NAME || '➕ Join To Create',
     // Support tickets: each ticket's transcript goes to Support Receipts when it closes. Ticket
     // channels are created in TICKET_CATEGORY_ID (the Support category).
     ticketReceiptsChannelId: process.env.TICKET_RECEIPTS_CHANNEL_ID || '1418723351073132594',

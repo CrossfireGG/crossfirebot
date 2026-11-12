@@ -24,6 +24,7 @@ import path from 'node:path';
 import { commands } from './commands.js';
 import { getConfig } from './config.js';
 import { createArena } from './arena.js';
+import { createVoiceRooms } from './voiceRooms.js';
 import { FaceitClient } from './faceit.js';
 import { SclClient } from './scl.js';
 import { findUniqueSclMatchChannel } from './sclChannelResolver.js';
@@ -459,6 +460,8 @@ const arena = createArena({
   isAdminStaff: (member) => isAdminStaff(member),
   memberForDiscordText: (guild, text) => rosterMemberFor(guild, text)
 });
+// Join To Create personal voice channels (src/voiceRooms.js).
+const voiceRooms = createVoiceRooms({ client, config, isAdminStaff: (member) => isAdminStaff(member) });
 
 client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -499,6 +502,7 @@ client.once(Events.ClientReady, async () => {
     prepTimer.unref?.();
   }
   arena.start();
+  await voiceRooms.start().catch((error) => console.error('Join To Create start failed:', error));
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -539,6 +543,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isButton() && /^roster_(done|doneforce|undo|undoyes)(:|$)/.test(interaction.customId || '')) {
       await handleRosterDone(interaction);
+      return;
+    }
+    if (interaction.customId?.startsWith('vc_')) {
+      await voiceRooms.handleComponent(interaction);
       return;
     }
     if (interaction.customId?.startsWith('arena_')) {
@@ -1502,10 +1510,16 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
 });
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  let movedByArena = false;
   try {
-    await arena.onVoiceStateUpdate(oldState, newState);
+    movedByArena = await arena.onVoiceStateUpdate(oldState, newState);
   } catch (error) {
     console.error('Arena voice move failed:', error);
+  }
+  try {
+    await voiceRooms.onVoiceStateUpdate(oldState, newState, { movedElsewhere: movedByArena });
+  } catch (error) {
+    console.error('Join To Create failed:', error);
   }
 });
 
