@@ -492,6 +492,9 @@ client.once(Events.ClientReady, async () => {
   }
 
   await hydratePersistentTeamRoleMappings();
+  await reorderExistingPlayoffMatchChannels().catch((error) => {
+    console.error('[Playoff channel order] failed:', error);
+  });
   if (config.reorganizeExistingMatchChannels) {
     await reorganizeExistingMatchChannels().catch((error) => {
       console.error('[Match reorganization] failed:', error);
@@ -2098,6 +2101,33 @@ async function reorderSyncedMatchChannels(guild, syncedChannels) {
   }
 
   return reordered;
+}
+
+async function reorderExistingPlayoffMatchChannels() {
+  const guild = await client.guilds.fetch(config.discordGuildId);
+  await guild.channels.fetch();
+
+  const matches = filterAndSortMatchesForSync(
+    (await faceit.getMatches()).map(normalizeConfiguredMatch).filter(isPlayoffMatch),
+    null
+  );
+  const existingChannels = [];
+
+  for (const match of matches) {
+    const stored = await getStoredMatch(match.id);
+    const channel = stored?.discord?.channelId
+      ? guild.channels.cache.get(stored.discord.channelId)
+      : findAuditMatchChannel(guild, match, makeMatchChannelName(match));
+    if (!channel?.isTextBased?.() || !channel.parentId) continue;
+
+    existingChannels.push({
+      channelId: channel.id,
+      categoryId: channel.parentId
+    });
+  }
+
+  const reordered = await reorderSyncedMatchChannels(guild, existingChannels);
+  console.log(`[Playoff channel order] reordered ${reordered} existing channel(s); created 0.`);
 }
 
 async function handleRefreshMatchStatuses(interaction) {
