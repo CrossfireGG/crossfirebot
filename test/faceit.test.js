@@ -3,6 +3,44 @@ import test from 'node:test';
 
 import { FaceitClient } from '../src/faceit.js';
 
+test('restores top-to-bottom order for playoff rounds returned bottom-to-top', async (context) => {
+  context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+    items: [
+      {
+        match_id: 'bottom-match',
+        round: 1,
+        group: 1,
+        teams: {
+          faction1: { name: 'Bottom Team One' },
+          faction2: { name: 'Bottom Team Two' }
+        }
+      },
+      {
+        match_id: 'top-match',
+        round: 1,
+        group: 1,
+        teams: {
+          faction1: { name: 'Top Team One' },
+          faction2: { name: 'Top Team Two' }
+        }
+      }
+    ]
+  }), { status: 200 }));
+
+  const matches = await new FaceitClient('api-key', [{
+    type: 'championship',
+    id: 'playoffs',
+    name: 'CROSSFIRE Season 7 - Playoffs'
+  }]).getMatches();
+
+  assert.equal(matches[0].bracketOrder, 0);
+  assert.equal(matches[1].bracketOrder, -1);
+  assert.deepEqual(
+    [...matches].sort((left, right) => left.bracketOrder - right.bracketOrder).map((match) => match.id),
+    ['top-match', 'bottom-match']
+  );
+});
+
 test('extracts FACEIT match scores from direct score fields', async (context) => {
   context.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
     match_id: 'match-1',

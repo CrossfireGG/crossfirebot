@@ -2013,6 +2013,7 @@ async function handleSyncMatches(interaction) {
   const matches = filterAndSortMatchesForSync(allMatches, roundFilter);
   let created = 0;
   let skipped = 0;
+  const syncedChannels = [];
 
   if (!config.createMissingMatchTeamRoles) {
     const teamNames = [...new Set(matches.flatMap((match) => [match.teamA, match.teamB]).filter(Boolean))];
@@ -2044,9 +2045,15 @@ async function handleSyncMatches(interaction) {
 
     const channel = await guild.channels.fetch(discordIds.channelId);
     await upsertMatchIntroMessage(channel, matchForDiscord);
+    syncedChannels.push({
+      channelId: discordIds.channelId,
+      categoryId: discordIds.categoryId
+    });
 
     created += 1;
   }
+
+  const reordered = await reorderSyncedMatchChannels(guild, syncedChannels);
 
   const roundText = roundFilter?.label || 'all detected rounds';
   const coverage = summarizeSyncCoverage(matches);
@@ -2056,8 +2063,41 @@ async function handleSyncMatches(interaction) {
   }
   await interaction.editReply(truncateDiscordMessage([
     `Synced ${created} match channel(s) for ${roundText}. Skipped ${skipped}.`,
+    reordered ? `Ordered ${reordered} existing channel(s) from the top of the FACEIT bracket to the bottom.` : null,
     coverage
   ].filter(Boolean).join('\n')));
+}
+
+async function reorderSyncedMatchChannels(guild, syncedChannels) {
+  if (syncedChannels.length < 2) return syncedChannels.length;
+
+  await guild.channels.fetch();
+  const byCategory = new Map();
+  for (const entry of syncedChannels) {
+    const items = byCategory.get(entry.categoryId) || [];
+    items.push(entry);
+    byCategory.set(entry.categoryId, items);
+  }
+
+  let reordered = 0;
+  for (const [categoryId, entries] of byCategory) {
+    const category = guild.channels.cache.get(categoryId);
+    const channels = entries
+      .map((entry) => guild.channels.cache.get(entry.channelId))
+      .filter((channel) => channel?.parentId === categoryId);
+    if (!category || channels.length < 2) {
+      reordered += channels.length;
+      continue;
+    }
+
+    await guild.channels.setPositions(channels.map((channel, index) => ({
+      channel: channel.id,
+      position: category.rawPosition + index + 1
+    })));
+    reordered += channels.length;
+  }
+
+  return reordered;
 }
 
 async function handleRefreshMatchStatuses(interaction) {

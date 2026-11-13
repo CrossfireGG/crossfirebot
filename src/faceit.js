@@ -161,12 +161,12 @@ function normalizeMatch(raw, source, sourceOrder = 0) {
     resultScore: score ? `${score.teamAScore}-${score.teamBScore}` : null,
     faceitUrl: normalizeFaceitUrl(raw.faceit_url || raw.match_url),
     scheduledAt: raw.scheduled_at ? formatFaceitSchedule(raw.scheduled_at) : null,
-    bracketOrder: extractBracketOrder(raw, sourceOrder),
+    bracketOrder: extractBracketOrder(raw, sourceOrder, source),
     raw
   };
 }
 
-function extractBracketOrder(raw, sourceOrder) {
+function extractBracketOrder(raw, sourceOrder, source) {
   const explicitOrder = firstNumber(
     raw.bracket_position,
     raw.bracket_pos,
@@ -177,7 +177,13 @@ function extractBracketOrder(raw, sourceOrder) {
     raw.seed,
     raw.match_number
   );
-  return Number.isInteger(explicitOrder) ? explicitOrder : sourceOrder;
+  if (Number.isInteger(explicitOrder)) return explicitOrder;
+
+  // FACEIT's playoff endpoint returns each bracket round from bottom to top when it
+  // omits a position field. Negating the API index restores the visual bracket order.
+  return /playoff/i.test(String(source?.name || '')) && sourceOrder
+    ? -sourceOrder
+    : sourceOrder;
 }
 
 function extractMatchScore(raw) {
