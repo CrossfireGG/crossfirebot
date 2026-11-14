@@ -153,6 +153,14 @@ export function getConfig() {
     throw new Error('CROSSFIREBOT_API_KEY or WEBSITE_API_KEY is required when WEBSITE_ENDPOINT is set');
   }
 
+  // Bracket picks read the same website as the caster streams (public endpoints, no key).
+  let picksBaseUrl = process.env.PICKS_BASE_URL?.trim().replace(/\/+$/, '') || '';
+  if (!picksBaseUrl && websiteEndpoint) picksBaseUrl = new URL(websiteEndpoint).origin;
+  if (!picksBaseUrl) picksBaseUrl = 'https://www.crossfiregg.com';
+  if (!/^https?:\/\//i.test(picksBaseUrl)) {
+    throw new Error('PICKS_BASE_URL must be an http(s) URL');
+  }
+
   const scheduleSheetWebhookUrl = process.env.SCHEDULE_SHEET_WEBHOOK_URL?.trim() || '';
   if (scheduleSheetWebhookUrl && !/^https?:\/\//i.test(scheduleSheetWebhookUrl)) {
     throw new Error('SCHEDULE_SHEET_WEBHOOK_URL must be an http(s) URL');
@@ -345,6 +353,17 @@ export function getConfig() {
     websiteTimeoutSeconds: Math.max(1, Number(process.env.WEBSITE_TIMEOUT_SECONDS || 10) || 10),
     websiteMaxAttempts: Math.max(1, Number(process.env.WEBSITE_MAX_ATTEMPTS || 3) || 3),
     // Google Sheet schedule log through an Apps Script web app. Empty URL = log-only mode.
+    // Playoff bracket picks (src/picks.js): /picks, lock reminders, the "locked" post and standings
+    // posts, all read from the website. PICKS_ENABLED=false turns the scheduled posts off.
+    picksEnabled: !/^(false|0|off|no)$/i.test(process.env.PICKS_ENABLED || ''),
+    picksBaseUrl,
+    picksEventId: process.env.PICKS_EVENT_ID?.trim() || 'crossfire-season-7',
+    picksEventName: process.env.PICKS_EVENT_NAME?.trim() || 'Season 7 Playoffs',
+    // Where the posts go. Empty = the one channel in the league server named "announcements".
+    picksChannelId: parseSnowflakeList(process.env.PICKS_CHANNEL_ID || '')[0] || '',
+    // Optional: how many decided picks mean the bracket is over. Empty = when every pick of the
+    // fullest bracket is decided.
+    picksTotalMatches: Math.max(0, Number(process.env.PICKS_TOTAL_MATCHES || 0) || 0),
     scheduleSheetWebhookUrl: scheduleSheetWebhookUrl || null,
     scheduleSheetSecret: process.env.SCHEDULE_SHEET_SECRET?.trim() || null,
     scheduleSheetTimeoutSeconds: Math.max(1, Number(process.env.SCHEDULE_SHEET_TIMEOUT_SECONDS || 45) || 45),

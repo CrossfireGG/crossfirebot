@@ -25,6 +25,7 @@ import { commands } from './commands.js';
 import { getConfig } from './config.js';
 import { createArena } from './arena.js';
 import { createVoiceRooms } from './voiceRooms.js';
+import { createPicks } from './picks.js';
 import { createReactionRoles, parseMessageLink } from './reactionRoles.js';
 import { FaceitClient } from './faceit.js';
 import { SclClient } from './scl.js';
@@ -478,6 +479,8 @@ const arena = createArena({
 const reactionRoles = createReactionRoles({ client, roles: config.arenaReactionRoles });
 // Join To Create personal voice channels (src/voiceRooms.js).
 const voiceRooms = createVoiceRooms({ client, config, isAdminStaff: (member) => isAdminStaff(member) });
+// Playoff bracket picks from the website (src/picks.js): /picks, lock reminders, standings.
+const picks = createPicks({ client, config });
 
 client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -523,6 +526,7 @@ client.once(Events.ClientReady, async () => {
   arena.start();
   await voiceRooms.start().catch((error) => console.error('Join To Create start failed:', error));
   reactionRoles.sync().catch((error) => console.error('Reaction roles catch-up failed:', error));
+  picks.start().catch((error) => console.error('Bracket picks start failed:', error));
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -594,6 +598,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
     if (interaction.isChatInputCommand()) {
+      if (interaction.commandName === 'picks') {
+        await picks.handleCommand(interaction);
+        return;
+      }
       if (interaction.commandName === 'request') {
         await handleStreamRequestCommand(interaction);
         return;

@@ -49,7 +49,8 @@ function normalizeDb(db) {
     arenaLinks: db.arenaLinks || {},
     arenaMatches: db.arenaMatches || {},
     voiceRooms: { setup: db.voiceRooms?.setup || null, rooms: db.voiceRooms?.rooms || {} },
-    reactionRoleMessages: db.reactionRoleMessages || {}
+    reactionRoleMessages: db.reactionRoleMessages || {},
+    picks: db.picks || {}
   };
 }
 
@@ -1023,5 +1024,24 @@ export async function saveTeamInfoCache(patch) {
   return mutateDb((db) => {
     db.teamInfoCache = { ...(db.teamInfoCache || {}), ...patch };
     return db.teamInfoCache;
+  });
+}
+
+// Bracket picks posts already made, per website event:
+// { [eventId]: { reminders: { '24h': iso, ... }, lockedPostedAt, decidedTotal, finalPostedAt } }.
+export async function getPicksState(eventId) {
+  const state = (await snapshot()).picks?.[eventId] || {};
+  return { ...state, reminders: { ...(state.reminders || {}) } };
+}
+
+export async function savePicksState(eventId, patch) {
+  return mutateDb((db) => {
+    const current = db.picks[eventId] || {};
+    db.picks[eventId] = {
+      ...current,
+      ...patch,
+      reminders: { ...(current.reminders || {}), ...(patch.reminders || {}) }
+    };
+    return { ...db.picks[eventId] };
   });
 }

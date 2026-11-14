@@ -324,6 +324,10 @@ export const commands = [
     .addSubcommand((subcommand) => subcommand.setName('cleanup').setDescription('Staff: end finished games and delete leftover Arena voice channels')
       .addBooleanOption((option) => option.setName('everything').setDescription('End every game the bot is tracking, even ones still live').setRequired(false)))
   ,
+  new SlashCommandBuilder()
+    .setName('picks')
+    .setDescription('Playoff bracket picks: the link, when picks lock and how many brackets are in')
+  ,
   // Right-click a message > Apps > Add Arena role reactions: the bot adds 🎮 and 🔔 to it.
   new ContextMenuCommandBuilder()
     .setName('Add Arena role reactions')
