@@ -16,7 +16,8 @@ import {
   teamBanRates,
   vetoOrderLines,
   groupStakes,
-  buildPrepPack
+  buildPrepPack,
+  seasonSources
 } from '../src/prepPack.js';
 
 const player = (id, nickname, level = 7) => ({ player_id: id, nickname, game_skill_level: level });
@@ -357,4 +358,23 @@ test('a single match fetched by ID keeps its Group Stage round, not "Quarter Fin
   const playoff = new FaceitClient('key', [{ type: 'championship', id: 'grp', name: 'Playoffs' }]);
   playoff.request = async () => ({ ...raw, group: 1 });
   assert.equal((await playoff.getMatch('1-x')).round, 'Upper Bracket - Round 2');
+});
+
+test('seasonSources keeps the Group Stage after FACEIT_SOURCES moves to the Playoffs', () => {
+  const playoffs = { type: 'championship', id: 'po', name: 'Season 7 - Playoffs' };
+  const groups = { type: 'championship', id: 'gs', name: 'Season 7 - Group Stage' };
+  const lastSeason = { type: 'championship', id: 's6', name: 'Season 6 - Playoffs' };
+  const stored = (id, source, scheduledAt) => ({ match: { id, source, raw: { scheduled_at: Date.parse(scheduledAt) / 1000 } } });
+  const inSeason = (ms) => ms >= Date.parse('2026-11-02T00:00:00Z');
+  const sources = seasonSources([playoffs], [
+    stored('a', groups, '2026-11-05T00:00:00Z'),
+    stored('b', groups, '2026-11-06T00:00:00Z'),
+    stored('c', playoffs, '2026-11-15T00:00:00Z'),
+    stored('d', lastSeason, '2026-08-01T00:00:00Z'),
+    stored('e', { type: 'match', id: 'm1', name: '' }, '2026-11-15T00:00:00Z'),
+    { match: { id: 'f', source: { type: 'championship', id: 'undated' }, raw: {} } }
+  ], inSeason);
+  assert.deepEqual(sources.map((source) => source.id), ['po', 'gs']);
+  assert.equal(sources[1].name, 'Season 7 - Group Stage');
+  assert.deepEqual(seasonSources([playoffs, groups], [], inSeason).map((source) => source.id), ['po', 'gs']);
 });

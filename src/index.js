@@ -277,7 +277,7 @@ import {
   TICKET_TOPICS
 } from './tickets.js';
 import { buildRoundup, buildSocialCard, buildSocialResultCard, matchTopPlayer, normalizeHandle, teamSocials } from './socialInfo.js';
-import { buildPrepPack, compactBotVeto, compactFaceitVeto, compactMatchStats, faceitVetoUnderway, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, teamKey, vetoSummary } from './prepPack.js';
+import { buildPrepPack, compactBotVeto, compactFaceitVeto, compactMatchStats, faceitVetoUnderway, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, seasonSources, teamKey, vetoSummary } from './prepPack.js';
 import {
   STAT_ROLES,
   STAT_ROLE_LABELS,
@@ -11257,13 +11257,32 @@ function hasProdRole(member) {
   return Boolean(config.prodRoleId && member?.roles?.cache?.has?.(config.prodRoleId));
 }
 
+// The season's matches from every FACEIT competition it used: the configured sources and any the
+// bot stored matches from this season (the Group Stage after FACEIT_SOURCES moves to the Playoffs).
+// A remembered source that can't be read is skipped; a configured one failing still throws.
 async function loadSeasonMatches({ force = false } = {}) {
   if (!force && Date.now() - seasonMatchesCache.at < SEASON_MATCHES_TTL_MS && seasonMatchesCache.matches.length) return seasonMatchesCache.matches;
   const season = statsSeason() || activeSeason();
-  const all = await faceit.getMatches();
+  const inSeason = (ms) => !season || seasonContains(season, easternParts(ms).dateKey);
+  const configuredIds = new Set(config.faceitSources.map((source) => source.id));
+  const all = [];
+  const seen = new Set();
+  for (const source of seasonSources(config.faceitSources, await listStoredMatches(), inSeason)) {
+    const sourceMatches = configuredIds.has(source.id)
+      ? await faceit.getMatchesForSource(source)
+      : await faceit.getMatchesForSource(source).catch((error) => {
+        console.warn(`[Prep] Could not read earlier FACEIT source ${source.name} (${source.id}): ${error.message}`);
+        return [];
+      });
+    for (const match of sourceMatches) {
+      if (seen.has(match.id)) continue;
+      seen.add(match.id);
+      all.push(match);
+    }
+  }
   const matches = all.filter((match) => {
     const ms = prepMatchTimeMs(match);
-    return !season || !ms || seasonContains(season, easternParts(ms).dateKey);
+    return !ms || inSeason(ms);
   });
   seasonMatchesCache = { at: Date.now(), matches };
   return matches;

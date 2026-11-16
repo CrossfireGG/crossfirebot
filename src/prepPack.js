@@ -104,6 +104,24 @@ export function matchTimeMs(match) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+// The FACEIT competitions a season's matches are read from: the configured sources, plus every
+// other championship or tournament the bot has a stored match of this season from. Once the Group
+// Stage is swapped out of FACEIT_SOURCES for the Playoffs, records and stats still count it.
+// `inSeason(ms)` says whether a match time is in the season.
+export function seasonSources(configured, storedMatches, inSeason = () => true) {
+  const sources = new Map();
+  for (const source of configured || []) if (source?.id) sources.set(source.id, source);
+  for (const entry of storedMatches || []) {
+    const match = entry?.match;
+    const source = match?.source;
+    if (!source?.id || sources.has(source.id) || !['championship', 'tournament'].includes(source.type)) continue;
+    const ms = matchTimeMs(match);
+    if (!ms || !inSeason(ms)) continue;
+    sources.set(source.id, { type: source.type, id: source.id, name: source.name || source.id });
+  }
+  return [...sources.values()];
+}
+
 const isFinished = (match) => /finished/i.test(String(match?.status || ''));
 
 // The team's view of one finished match: won?, series score, opponent, map scores (team first).
