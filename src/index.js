@@ -143,6 +143,7 @@ import { scheduleFaceitMatch } from './faceitSchedule.js';
 import { auditMissingCaptains, auditMissingPlayers, getTeamMappingScope, syncRolesFromSheet } from './sheetRoles.js';
 import { startWebhookServer } from './webhookServer.js';
 import { applyVetoAction, chooseFirstAction, createVeto, expectedVetoAction } from './vetoEngine.js';
+import { derivePlayoffSeedMap } from './playoffSeeds.js';
 import {
   STREAM_ACTIVE_STATUSES,
   STREAM_STAFF_ACTION_STATUSES,
@@ -321,6 +322,7 @@ const faceit = new FaceitClient(
 );
 const scl = new SclClient(config.sclApiKey);
 const sclMessageUpdateQueues = new Map();
+const playoffSeedCache = new Map();
 let webhookServer = null;
 let operationsTimer = null;
 let prepTimer = null;
@@ -9277,10 +9279,18 @@ async function startVetoForStoredMatch(stored, channel, actorId = null, force = 
     : configuredAdvantage && configuredAdvantage === normalizeTeamKey(stored.match.teamB)
       ? 'teamB'
       : null;
+  const configuredTeamASeed = config.vetoSeeds.get(normalizeTeamKey(stored.match.teamA));
+  const configuredTeamBSeed = config.vetoSeeds.get(normalizeTeamKey(stored.match.teamB));
+  const needsAutomaticSeeds = !(existing?.teamASeed || configuredTeamASeed) ||
+    !(existing?.teamBSeed || configuredTeamBSeed);
+  const automaticSeeds = needsAutomaticSeeds
+    ? await getAutomaticPlayoffSeeds(stored.match)
+    : null;
   const seeds = {
-    teamA: existing?.teamASeed || config.vetoSeeds.get(normalizeTeamKey(stored.match.teamA)),
-    teamB: existing?.teamBSeed || config.vetoSeeds.get(normalizeTeamKey(stored.match.teamB)),
-    source: existing?.seedSource || 'configured tournament seed table'
+    teamA: existing?.teamASeed || configuredTeamASeed || automaticSeeds?.teamA,
+    teamB: existing?.teamBSeed || configuredTeamBSeed || automaticSeeds?.teamB,
+    source: existing?.seedSource ||
+      (configuredTeamASeed && configuredTeamBSeed ? 'configured tournament seed table' : automaticSeeds?.source)
   };
   const veto = createVeto({
     match: stored.match,
@@ -9296,6 +9306,27 @@ async function startVetoForStoredMatch(stored, channel, actorId = null, force = 
   const updated = await saveVeto({ ...saved, messageId: message.id }, saved.version);
   await appendAuditLog({ type: 'veto_start', matchId: stored.match.id, actorId, format, seedSource: seeds.source });
   return updated;
+}
+
+async function getAutomaticPlayoffSeeds(match) {
+  const sourceId = match?.source?.id;
+  const source = config.faceitSources.find((entry) => entry.id === sourceId);
+  if (!source) return null;
+
+  if (!playoffSeedCache.has(sourceId)) {
+    playoffSeedCache.set(sourceId, faceit.getMatchesForSource(source)
+      .then((matches) => derivePlayoffSeedMap(matches.map(normalizeConfiguredMatch)))
+      .catch((error) => {
+        playoffSeedCache.delete(sourceId);
+        throw error;
+      }));
+  }
+
+  const seedMap = await playoffSeedCache.get(sourceId);
+  const teamA = seedMap.get(normalizeTeamKey(match.teamA));
+  const teamB = seedMap.get(normalizeTeamKey(match.teamB));
+  if (!teamA || !teamB || teamA === teamB) return null;
+  return { teamA, teamB, source: 'FACEIT playoff bracket seeding' };
 }
 
 async function handleVetoFirstChoice(interaction) {
