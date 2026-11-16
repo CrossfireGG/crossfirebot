@@ -689,6 +689,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleMyCastsShare(interaction);
       return;
     }
+    if (interaction.isButton() && interaction.customId.startsWith('prep_post:')) {
+      await handlePrepPostButton(interaction);
+      return;
+    }
     if (interaction.isButton() && interaction.customId.startsWith('stream_live:')) {
       await handleStreamLiveButton(interaction);
       return;
@@ -11464,17 +11468,53 @@ function prepChangeNote(previousSignature, nextSignature, vetoState) {
   return changes.length ? `🔄 **Updated <t:${Math.floor(Date.now() / 1000)}:R>: ${changes.join(' and ')}.**` : null;
 }
 
-// The operations tick and the 30-second prep timer both call this; a run still in progress makes
-// the other skip, so a post or a "maps locked" reply can't go out twice.
-let prepPacksRunning = false;
+// The operations tick, the 30-second prep timer and the "Post" button all post prep packs. Only one
+// runs at a time, so a post or a "maps locked" reply can't go out twice: a timer run skips while
+// another is in progress, a button press waits for it.
+let prepPacksRunning = null;
+async function withPrepLock(task) {
+  while (prepPacksRunning) await prepPacksRunning.catch(() => null);
+  const run = task();
+  prepPacksRunning = run;
+  try {
+    return await run;
+  } finally {
+    if (prepPacksRunning === run) prepPacksRunning = null;
+  }
+}
+
 async function runPrepPacks(now = Date.now()) {
   if (prepPacksRunning) return;
-  prepPacksRunning = true;
-  try {
-    await postDuePrepPacks(now);
-  } finally {
-    prepPacksRunning = false;
+  await withPrepLock(() => postDuePrepPacks(now));
+}
+
+function prepCrewIds(coverage) {
+  return [...new Set([...(coverage?.crew?.casters || []), coverage?.crew?.producer, coverage?.crew?.observer].filter(Boolean))];
+}
+
+// Posts a prep pack in `channel`: the pack, team notes as replies (only for teams that have some)
+// and, when the maps are already in, the maps reply. A main stream match's coverage then points at
+// this post, so lineup and map changes edit it. `ping`: the casters on the pack, the crew on the maps.
+async function sendPrepPack(channel, pack, { coverage = null, matchup, ping = true, now = Date.now() } = {}) {
+  const casters = ping ? (coverage?.crew?.casters || []).filter(Boolean) : [];
+  const message = await channel.send({
+    content: `🎙️ Prep for **${matchup}**${coverage ? ' (main stream)' : ''}${casters.length ? ` · ${casters.map((id) => `<@${id}>`).join(' ')}` : ''}`,
+    embeds: prepEmbeds(pack),
+    allowedMentions: { parse: [], users: casters }
+  }).catch(() => null);
+  if (!message) return null;
+  for (const card of pack.notes || []) {
+    await channel.send({ embeds: prepEmbeds({ embeds: [card] }, { footer: false }), reply: { messageReference: message.id, failIfNotExists: false }, allowedMentions: { parse: [], repliedUser: false } }).catch(() => null);
   }
+  if (coverage) {
+    await saveMainStreamCoverage(coverage.matchId, { prepChannelId: channel.id, prepMessageId: message.id, prepSignature: pack.signature, prepCheckedAt: new Date(now).toISOString() });
+  }
+  // Maps already locked (e.g. a playoff veto done early): the crew gets the maps ping now.
+  if (pack.maps.length) {
+    const posted = { ...(coverage || {}), matchup, prepChannelId: channel.id, prepMessageId: message.id };
+    await replyToPrep(posted, mapsLockedText(posted, pack, false), ping ? prepCrewIds(coverage) : [], pack.mapFacts ? [pack.mapFacts] : []);
+  }
+  return message;
 }
 
 async function postDuePrepPacks(now = Date.now()) {
@@ -11482,7 +11522,7 @@ async function postDuePrepPacks(now = Date.now()) {
   const leadMs = config.prepLeadMinutes * 60 * 1000;
   for (const { coverage, startMs } of await crewBookings()) {
     if (now < startMs - leadMs || now > startMs + PREP_UPDATE_UNTIL_MS) continue;
-    const crewIds = [...new Set([...(coverage.crew?.casters || []), coverage.crew?.producer, coverage.crew?.observer].filter(Boolean))];
+    const crewIds = prepCrewIds(coverage);
 
     // The basic pack goes up PREP_LEAD_MINUTES before the start and pings only the casters.
     if (!coverage.prepMessageId) {
@@ -11494,22 +11534,8 @@ async function postDuePrepPacks(now = Date.now()) {
         return null;
       });
       if (!pack) continue;
-      const casters = (coverage.crew?.casters || []).filter(Boolean);
-      const message = await channel.send({
-        content: `🎙️ Prep for **${coverage.matchup}** (main stream)${casters.length ? ` · ${casters.map((id) => `<@${id}>`).join(' ')}` : ''}`,
-        embeds: prepEmbeds(pack),
-        allowedMentions: { parse: [], users: casters }
-      }).catch(() => null);
+      const message = await sendPrepPack(channel, pack, { coverage, matchup: coverage.matchup, now });
       if (!message) continue;
-      // Team notes (pronunciation, notes) as their own replies, only for teams that have some.
-      for (const card of pack.notes || []) {
-        await channel.send({ embeds: prepEmbeds({ embeds: [card] }, { footer: false }), reply: { messageReference: message.id, failIfNotExists: false }, allowedMentions: { parse: [], repliedUser: false } }).catch(() => null);
-      }
-      await saveMainStreamCoverage(coverage.matchId, { prepChannelId: channel.id, prepMessageId: message.id, prepSignature: pack.signature, prepCheckedAt: new Date(now).toISOString() });
-      // Maps already locked (e.g. a playoff veto done early): the crew gets the maps ping now.
-      if (pack.maps.length) {
-        await replyToPrep({ ...coverage, prepChannelId: channel.id, prepMessageId: message.id }, mapsLockedText(coverage, pack, false), crewIds, pack.mapFacts ? [pack.mapFacts] : []);
-      }
       await appendAuditLog({ type: 'prep_pack_posted', matchId: coverage.matchId }).catch(() => null);
       continue;
     }
@@ -11580,12 +11606,60 @@ async function handlePrepCommand(interaction) {
   }
   try {
     const pack = await buildPrepForMatch(parsed.matchId);
-    await interaction.editReply({ embeds: prepEmbeds(pack) });
+    // A button to post it in the prep channel, for when the automatic post failed or came out wrong.
+    const channel = config.prepChannelId ? await client.channels.fetch(config.prepChannelId).catch(() => null) : null;
+    const coverage = await getMainStreamCoverage(parsed.matchId);
+    const components = channel?.isTextBased?.()
+      ? [new ActionRowBuilder().addComponents(new ButtonBuilder()
+        .setCustomId(`prep_post:${parsed.matchId}`)
+        .setLabel(`${coverage?.prepMessageId ? 'Replace the post' : 'Post'} in #${channel.name}`.slice(0, 80))
+        .setStyle(ButtonStyle.Primary))]
+      : [];
+    await interaction.editReply({ embeds: prepEmbeds(pack), components });
     for (const card of [...(pack.notes || []), pack.mapFacts].filter(Boolean)) {
       await interaction.followUp({ embeds: prepEmbeds({ embeds: [card] }, { footer: false }), ephemeral: true }).catch(() => null);
     }
   } catch (error) {
     await interaction.editReply(`Couldn't build the prep pack: ${error.message || error}`.slice(0, 2000));
+  }
+}
+
+// "Post in #prep" under a /cf prep reply: builds the pack fresh and posts it in the prep channel.
+// For a main stream match that already has a prep post, the old post is edited to link the new one
+// and the new one gets the lineup and map updates from now on. Casters are pinged only when there
+// was no post yet (they had the first ping already).
+async function handlePrepPostButton(interaction) {
+  if (!hasProdRole(interaction.member) && !canManageStreamRequests(interaction.member)) {
+    await interaction.reply({ content: 'Only the production team and stream staff can post prep packs.', ephemeral: true });
+    return;
+  }
+  const matchId = interaction.customId.slice('prep_post:'.length);
+  await interaction.deferUpdate();
+  try {
+    const result = await withPrepLock(async () => {
+      const channel = config.prepChannelId ? await client.channels.fetch(config.prepChannelId).catch(() => null) : null;
+      if (!channel?.isTextBased?.()) throw new Error('the bot can\'t see the prep channel.');
+      const pack = await buildPrepForMatch(matchId);
+      const coverage = await getMainStreamCoverage(matchId);
+      const matchup = coverage?.matchup || pack.social.form.map((team) => team.name).join(' vs ');
+      const message = await sendPrepPack(channel, pack, { coverage, matchup, ping: !coverage?.prepMessageId });
+      if (!message) throw new Error(`Discord didn't take the post. Check the bot can send messages and embeds in #${channel.name}.`);
+      if (coverage?.prepMessageId) {
+        const oldChannel = await client.channels.fetch(coverage.prepChannelId).catch(() => null);
+        const old = oldChannel?.isTextBased?.() ? await oldChannel.messages.fetch(coverage.prepMessageId).catch(() => null) : null;
+        await old?.edit({ content: `↪️ Reposted by <@${interaction.user.id}>: ${message.url}`, embeds: [], allowedMentions: { parse: [] } }).catch(() => null);
+      }
+      return { channel, message, replaced: coverage?.prepMessageId || null };
+    });
+    await appendAuditLog({ type: 'prep_pack_posted_manually', matchId, actorId: interaction.user.id, messageId: result.message.id, replaced: result.replaced }).catch(() => null);
+    await interaction.editReply({
+      components: [new ActionRowBuilder().addComponents(new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel(`Posted in #${result.channel.name}`.slice(0, 80))
+        .setURL(result.message.url))]
+    });
+  } catch (error) {
+    await interaction.followUp({ content: `Couldn't post the prep pack: ${error.message || error}`.slice(0, 2000), ephemeral: true }).catch(() => null);
   }
 }
 
