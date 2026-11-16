@@ -560,14 +560,14 @@ The first time the bot starts with this on, it makes a **🔊 Voice** category w
 
 ## Playoff bracket picks (`/picks`)
 
-The brackets and their scores live on the website (`/picks`, `/picks/leaderboard`). The bot stores no picks; it reads the site's public API (`GET /api/picks/<PICKS_EVENT_ID>` and `/all`, no key) and posts in the announcements channel:
+The brackets and their scores live on the website (`/picks`, `/picks/leaderboard`). The bot stores no picks; it reads the site's public API (`GET /api/picks/<PICKS_EVENT_ID>` and `/all`, no key) and posts in the Picks channel (`PICKS_CHANNEL_ID`, default `1571928258319097958`):
 
 - **`/picks`** (anyone, only they see the reply): the link, the lock time in ET and how many brackets are in. After the lock: the leaderboard link and the top 3.
 - **Lock reminders** 24 hours, 3 hours and 30 minutes before the lock, with the current count. The lock time is read from the site at startup, every 10 minutes and again before each post, so it follows the site if the lock moves. A reminder the bot was down for is skipped (grace: 60, 30 and 10 minutes).
 - **"Picks are locked"** once, when the site reports the lock, with the final count.
-- **Standings**: after the lock the bot checks the leaderboard every 10 minutes and posts the top 10 (in the site's order) whenever anyone's decided picks change. When the bracket is over it posts the final top 10 with each person's champion pick and a count of champion picks per team.
+- **Info and leaderboard**: two plain messages kept in the channel and pinned (the bot needs Manage Messages). The info message explains the picks and has the full scoring table. The leaderboard message has the top 10 in the site's order (each name opens that bracket), ▲n / ▼n for names that moved since the last update, and the link to view every bracket. After the lock the bot checks the leaderboard after every finished playoff game: it asks FACEIT every 2 minutes how many playoff games are finished, and when that goes up it checks the site every minute until the new result is scored there (20 minutes at most), then edits the leaderboard. A check every 30 minutes is kept as a safety net; if FACEIT can't be read the site is checked every 10 minutes. Nothing here pings anyone. If either message is deleted, or the channel changes, it is posted again. When first place changes hands the bot adds a one-line note (no ping). When the bracket is over it posts the final top 10 with each person's champion pick and a count of champion picks per team.
 
-What was already posted is kept in the bot's data file, so a restart doesn't post anything twice. The posts go to `PICKS_CHANNEL_ID`, or with that empty to the one channel in the league server named "announcements" (nothing is posted if there are none or several). The bracket counts as over when every pick of the fullest bracket is decided; set `PICKS_TOTAL_MATCHES` to use a fixed number instead. `PICKS_ENABLED=false` turns the scheduled posts off.
+What was already posted is kept in the bot's data file, so a restart doesn't post anything twice. The bracket counts as over when every pick of the fullest bracket is decided; set `PICKS_TOTAL_MATCHES` to use a fixed number instead. `PICKS_ENABLED=false` turns the scheduled posts off.
 
 ## Important FACEIT Note
 

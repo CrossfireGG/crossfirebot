@@ -359,8 +359,8 @@ export function getConfig() {
     picksBaseUrl,
     picksEventId: process.env.PICKS_EVENT_ID?.trim() || 'crossfire-season-7',
     picksEventName: process.env.PICKS_EVENT_NAME?.trim() || 'Season 7 Playoffs',
-    // Where the posts go. Empty = the one channel in the league server named "announcements".
-    picksChannelId: parseSnowflakeList(process.env.PICKS_CHANNEL_ID || '')[0] || '',
+    // Where the posts go (default: the Picks channel).
+    picksChannelId: parseSnowflakeList(process.env.PICKS_CHANNEL_ID || '1571928258319097958')[0] || '',
     // Optional: how many decided picks mean the bracket is over. Empty = when every pick of the
     // fullest bracket is decided.
     picksTotalMatches: Math.max(0, Number(process.env.PICKS_TOTAL_MATCHES || 0) || 0),

@@ -482,7 +482,21 @@ const reactionRoles = createReactionRoles({ client, roles: config.arenaReactionR
 // Join To Create personal voice channels (src/voiceRooms.js).
 const voiceRooms = createVoiceRooms({ client, config, isAdminStaff: (member) => isAdminStaff(member) });
 // Playoff bracket picks from the website (src/picks.js): /picks, lock reminders, standings.
-const picks = createPicks({ client, config });
+const picks = createPicks({ client, config, finishedGames: countFinishedPlayoffGames });
+
+// How many playoff games are finished on FACEIT. The picks leaderboard is checked when this
+// goes up (after every game).
+async function countFinishedPlayoffGames() {
+  const sources = config.faceitSources.filter((source) => config.playoffSourceIds.includes(source.id));
+  if (!sources.length) throw new Error('no playoff FACEIT source is configured (PLAYOFF_SOURCE_IDS)');
+  let finished = 0;
+  for (const source of sources) {
+    for (const match of await faceit.getMatchesForSource(source)) {
+      if (/finished/i.test(String(match.status || ''))) finished += 1;
+    }
+  }
+  return finished;
+}
 
 client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
