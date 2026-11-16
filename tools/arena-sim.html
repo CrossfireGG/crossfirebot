@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arena simulator</title>
+<style>
+  :root { --bg:#313338; --side:#2b2d31; --card:#2b2d31; --text:#dbdee1; --muted:#949ba4; --line:#3f4147; --blurple:#5865f2; --grey:#4e5058; --green:#248046; --red:#da373c; --input:#1e1f22; --link:#00a8fc; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.4 "gg sans","Segoe UI",system-ui,sans-serif; display:flex; min-height:100vh; }
+  aside { width:330px; flex:none; background:var(--side); padding:16px; border-right:1px solid var(--line); overflow:auto; max-height:100vh; position:sticky; top:0; }
+  main { flex:1; padding:18px 24px 80px; min-width:0; }
+  h1 { font-size:16px; margin:0 0 4px; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:18px 0 8px; }
+  p.note { color:var(--muted); font-size:13px; margin:0 0 8px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }
+  input[type=text], input[type=number], select { width:100%; background:var(--input); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:7px 8px; font:inherit; }
+  button { font:inherit; font-weight:500; color:#fff; border:0; border-radius:4px; padding:7px 12px; cursor:pointer; background:var(--grey); }
+  button.primary { background:var(--blurple); } button.danger { background:var(--red); } button.success { background:var(--green); }
+  button:hover { filter:brightness(1.12); } button:disabled { opacity:.45; cursor:default; filter:none; }
+  .stack { display:grid; gap:6px; } .pair { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .check { display:flex; align-items:center; gap:8px; margin:6px 0; font-size:14px; color:var(--text); }
+  .tabs { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:14px; border-bottom:1px solid var(--line); padding-bottom:10px; }
+  .tabs button { background:none; color:var(--muted); } .tabs button.on { background:#404249; color:#fff; }
+  .tabs .count { font-size:11px; background:var(--input); border-radius:8px; padding:0 6px; margin-left:6px; color:var(--muted); }
+  .stage { background:var(--input); border:1px solid var(--line); border-radius:4px; padding:8px 10px; font-size:13px; margin-bottom:8px; }
+  .stage b { color:#fff; }
+  .msg { display:flex; gap:14px; max-width:820px; margin-bottom:18px; }
+  .avatar { width:40px; height:40px; border-radius:50%; background:#ff5500; flex:none; display:grid; place-items:center; font-weight:700; color:#fff; font-size:13px; }
+  .who { font-weight:600; } .tag { background:var(--blurple); color:#fff; font-size:10px; border-radius:3px; padding:1px 5px; margin-left:6px; vertical-align:middle; }
+  .meta { color:var(--muted); font-size:12px; margin-left:8px; }
+  .pin { color:#f0b232; font-size:12px; margin-left:8px; }
+  .body { white-space:pre-wrap; overflow-wrap:anywhere; }
+  .body .h1 { font-size:22px; font-weight:700; display:block; margin:4px 0; }
+  .body .h2 { font-size:18px; font-weight:700; display:block; margin:4px 0; }
+  .body .small { font-size:12px; color:var(--muted); }
+  .body pre { background:var(--input); border:1px solid var(--line); border-radius:4px; padding:8px; margin:4px 0; white-space:pre; overflow:auto; font-size:13px; }
+  .body code { background:var(--input); border-radius:3px; padding:0 4px; font-size:13px; }
+  a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
+  .embed { margin-top:6px; background:var(--card); border-left:4px solid var(--blurple); border-radius:4px; padding:12px 16px; max-width:620px; }
+  .embed .title { font-weight:700; font-size:16px; margin-bottom:6px; }
+  .field { margin-top:10px; } .field .name { font-weight:700; font-size:14px; } .field .value { white-space:pre-wrap; font-size:14px; overflow-wrap:anywhere; }
+  .fields.inline { display:grid; grid-template-columns:1fr 1fr; gap:0 18px; }
+  .mention { background:#3c4270; color:#c9cdfb; border-radius:3px; padding:0 2px; font-weight:500; }
+  .time { background:#3a3c42; border-radius:3px; padding:0 3px; }
+  .rowb { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  .eph { max-width:820px; background:#2a2f45; border-left:4px solid var(--blurple); border-radius:4px; padding:10px 14px; margin-bottom:16px; }
+  .eph.bad { background:#3a2a2c; border-left-color:#f23f43; }
+  .eph small { display:block; color:var(--muted); margin-top:6px; }
+  .empty { color:var(--muted); }
+  .log div { padding:3px 0; border-bottom:1px solid var(--line); font-size:14px; }
+  @media (max-width: 860px) { body { flex-direction:column; } aside { width:auto; max-height:none; position:static; border-right:0; border-bottom:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<aside>
+  <h1>Arena simulator</h1>
+  <p class="note">Runs the bot's real Arena code with real players and history from the FACEIT hub. Nothing is posted to Discord.</p>
+
+  <h2>A match, step by step</h2>
+  <div class="stage" id="stage"></div>
+  <div class="stack">
+    <button class="primary" id="newMatch">1. A match appears on FACEIT (captain draft)</button>
+    <button class="primary" id="draftDone">2. Draft finished</button>
+    <button id="mapPicked">3. Map and server picked, game live</button>
+    <label class="check"><input type="checkbox" id="carry" checked> A player on the losing team carries (loss protection)</label>
+    <label class="check"><input type="checkbox" id="statsLater"> FACEIT has no stats yet when it ends</label>
+    <div class="pair">
+      <button class="success" id="winA">4. Team 1 wins</button>
+      <button class="success" id="winB">4. Team 2 wins</button>
+    </div>
+    <button id="statsArrive">5. The stats arrive</button>
+    <button class="danger" id="cancel">Cancel the match</button>
+  </div>
+
+  <h2>Queue voice channel</h2>
+  <div class="pair"><button id="queueJoin">Someone joins</button><button id="queueLeave">Someone leaves</button></div>
+
+  <h2>Time</h2>
+  <div class="stage" id="clock"></div>
+  <div class="stack">
+    <div class="pair"><input type="number" id="days" value="10" min="1" max="60"><button id="skipDays">Skip days (daily decay)</button></div>
+    <button id="skipMonday">Skip to Monday noon (weekly recap)</button>
+  </div>
+
+  <h2>Commands</h2>
+  <label>Player (a FACEIT name; empty = you)</label>
+  <input type="text" id="player" list="players"><datalist id="players"></datalist>
+  <label>Season (empty = current)</label>
+  <input type="number" id="season" min="1">
+  <label class="check"><input type="checkbox" id="share"> share:true (post it for everyone)</label>
+  <div class="stack">
+    <button id="cmdStats">/arena stats</button>
+    <label class="check"><input type="checkbox" id="staff" checked> I am Staff / Arena Admin</label>
+    <button id="cmdHistory">/arena rating history</button>
+    <div class="pair"><input type="number" id="amount" value="150"><input type="text" id="reason" value="event prize"></div>
+    <button id="cmdAdjust">/arena rating adjust</button>
+    <div class="pair"><button id="cmdBan">/arena rating ban</button><button id="cmdUnban">…ban banned:false</button></div>
+    <button id="cmdRecalc">/arena rating recalc</button>
+  </div>
+</aside>
+<main>
+  <div class="tabs" id="tabs"></div>
+  <div id="eph"></div>
+  <div id="view"></div>
+</main>
+<script>
+var $ = function (id) { return document.getElementById(id); };
+var state = null;
+var tab = 'games';
+var notice = null;
+var TABS = [
+  ['games', '# 🎮┃arena-games'],
+  ['data', '# 🤖┃arena-data'],
+  ['voice', '# team voice chat'],
+  ['eph', 'Command replies'],
+  ['roles', 'Roles']
+];
+
+function esc(text) { var d = document.createElement('div'); d.textContent = text == null ? '' : String(text); return d.innerHTML; }
+
+// Discord formatting: headings, small text, code blocks, bold, italics, links, mentions, times.
+function md(text) {
+  var html = esc(text);
+  html = html.replace(/```([\s\S]*?)```/g, function (all, code) { return '<pre>' + code.replace(/^\n/, '') + '</pre>'; });
+  html = html.replace(/^# (.+)$/gm, '<span class="h1">$1</span>');
+  html = html.replace(/^## (.+)$/gm, '<span class="h2">$1</span>');
+  html = html.replace(/^-# (.+)$/gm, '<span class="small">$1</span>');
+  html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  html = html.replace(/\[([^\]\n]+)\]\(&lt;([^)\s]+?)&gt;\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  html = html.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  html = html.replace(/&lt;(https?:[^&\s]+)&gt;/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  html = html.replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>');
+  html = html.replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,]|$)/gm, '$1<i>$2</i>');
+  html = html.replace(/&lt;@&amp;(\w+)&gt;/g, function (all, id) { return '<span class="mention">@' + esc((state && state.names.roles[id]) || 'role') + '</span>'; });
+  html = html.replace(/&lt;@!?(\w+)&gt;/g, function (all, id) { return '<span class="mention">@' + esc((state && state.names.users[id]) || 'member') + '</span>'; });
+  html = html.replace(/&lt;#(\w+)&gt;/g, function (all, id) { return '<span class="mention">#' + esc((state && state.names.channels[id]) || 'channel') + '</span>'; });
+  html = html.replace(/&lt;t:(\d+):([A-Za-z])&gt;/g, function (all, seconds, style) {
+    var ms = Number(seconds) * 1000;
+    if (style === 'R') return '<span class="time">' + esc(relative(ms)) + '</span>';
+    return '<span class="time">' + esc(new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })) + '</span>';
+  });
+  return html.replace(/\\([\\*_~`|>])/g, '$1');
+}
+
+function relative(ms) {
+  var diff = Math.round((ms - (state ? state.clock : Date.now())) / 1000);
+  var abs = Math.abs(diff);
+  var text = abs < 60 ? abs + ' seconds' : abs < 3600 ? Math.round(abs / 60) + ' minutes' : abs < 86400 ? Math.round(abs / 3600) + ' hours' : Math.round(abs / 86400) + ' days';
+  return diff >= 0 ? 'in ' + text : text + ' ago';
+}
+
+function messageHtml(m, withButtons) {
+  var html = '<div class="msg"><div class="avatar">CF</div><div style="min-width:0;flex:1"><span class="who">CROSSFIRE Bot</span><span class="tag">APP</span>'
+    + (m.pinned ? '<span class="pin">📌 pinned</span>' : '')
+    + (m.edits ? '<span class="meta">edited ' + m.edits + ' time' + (m.edits === 1 ? '' : 's') + '</span>' : '');
+  if (m.content) html += '<div class="body">' + md(m.content) + '</div>';
+  if (m.embed) {
+    var color = '#' + ('000000' + Number(m.embed.color || 0x5865f2).toString(16)).slice(-6);
+    var inline = m.embed.fields.length > 1 && m.embed.fields.every(function (f) { return f.inline; });
+    html += '<div class="embed" style="border-left-color:' + color + '"><div class="title">' + md(m.embed.title || '') + '</div><div class="body">' + md(m.embed.description || '') + '</div>'
+      + '<div class="fields' + (inline ? ' inline' : '') + '">' + m.embed.fields.map(function (f) { return '<div class="field"><div class="name">' + md(f.name) + '</div><div class="value">' + md(f.value) + '</div></div>'; }).join('') + '</div></div>';
+  }
+  if (withButtons && m.buttons && m.buttons.length) html += '<div class="rowb" data-buttons="1"></div>';
+  return html + '</div></div>';
+}
+
+function api(body) {
+  return fetch('/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
+    .then(function (response) { return response.json(); })
+    .then(function (data) { state = data; notice = data.error || null; render(); return data; });
+}
+
+function act(body, goTo) {
+  document.body.style.cursor = 'progress';
+  return api(body).then(function (data) { document.body.style.cursor = ''; if (goTo && !data.error) { tab = goTo; render(); } return data; });
+}
+
+function command(body) {
+  body.action = 'command';
+  body.staff = $('staff').checked;
+  return act(body, 'eph');
+}
+
+function render() {
+  if (!state) return;
+  var by = function (id) { return state.messages.filter(function (m) { return m.channelId === id; }); };
+  var lists = { games: by('games'), data: by('data'), voice: state.messages.filter(function (m) { return m.channelId === 'voiceA' || m.channelId === 'voiceB'; }) };
+  $('tabs').innerHTML = '';
+  TABS.forEach(function (entry) {
+    var b = document.createElement('button');
+    var count = entry[0] === 'eph' ? state.ephemeral.length : entry[0] === 'roles' ? state.roleLog.length : lists[entry[0]].length;
+    b.className = entry[0] === tab ? 'on' : '';
+    b.innerHTML = esc(entry[1]) + '<span class="count">' + count + '</span>';
+    b.onclick = function () { tab = entry[0]; render(); };
+    $('tabs').appendChild(b);
+  });
+  $('eph').innerHTML = notice ? '<div class="eph bad">' + esc(notice) + '</div>' : (!state.ready ? '<div class="eph bad">The simulator needs FACEIT_API_KEY in .env to read the hub.</div>' : '');
+  var stages = { none: 'No match yet. Press <b>1</b>.', drafting: '<b>Captain draft</b> on FACEIT. It shows on the live board as drafting.', live: '<b>Arena ' + state.matchNumber + ' is live:</b> ' + esc(state.teams.join(' vs ')), waiting: '<b>Finished</b>, waiting for FACEIT stats. Press <b>5</b>.', done: 'Match over. Press <b>1</b> for another.' };
+  $('stage').innerHTML = stages[state.stage] || '';
+  $('clock').innerHTML = 'Bot clock: <b>' + esc(new Date(state.clock).toLocaleString('en-US', { timeZone: 'America/Chicago', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</b> (Chicago)';
+  $('newMatch').disabled = !(state.stage === 'none' || state.stage === 'done');
+  $('draftDone').disabled = state.stage !== 'drafting';
+  $('mapPicked').disabled = state.stage !== 'live';
+  $('winA').disabled = $('winB').disabled = state.stage !== 'live';
+  $('statsArrive').disabled = state.stage !== 'waiting';
+  $('cancel').disabled = !(state.stage === 'drafting' || state.stage === 'live');
+  if (state.teams.length) { $('winA').textContent = '4. ' + state.teams[0] + ' wins'; $('winB').textContent = '4. ' + state.teams[1] + ' wins'; }
+  $('players').innerHTML = state.simPlayers.concat(state.players).map(function (name) { return '<option value="' + esc(name) + '">'; }).join('');
+
+  var view = $('view');
+  if (tab === 'roles') {
+    view.innerHTML = '<p class="note">Rank roles the bot makes, gives and takes away. Only linked players get roles; in the simulator a few of the match\'s players are linked to pretend Discord accounts.</p><div class="log">'
+      + (state.roleLog.length ? state.roleLog.map(function (line) { return '<div>' + esc(line) + '</div>'; }).join('') : '<p class="empty">No role changes yet. Start a match so some players are linked.</p>') + '</div>';
+    return;
+  }
+  if (tab === 'eph') {
+    if (!state.ephemeral.length) { view.innerHTML = '<p class="empty">Run a command on the left to see its reply here.</p>'; return; }
+    view.innerHTML = '';
+    state.ephemeral.forEach(function (m) {
+      var wrap = document.createElement('div');
+      wrap.innerHTML = '<p class="note">' + esc(m.label) + (m.shared ? ' · posted in the channel for everyone' : ' · only you can see this') + '</p>' + messageHtml(m, true);
+      var row = wrap.querySelector('[data-buttons]');
+      if (row) m.buttons.forEach(function (button) {
+        var b = document.createElement('button');
+        b.textContent = button.label;
+        b.disabled = button.disabled;
+        b.onclick = function () { command({ customId: button.customId, label: m.label }); };
+        row.appendChild(b);
+      });
+      view.appendChild(wrap);
+    });
+    return;
+  }
+  var list = lists[tab];
+  if (!list.length) { view.innerHTML = '<p class="empty">Nothing here yet.</p>'; return; }
+  // Pinned messages first (they sit at the top of the channel's pins), then the rest in order.
+  var pinned = list.filter(function (m) { return m.pinned; });
+  var rest = list.filter(function (m) { return !m.pinned; });
+  view.innerHTML = (pinned.length ? '<h2>Pinned</h2>' + pinned.map(function (m) { return messageHtml(m); }).join('') + '<h2>Messages</h2>' : '')
+    + (rest.length ? rest.map(function (m) { return messageHtml(m); }).join('') : '<p class="empty">No other messages yet.</p>');
+}
+
+$('newMatch').onclick = function () { act({ action: 'newMatch' }, 'games'); };
+$('draftDone').onclick = function () { act({ action: 'draftDone' }, 'games'); };
+$('mapPicked').onclick = function () { act({ action: 'mapPicked' }, 'games'); };
+$('winA').onclick = function () { act({ action: 'finish', winner: 0, carry: $('carry').checked, statsLater: $('statsLater').checked }, 'games'); };
+$('winB').onclick = function () { act({ action: 'finish', winner: 1, carry: $('carry').checked, statsLater: $('statsLater').checked }, 'games'); };
+$('statsArrive').onclick = function () { act({ action: 'statsArrive' }, 'games'); };
+$('cancel').onclick = function () { act({ action: 'cancel' }, 'games'); };
+$('queueJoin').onclick = function () { act({ action: 'queue' }, 'games'); };
+$('queueLeave').onclick = function () { act({ action: 'queue', leave: true }, 'games'); };
+$('skipDays').onclick = function () { act({ action: 'skipDays', days: $('days').value }, 'data'); };
+$('skipMonday').onclick = function () { act({ action: 'skipToMonday' }, 'data'); };
+var who = function () { return $('player').value.trim(); };
+$('cmdStats').onclick = function () { command({ command: 'stats', label: '/arena stats' + (who() ? ' player:' + who() : ''), options: { player: who(), season: $('season').value, share: $('share').checked } }); };
+$('cmdHistory').onclick = function () { command({ command: 'rating', sub: 'history', label: '/arena rating history player:' + who(), options: { player: who() } }); };
+$('cmdAdjust').onclick = function () { command({ command: 'rating', sub: 'adjust', label: '/arena rating adjust player:' + who() + ' amount:' + $('amount').value, options: { player: who(), amount: $('amount').value, reason: $('reason').value } }); };
+$('cmdBan').onclick = function () { command({ command: 'rating', sub: 'ban', label: '/arena rating ban player:' + who(), options: { player: who() } }); };
+$('cmdUnban').onclick = function () { command({ command: 'rating', sub: 'ban', label: '/arena rating ban player:' + who() + ' banned:false', options: { player: who(), banned: false } }); };
+$('cmdRecalc').onclick = function () { command({ command: 'rating', sub: 'recalc', label: '/arena rating recalc', options: {} }); };
+api();
+</script>
+</body>
+</html>

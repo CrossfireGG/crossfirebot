@@ -25,6 +25,7 @@ import { commands } from './commands.js';
 import { getConfig } from './config.js';
 import { createArena } from './arena.js';
 import { createVoiceRooms } from './voiceRooms.js';
+import { createArenaHub } from './arenaHub.js';
 import { createPicks } from './picks.js';
 import { createReactionRoles, parseMessageLink } from './reactionRoles.js';
 import { FaceitClient } from './faceit.js';
@@ -473,13 +474,23 @@ const client = new Client({
   ]
 });
 
+// Arena match data in Discord (src/arenaHub.js): match record, match cards, live board, queue
+// status, CF rating and rank roles, season leaderboard, weekly recap, /arena stats and rating.
+const arenaHub = createArenaHub({
+  client,
+  faceit,
+  config,
+  // /arena rating: the bot's admin staff, 🛠️ Staff and Arena Admin.
+  isStaff: (member) => isAdminStaff(member) || config.arenaRatingStaffRoleIds.some((roleId) => member?.roles?.cache?.has?.(roleId))
+});
 // Crossfire Arena 10mans: team voice channels and auto-drag (src/arena.js).
 const arena = createArena({
   client,
   faceit,
   config,
   isAdminStaff: (member) => isAdminStaff(member),
-  memberForDiscordText: (guild, text) => rosterMemberFor(guild, text)
+  memberForDiscordText: (guild, text) => rosterMemberFor(guild, text),
+  hooks: arenaHub.hooks
 });
 // React-for-roles messages (src/reactionRoles.js): Crossfire Arena and Game Ping.
 const reactionRoles = createReactionRoles({ client, roles: config.arenaReactionRoles });
@@ -549,6 +560,7 @@ client.once(Events.ClientReady, async () => {
     prepTimer.unref?.();
   }
   arena.start();
+  arenaHub.start();
   await voiceRooms.start().catch((error) => console.error('Join To Create start failed:', error));
   reactionRoles.sync().catch((error) => console.error('Reaction roles catch-up failed:', error));
   picks.start().catch((error) => console.error('Bracket picks start failed:', error));
@@ -620,6 +632,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isChatInputCommand() && interaction.commandName === 'arena' && interaction.options.getSubcommand(false) === 'roles') {
       await handleArenaRolesCommand(interaction);
+      return;
+    }
+    if (/^arenar[hc]:/.test(interaction.customId || '')) {
+      await arenaHub.handleComponent(interaction);
+      return;
+    }
+    if (interaction.isChatInputCommand() && interaction.commandName === 'arena' && interaction.options.getSubcommandGroup(false) === 'rating') {
+      await arenaHub.handleRating(interaction);
+      return;
+    }
+    if (interaction.isChatInputCommand() && interaction.commandName === 'arena' && interaction.options.getSubcommand(false) === 'stats') {
+      await arenaHub.handleStats(interaction);
       return;
     }
     if (interaction.isChatInputCommand() && interaction.commandName === 'arena') {
@@ -1596,6 +1620,11 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
     movedByArena = await arena.onVoiceStateUpdate(oldState, newState);
   } catch (error) {
     console.error('Arena voice move failed:', error);
+  }
+  try {
+    arenaHub.onVoiceStateUpdate(oldState, newState);
+  } catch (error) {
+    console.error('Arena live board failed:', error);
   }
   try {
     await voiceRooms.onVoiceStateUpdate(oldState, newState, { movedElsewhere: movedByArena });

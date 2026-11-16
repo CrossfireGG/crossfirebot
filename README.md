@@ -527,9 +527,9 @@ Idempotency-Key: caster-request-{request_id}
 Every `ARENA_POLL_SECONDS` (20) the bot checks the FACEIT **Arena Queue** hub (`ARENA_HUB_ID`, `ae1514c3-…`; the games live there, not in the Crossfire Arena club). When a game's captain draft is done (both teams full and past captain pick):
 
 - Two team voice channels are made in the Arena category (`ARENA_CATEGORY_ID`), e.g. **🔵 Arena 12 · Team Zoro** and **🔴 Arena 12 · Team Beta**. Everyone can see them (so people know games are on, and who's playing), but only that team's linked players and the Arena staff roles (`ARENA_STAFF_ROLE_IDS`: 🛠️ Staff, Arena Admin, Arena Operations) can join each one; those roles can also use the staff `/arena` commands.
-- Linked players who are in any voice channel are dragged into their team's channel. Discord doesn't let bots pull in people who aren't in voice, so anyone on the game who **connects to voice later, or joins the Queue** (`ARENA_QUEUE_CHANNEL_ID`), is moved then. Moving between other channels on purpose is left alone.
+- Linked players who are in any voice channel are dragged into their team's channel. Discord doesn't let bots pull in people who aren't in voice, so anyone on the game who **connects to voice later, or joins the Queue** (`ARENA_QUEUE_CHANNEL_ID`), is moved then. **Each player is moved once per game.** After that the bot never moves them again, so someone who steps out to talk in another channel is left alone; they keep permission to join their team channel and can walk back in. If that permission is ever lost (edited by hand, a failed update) the bot puts it back on its next check.
 - Players the bot can't place get a post in arena-info (`ARENA_INFO_CHANNEL_ID`) with one button per unknown FACEIT name: **click your name**, you're linked and moved. The post shrinks as people claim and is deleted when the game ends.
-- When FACEIT says the game is finished or cancelled, everyone in the two channels goes back to the Queue and the channels are deleted.
+- When FACEIT says the game is finished or cancelled, the bot posts "Game over" in both channels' chat, waits 30 seconds (`ARENA_END_DELAY_SECONDS`), then moves everyone still in them back to the Queue and deletes the channels. `/arena cleanup` does it straight away.
 
 **Who is who.** A FACEIT account is linked to one Discord account (and the other way round) and remembered:
 1. League players: their Steam ID (FACEIT sends it with each game) is looked up on Roster Tracking and the Discord cell found in the server.
@@ -543,6 +543,49 @@ Claiming a FACEIT account that's already linked to someone else is refused and p
 **Commands:** `/arena link faceit:` (staff add `user:` to link or move someone else's link), `/arena unlink` (staff: `user:` or `faceit:`), `/arena whois`, and for staff `/arena status` (live games, channels, how many are linked), `/arena panel`, `/arena cleanup` (ends finished games and deletes leftover Arena channels; `everything:true` ends every game it's tracking). `ARENA_ENABLED=false` turns it all off.
 
 The bot needs Manage Channels, Manage Roles, Connect and Move Members in the Arena category (it's Administrator in the league server), and the Server Members and Voice States gateway intents (Voice States needs no approval).
+
+## Crossfire Arena: match data, live games, stats and CF Rating
+
+On top of the team voice channels, the bot keeps a record of every Arena match, runs a permanent rating, and shows the Arena in two channels. It reuses the Arena hub poller and the FACEIT ↔ Discord links from above (no second poller or link store). Nothing here pings anyone. `ARENA_HUB_FEATURES=false` turns it all off (the voice channels keep working).
+
+Everything is keyed by FACEIT player id: players who never linked Discord still get records and a rating; Discord is only used for roles and display.
+
+**Channel permissions (for staff):** in 🎮┃arena-games and 🤖┃arena-data, @everyone should be able to view and read but not send. The bot needs Send Messages, Embed Links and Manage Messages (to pin and edit), and Manage Roles for the rank roles.
+
+### Match record
+
+Every Arena hub match is saved in `arena-games.json` next to the bot's data file (`ARENA_GAMES_PATH` to move it): FACEIT match id, hub, Arena season (the FACEIT hub season it finished in), status (finished or cancelled), start and finish time, map, server, score, winner, FACEIT link, both teams with captain and players, each player's kills, deaths, assists, ADR, K/D, headshot % and MVPs, and voice activity (first joined a team channel, last seen in one, seconds). A match being drafted or played is tracked by the poller and saved when it ends. The rating fields of a match (team average before, win chance, each player's rating before/after/change, K, loss protection, placement) come from the rating replay below.
+
+Older matches are loaded from the FACEIT hub in the background, a page at a time, backing off when FACEIT says to slow down. FACEIT's list only goes back so far (about 550 matches, to May 2026, when this was written).
+
+### Match cards and pinned messages (🎮┃arena-games, `ARENA_GAMES_CHANNEL_ID`)
+
+- **Match card:** one message per match, edited in place. Posted when the draft finishes with both teams, captains, each player's rank and rating (or `Placing 3/5`), each team's average rating and win chance, the map once known and the FACEIT link. Finished: winner, score, map, top fragger and each player's rating change, e.g. `Name  Blaze II  +16 → 1201`, `Name  Inferno III  −8 → 1291 (loss protected, carried)`. Cancelled: "Match cancelled, no rating change." FACEIT's API gives no running score, so the score appears when the match ends. If FACEIT has no stats yet at the end, the card shows the result and the rating changes follow when the stats arrive (after 30 minutes the match is rated without them).
+- **Live games board:** one pinned message listing every match drafting or live, with a link to its card; "No Arena games live right now." when there are none.
+- **Queue status:** one pinned message. FACEIT's API does not return who is waiting in the hub queue (its queue endpoints refuse the hub), so this shows who is in the Queue voice channel.
+
+After a restart the bot finds its own pinned messages and reuses them.
+
+### CF Rating
+
+A permanent Arena rating per FACEIT account; it never resets with seasons. All numbers are settings (`ARENA_RATING_*`): start 1000, K 48 for the first 5 games (placement) and 32 after, decay grace 7 days, 5 a day, floor 1000, at most 100 per inactive stretch, Rank X from 1400 with 10 slots, loss protection at 1.30 and 1.15.
+
+- **Per match:** `expected = 1 / (1 + 10^((opponents' average − team average) / 400))`, from the ratings before the match. A win is `round(K × (1 − expected))`, a loss `round(−K × expected × multiplier)`. Performance never increases a win.
+- **Loss protection** (losing team only): the player's ADR ÷ their own team's average ADR. 1.30 or more halves the loss, 1.15 or more makes it three quarters. No ADR, no protection. A team that played short (a player on the roster with no line in FACEIT's stats) loses half for those who stayed; the one who left takes the full loss.
+- **Placement:** the first 5 rated games. The player is Unranked (`Placing N/5`), hidden from the leaderboard, has no rank role and does not decay.
+- **Ranks:** Spark, Ember, Blaze, Inferno (three divisions each, 50 points apart from 850 to 1350), Rank X (the top 10 ratings at 1400 or more; ties by wins, then games) and Rank X 👑 (first of those). 1400+ outside the top 10 is Inferno I. Banned and placement players never take a Rank X slot.
+- **Rank roles:** one role per rank (not per division); a linked player holds exactly one. Roles with those names are reused, missing ones are made and remembered (`ARENA_RANK_ROLE_IDS` names them instead). Roles are updated after every match, decay run and staff change.
+- **Rank-up posts** in 🤖┃arena-data when a player moves up into a higher rank ("Name just reached Blaze."); the first Rank X and the first Rank X 👑 ever get a bigger post. Drops and finishing placement are not posted, and nothing is posted for old matches.
+- **Decay:** once a day at `ARENA_DECAY_TIME` (05:00, `ARENA_TIME_ZONE` America/Chicago). Each whole day past the 7-day grace costs 5, never below 1000, at most 100 per stretch; a rated game ends the stretch. Each day's decay is a row in the rating history.
+
+Ratings are never edited in place: they are always the result of replaying every stored match, staff adjustment and day of decay in time order from 1000. A new result, the daily decay and a staff recalc all run the same replay, so the same data always gives the same ratings.
+
+### Leaderboard, recap and commands
+
+- **Season leaderboard:** a pinned message in 🤖┃arena-data (`ARENA_DATA_CHANNEL_ID`) with the FACEIT hub's current-season standings, each row with the player's CF rating and rank: `#1  Name  Rank X 👑 · 1452  (32–14)`. Top 25 (`ARENA_LEADERBOARD_SIZE`), placement and banned players hidden, edited after every match. Between seasons it shows the last season's final standings. It gives out no role: Rank X 👑 is the only "#1" role.
+- **Weekly recap:** Mondays at `ARENA_RECAP_TIME` (12:00) in 🤖┃arena-data, for the Monday-to-Sunday before, current Arena season only: most games, most wins, best win streak, top fragger (most kills), biggest rating gain and newly reached ranks. No post for a week without games.
+- **`/arena stats [player] [season]`** (`player:` an @mention or a FACEIT name, default you; only you see it unless `share:true`): FACEIT name and linked Discord, CF rating with rank and division (or `Placing N/5`), peak and the change over the last 5 games, all-time record, the chosen season's record and leaderboard position, the last 5 games with rating changes (🛡️ marks loss-protected ones) and a decay notice.
+- **Staff (`/arena rating …`, 🛠️ Staff and Arena Admin, `ARENA_RATING_STAFF_ROLE_IDS`):** `history player:` every rating change, paged; `adjust player: amount: reason:` adds or takes points (logged with who and why); `recalc` rebuilds every rating and posts a summary (players, lowest/median/highest, count per rank, top 10); `ban player:` hides a banned player from the leaderboard and Rank X while keeping their rating (`banned:false` undoes it; `ARENA_BANNED_FACEIT_IDS` does the same from config).
 
 ## Join To Create voice
 

@@ -51,7 +51,8 @@ function normalizeDb(db) {
     voiceRooms: { setup: db.voiceRooms?.setup || null, rooms: db.voiceRooms?.rooms || {} },
     reactionRoleMessages: db.reactionRoleMessages || {},
     picks: db.picks || {},
-    vetoSettings: db.vetoSettings || {}
+    vetoSettings: db.vetoSettings || {},
+    arenaHub: db.arenaHub || {}
   };
 }
 
@@ -974,6 +975,32 @@ export async function deleteArenaMatch(id) {
   return mutateDb((db) => {
     if (db.arenaMatches) delete db.arenaMatches[id];
     return true;
+  });
+}
+
+// Arena match data in Discord (src/arenaHub.js): the card message of each live match, the pinned
+// board, queue and leaderboard messages, the rank roles and who holds which, the last decay day
+// and weekly recap, how far the load of older matches has got, and finished matches still
+// waiting for their stats.
+//   { cards: { [matchId]: messageId }, pending: { [matchId]: { since, number, voice } }, backfill: { offset, done },
+//     boardMessageId, boardChannelId, queueMessageId, queueChannelId, leaderboardMessageId, leaderboardChannelId,
+//     rankRoles: { spark: roleId, ... }, rankRoleByDiscord: { [discordId]: rankKey }, lastDecayDay, lastRecapWeek }
+export async function getArenaHubState() {
+  const state = (await snapshot()).arenaHub || {};
+  return { ...state, cards: { ...(state.cards || {}) }, pending: { ...(state.pending || {}) } };
+}
+
+// cards and pending are merged by key; a null value removes that key.
+export async function saveArenaHubState(patch) {
+  return mutateDb((db) => {
+    const current = db.arenaHub || {};
+    const merge = (key) => {
+      const merged = { ...(current[key] || {}), ...(patch[key] || {}) };
+      for (const [id, value] of Object.entries(merged)) if (value === null || value === undefined) delete merged[id];
+      return merged;
+    };
+    db.arenaHub = { ...current, ...patch, cards: merge('cards'), pending: merge('pending') };
+    return { ...db.arenaHub };
   });
 }
 

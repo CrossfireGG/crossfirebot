@@ -273,6 +273,41 @@ export function getConfig() {
     arenaCategoryId: process.env.ARENA_CATEGORY_ID || '1457485148042821874',
     arenaQueueChannelId: process.env.ARENA_QUEUE_CHANNEL_ID || '1457486037151518770',
     arenaInfoChannelId: process.env.ARENA_INFO_CHANNEL_ID || '1457485691503251600',
+    // Arena games in Discord (src/arenaHub.js). arena-games gets a card per game and the pinned
+    // live board; arena-data gets the pinned leaderboard and the Monday recap.
+    // ARENA_HUB_FEATURES=false turns these off (the team voice channels keep working).
+    arenaHubFeatures: !/^(false|0|off|no)$/i.test(process.env.ARENA_HUB_FEATURES || ''),
+    arenaGamesChannelId: process.env.ARENA_GAMES_CHANNEL_ID || '1571983572116570122',
+    arenaDataChannelId: process.env.ARENA_DATA_CHANNEL_ID || '1571982492439683143',
+    // The clock the Monday recap and the daily decay run on, and their times (24-hour HH:MM).
+    arenaTimeZone: process.env.ARENA_TIME_ZONE?.trim() || 'America/Chicago',
+    arenaRecapTime: arenaClock(process.env.ARENA_RECAP_TIME, '12:00'),
+    arenaDecayTime: arenaClock(process.env.ARENA_DECAY_TIME, '05:00'),
+    // How many rows the pinned season leaderboard shows.
+    arenaLeaderboardSize: Math.min(40, Math.max(3, Number(process.env.ARENA_LEADERBOARD_SIZE || 25) || 25)),
+    // CF Rating: every number can be tuned here without touching the code.
+    arenaRating: {
+      startRating: arenaNumber('ARENA_RATING_START', 1000),
+      kPlacement: arenaNumber('ARENA_RATING_K_PLACEMENT', 48),
+      kNormal: arenaNumber('ARENA_RATING_K_NORMAL', 32),
+      placementGames: arenaNumber('ARENA_RATING_PLACEMENT_GAMES', 5),
+      decayGraceDays: arenaNumber('ARENA_RATING_DECAY_GRACE_DAYS', 7),
+      decayPerDay: arenaNumber('ARENA_RATING_DECAY_PER_DAY', 5),
+      decayFloor: arenaNumber('ARENA_RATING_DECAY_FLOOR', 1000),
+      decayMaxPerStretch: arenaNumber('ARENA_RATING_DECAY_MAX_PER_STRETCH', 100),
+      rankXMinRating: arenaNumber('ARENA_RATING_RANK_X_MIN', 1400),
+      rankXSlots: arenaNumber('ARENA_RATING_RANK_X_SLOTS', 10),
+      lossProt50At: arenaNumber('ARENA_RATING_LOSS_PROT_50_AT', 1.30),
+      lossProt75At: arenaNumber('ARENA_RATING_LOSS_PROT_75_AT', 1.15)
+    },
+    // The rank roles (Spark, Ember, Blaze, Inferno, Rank X, Rank X 👑) are found by name or made
+    // by the bot and remembered. ARENA_RANK_ROLE_IDS (spark=ID,ember=ID,...) names them instead.
+    arenaRankRoleIds: Object.fromEntries(String(process.env.ARENA_RANK_ROLE_IDS || '').split(/[,;]/).map((entry) => entry.split('=').map((part) => part.trim())).filter(([key, id]) => key && /^[0-9]{15,25}$/.test(id || ''))),
+    // Who may use /arena rating (besides the bot's admin staff): 🛠️ Staff and Arena Admin.
+    arenaRatingStaffRoleIds: parseCsvValue(process.env.ARENA_RATING_STAFF_ROLE_IDS || '1409219330855403660,1457619725390708890'),
+    // FACEIT player ids that are banned: rating kept, hidden from the leaderboard and Rank X
+    // (staff can also mark players with /arena rating ban).
+    arenaBannedFaceitIds: parseCsvValue(process.env.ARENA_BANNED_FACEIT_IDS || ''),
     // 🛠️ Staff, Arena Admin, Arena Operations: can join every Arena team channel and use the staff /arena commands.
     arenaStaffRoleIds: parseCsvValue(process.env.ARENA_STAFF_ROLE_IDS || '1409219330855403660,1457619725390708890,1472418870705913976'),
     // Where "someone tried to claim a FACEIT account that's already linked" goes (default: the
@@ -280,6 +315,9 @@ export function getConfig() {
     arenaStaffLogChannelId: process.env.ARENA_STAFF_LOG_CHANNEL_ID || '',
     arenaPollSeconds: Math.max(10, Number(process.env.ARENA_POLL_SECONDS || 20) || 20),
     arenaTeamSize: Math.max(1, Number(process.env.ARENA_TEAM_SIZE || 5) || 5),
+    // After a game ends the team channels stay this long, then everyone in them is moved to the
+    // Queue and the channels are deleted (0 = straight away).
+    arenaEndDelaySeconds: /^[0-9]+$/.test(String(process.env.ARENA_END_DELAY_SECONDS ?? '').trim()) ? Number(process.env.ARENA_END_DELAY_SECONDS) : 30,
     // Reaction roles on the /arena roles message: react to get the role, unreact to drop it.
     arenaReactionRoles: [
       { emoji: '🎮', roleId: process.env.ARENA_ROLE_ID || '1457613938844766300', label: 'Crossfire Arena', description: '' },
@@ -404,6 +442,16 @@ export function getConfig() {
     defaultTimezone: process.env.DEFAULT_TIMEZONE || 'America/New_York',
     reorganizeExistingMatchChannels: process.env.REORGANIZE_EXISTING_MATCH_CHANNELS === 'true'
   };
+}
+
+function arenaClock(value, fallback) {
+  const text = String(value || '').trim();
+  return /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(text) ? text : fallback;
+}
+
+function arenaNumber(name, fallback) {
+  const value = Number(String(process.env[name] ?? '').trim() || NaN);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
 function parseNamedNumbers(value) {

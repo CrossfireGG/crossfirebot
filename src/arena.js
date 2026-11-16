@@ -1,8 +1,9 @@
 // Crossfire Arena 10mans voice: when a game's draft is done on FACEIT, each team gets a private
 // voice channel in the Arena category (everyone can see it; only its players and Arena staff can join) and its
 // players are dragged in. Anyone on the game who connects to voice later, or walks into the
-// Queue, is moved to their team. When the game ends everyone goes back to the Queue and the two
-// channels are deleted.
+// Queue, is moved to their team. Each player is moved once per game: after that they can leave
+// and come back by themselves (they keep permission to join). 30 seconds after the game ends
+// everyone still in the channels goes back to the Queue and the two channels are deleted.
 //
 // Who is who: a FACEIT account is linked to a Discord account once and remembered. League players
 // are linked from Roster Tracking (SteamID64 -> Discord cell); others by their Discord name matching
@@ -35,6 +36,7 @@ import {
   parseFaceitNickname,
   parseRosterSteamDiscord
 } from './arenaLogic.js';
+import { prettyMapName } from './matchResult.js';
 import {
   deleteArenaMatch,
   incrementCounter,
@@ -59,7 +61,18 @@ const PLAYER_ALLOW = [
   PermissionFlagsBits.UseVAD
 ];
 
-export function createArena({ client, faceit, config, isAdminStaff = () => false, memberForDiscordText = async () => null }) {
+// hooks (optional, src/arenaHub.js): onSync(record, match) after each FACEIT check of a live
+// game, onEnd(record, status) once when a game is over, onPoll(ongoing) with every match FACEIT
+// lists as ongoing, after each check.
+export function createArena({ client, faceit, config, isAdminStaff = () => false, memberForDiscordText = async () => null, hooks = {} }) {
+  async function callHook(name, ...args) {
+    try {
+      await hooks[name]?.(...args);
+    } catch (error) {
+      console.warn(`[Arena] ${name} failed: ${error.message}`);
+    }
+  }
+
   let running = false;
   let active = new Map();
   let rosterCache = { at: 0, map: new Map() };
@@ -134,6 +147,7 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
       for (const record of records) {
         if (!seen.has(record.id)) await withLock(record.id, () => checkGone(guild, record.id));
       }
+      await callHook('onPoll', ongoing);
     } finally {
       running = false;
     }
@@ -222,7 +236,9 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
         if (!channel) continue;
         channels[team.faction] = channel.id;
         overwriteKeys[team.faction] = key;
-      } else if (overwriteKeys[team.faction] !== key) {
+      } else if (overwriteKeys[team.faction] !== key || !canAllRejoin(channel, members[team.faction])) {
+        // The roster changed, or someone's permission to join was lost (edited by hand, a failed
+        // update...): put it back, so a player who left the channel can always come back.
         const ok = await channel.permissionOverwrites.set(overwrites, `Crossfire Arena game ${record.number}: roster changed`)
           .then(() => true)
           .catch((error) => {
@@ -233,25 +249,43 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
       }
     }
 
-    // Drag each player once, the first time we know who they are and their channel exists.
-    // (After that, only connecting to voice or joining the Queue moves them; see onVoiceStateUpdate.)
-    const dragged = { ...(record.dragged || {}) };
+    // Each player is moved into their team channel once per game, the first time it can be
+    // done (now if they are in voice, otherwise when they connect or join the Queue; see
+    // onVoiceStateUpdate). After that they are never moved again, so someone who steps out to
+    // talk elsewhere is left alone. They keep permission to join back by themselves.
+    const moved = movedMap(record);
     for (const team of teams) {
       const channelId = channels[team.faction];
       if (!channelId) continue;
       for (const discordId of members[team.faction]) {
-        if (dragged[discordId] === channelId) continue;
-        dragged[discordId] = channelId;
-        await dragTo(guild, discordId, channelId);
+        if (moved[discordId]) continue;
+        if (await dragTo(guild, discordId, channelId)) moved[discordId] = true;
+      }
+    }
+
+    // Voice activity, per person: when they were first seen in a team channel this game, when
+    // they were last seen in one, and for how long (added up on every check). Saved with the
+    // match record.
+    const voice = { ...(record.voice || {}) };
+    const seenAt = new Date().toISOString();
+    const sinceLast = record.voiceAt ? Math.min((Date.now() - Date.parse(record.voiceAt)) / 1000, config.arenaPollSeconds * 2) : 0;
+    for (const channelId of Object.values(channels)) {
+      const channel = await guild.channels.fetch(channelId).catch(() => null);
+      for (const memberId of channel?.members?.keys?.() || []) {
+        const entry = voice[memberId] || { first: seenAt, s: 0 };
+        voice[memberId] = { first: entry.first, last: seenAt, s: Math.round((entry.s || 0) + sinceLast) };
       }
     }
 
     const next = {
       ...record,
       faceitUrl: arenaFaceitUrl(match) || record.faceitUrl,
+      map: prettyMapName(match.voting?.map?.pick?.[0] || '') || record.map || null,
       channels,
       overwriteKeys,
-      dragged,
+      moved,
+      voice,
+      voiceAt: new Date().toISOString(),
       members,
       teams: teams.map((team) => ({ faction: team.faction, label: team.label, players: team.players.map(({ playerId, nickname }) => ({ playerId, nickname })) })),
       missingSince: null
@@ -261,6 +295,7 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
     if (JSON.stringify(next) !== JSON.stringify(record)) {
       active.set(record.id, await saveArenaMatch(record.id, next));
     }
+    await callHook('onSync', next, match);
   }
 
   function teamOverwrites(guild, discordIds) {
@@ -279,11 +314,25 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
     ];
   }
 
+  // Who has had their one move this game: { [discordId]: true }. Games started before this was
+  // tracked recorded an attempt per player ("dragged"); those count, so nobody is pulled again.
+  function movedMap(record) {
+    if (record.moved) return { ...record.moved };
+    return Object.fromEntries(Object.keys(record.dragged || {}).map((discordId) => [discordId, true]));
+  }
+
+  // Every team member can still connect to their channel (their own permission entry is there).
+  function canAllRejoin(channel, discordIds) {
+    return discordIds.every((discordId) => channel.permissionOverwrites?.cache?.get(discordId)?.allow?.has(PermissionFlagsBits.Connect));
+  }
+
   // Moves someone who is in voice (anywhere in the server) into a channel. Discord doesn't let a
-  // bot pull in someone who isn't in voice, so they're left alone.
+  // bot pull in someone who isn't in voice, so they're left alone. True when they are in the
+  // channel afterwards (moved, or already there).
   async function dragTo(guild, discordId, channelId) {
     const state = guild.voiceStates.cache.get(discordId);
-    if (!state?.channelId || state.channelId === channelId) return false;
+    if (!state?.channelId) return false;
+    if (state.channelId === channelId) return true;
     return state.setChannel(channelId, 'Crossfire Arena: your team\'s voice channel')
       .then(() => true)
       .catch((error) => {
@@ -292,7 +341,39 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
       });
   }
 
-  async function endMatch(guild, record, status) {
+  // The game is over. The team channels stay for ARENA_END_DELAY_SECONDS (30) so people can
+  // finish talking; then everyone is moved to the Queue and the channels are deleted.
+  // { now: true } (staff cleanup) skips the wait.
+  async function endMatch(guild, record, status, { now = false } = {}) {
+    const delayMs = config.arenaEndDelaySeconds * 1000;
+    if (!now && delayMs > 0) {
+      const endingAt = Date.parse(record.endingAt || '') || 0;
+      if (!endingAt) {
+        const saved = await saveArenaMatch(record.id, { endingAt: new Date().toISOString(), endStatus: status });
+        active.set(record.id, saved);
+        console.log(`[Arena] game ${record.number} (${record.id}) ${String(status || 'over').toLowerCase()}: closing the channels in ${config.arenaEndDelaySeconds}s`);
+        for (const channelId of Object.values(record.channels || {})) {
+          const channel = await guild.channels.fetch(channelId).catch(() => null);
+          await channel?.send?.({
+            content: `🏁 Game over. This channel closes <t:${Math.floor((Date.now() + delayMs) / 1000)}:R>${config.arenaQueueChannelId ? ` and everyone in it is moved back to <#${config.arenaQueueChannelId}>` : ''}.`,
+            allowedMentions: { parse: [] }
+          }).catch(() => null);
+        }
+        await callHook('onEnd', saved, status);
+        // Don't wait for the next FACEIT check (every 20 s): close on time.
+        const timer = setTimeout(() => {
+          withLock(record.id, async () => {
+            const current = await currentRecord(record.id);
+            const currentGuild = current ? await arenaGuild() : null;
+            if (current && currentGuild) await endMatch(currentGuild, current, current.endStatus || status);
+          }).catch((error) => warn(`end:${record.id}`, `couldn't close game ${record.number}: ${error.message}`));
+        }, delayMs + 250);
+        timer.unref?.();
+        return;
+      }
+      if (Date.now() - endingAt < delayMs) return;
+    }
+    if (!record.endingAt) await callHook('onEnd', record, status);
     for (const channelId of Object.values(record.channels || {})) {
       const channel = await guild.channels.fetch(channelId).catch(() => null);
       if (!channel) continue;
@@ -554,12 +635,20 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
         if (!ids.includes(newState.id)) continue;
         const channelId = record.channels?.[faction];
         if (!channelId || newState.channelId === channelId) return false;
-        return newState.setChannel(channelId, 'Crossfire Arena: your team\'s voice channel')
-          .then(() => true)
-          .catch((error) => {
-            warn(`move:${newState.id}`, `couldn't move ${newState.id}: ${error.message}`);
-            return false;
-          });
+        // Only the first time this game. After their one move they come and go as they like.
+        if (record.endingAt || movedMap(record)[newState.id]) return false;
+        return withLock(record.id, async () => {
+          const current = await currentRecord(record.id);
+          if (!current || current.endingAt || movedMap(current)[newState.id]) return false;
+          const ok = await newState.setChannel(channelId, 'Crossfire Arena: your team\'s voice channel')
+            .then(() => true)
+            .catch((error) => {
+              warn(`move:${newState.id}`, `couldn't move ${newState.id}: ${error.message}`);
+              return false;
+            });
+          if (ok) active.set(current.id, await saveArenaMatch(current.id, { moved: { ...movedMap(current), [newState.id]: true } }));
+          return ok;
+        });
       }
     }
     return false;
@@ -664,7 +753,7 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
         await withLock(record.id, async () => {
           const match = everything ? null : await faceit.getMatchRaw(record.id).catch(() => null);
           if (everything || !match || arenaMatchOver(match.status)) {
-            await endMatch(guild, record, everything ? 'CLEANED UP' : (match?.status || 'GONE'));
+            await endMatch(guild, record, everything ? 'CLEANED UP' : (match?.status || 'GONE'), { now: true });
             ended += 1;
           }
         });

@@ -173,7 +173,18 @@ function fakeWorld() {
       overwrites,
       guild,
       deleted: false,
-      permissionOverwrites: { set: async (next) => { channel.overwrites = next; } },
+      sent: [],
+      send: async (payload) => { channel.sent.push(payload); },
+      permissionOverwrites: {
+        set: async (next) => { channel.overwrites = next; },
+        // Like discord.js: the channel's current permission entries, by id.
+        cache: {
+          get: (entryId) => {
+            const entry = channel.overwrites.find((candidate) => candidate.id === entryId);
+            return entry ? { allow: { has: (permission) => (entry.allow || []).includes(permission) } } : undefined;
+          }
+        }
+      },
       get members() {
         return new Map([...voice].filter(([, channelId]) => channelId === id).map(([memberId]) => [memberId, {
           id: memberId,
@@ -301,5 +312,101 @@ test('arena bot: draft done -> private team channels and drags; claim; late join
   assert.ok(teamA.deleted && teamB.deleted);
   for (const id of ['d1', 'd2', 'zoro', 'claimer']) assert.equal(world.voice.get(id), 'queue', `${id} is back in the Queue`);
   assert.equal(world.posts[0].deleted, true);
+  assert.deepEqual(await store.listArenaMatches(), []);
+});
+
+test('arena bot: one move per game, permission to rejoin, channels close 30 seconds after the game', async () => {
+  // The same store the Arena code uses (its data file was set by the test above).
+  const store = await import('../src/store.js');
+  await store.linkArenaPlayer({ playerId: 'a1', nickname: 'A-nick1', discordId: 'd1', source: 'self' });
+  await store.linkArenaPlayer({ playerId: 'b1', nickname: 'B-nick1', discordId: 'd2', source: 'self' });
+
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, text: async () => '' });
+  test.after?.(() => { globalThis.fetch = realFetch; });
+
+  const world = fakeWorld();
+  world.voice.set('d1', 'queue');
+  let match = faceitMatch({ status: 'VOTING' });
+  const faceit = {
+    getHubMatches: async () => (match.status === 'FINISHED' ? [] : [match]),
+    getMatchRaw: async () => match,
+    getPlayerByNickname: async () => null
+  };
+  const config = {
+    arenaEnabled: true,
+    arenaHubId: 'hub',
+    arenaCategoryId: 'cat',
+    arenaQueueChannelId: 'queue',
+    arenaInfoChannelId: 'info',
+    arenaStaffRoleIds: ['staff'],
+    arenaPollSeconds: 20,
+    arenaTeamSize: 5,
+    arenaEndDelaySeconds: 30,
+    rosterSpreadsheetId: 'sheet',
+    rosterSheetName: 'Roster Tracking'
+  };
+  const { createArena } = await import(`../src/arena.js?arenaOnce=${Date.now()}`);
+  const arena = createArena({ client: world.client, faceit, config });
+  const join = (id, from, to) => arena.onVoiceStateUpdate({ channelId: from }, {
+    id, channelId: to, guild: world.guild, setChannel: async (target) => { world.moves.push([id, target]); world.voice.set(id, target); }
+  });
+
+  await arena.tick();
+  const [teamA, teamB] = [...world.channels.values()];
+  assert.deepEqual(world.moves, [['d1', teamA.id]], 'd1 was in voice: moved once');
+
+  // d1 steps out to talk somewhere else, then walks through the Queue: never moved again.
+  world.voice.set('d1', 'general');
+  await join('d1', teamA.id, 'general');
+  world.voice.set('d1', 'queue');
+  await join('d1', 'general', 'queue');
+  await arena.tick();
+  world.voice.delete('d1');
+  world.voice.set('d1', 'general');
+  await join('d1', null, 'general');
+  assert.equal(world.moves.length, 1, 'one move per game, however they come back');
+
+  // ...but they can still join back by themselves, even if their permission was removed.
+  const canJoin = (channel, id) => Boolean(channel.overwrites.find((entry) => entry.id === id)?.allow?.includes(PermissionFlagsBits.Connect));
+  assert.equal(canJoin(teamA, 'd1'), true);
+  teamA.overwrites = teamA.overwrites.filter((entry) => entry.id !== 'd1');
+  assert.equal(canJoin(teamA, 'd1'), false);
+  await arena.tick();
+  assert.equal(canJoin(teamA, 'd1'), true, 'the bot puts the permission back on its next check');
+
+  // d2 was not in voice at the start: their one move happens when they connect.
+  world.voice.set('d2', 'general');
+  await join('d2', null, 'general');
+  assert.deepEqual(world.moves.at(-1), ['d2', teamB.id]);
+  world.voice.set('d2', 'queue');
+  await join('d2', teamB.id, 'queue');
+  assert.equal(world.moves.length, 2, 'and only that once');
+  world.voice.set('d2', teamB.id); // walks back in by themselves
+
+  // Game over: the channels stay for 30 seconds, with a notice in their chat.
+  world.voice.set('d1', teamA.id);
+  match = { ...match, status: 'FINISHED' };
+  await arena.tick();
+  assert.equal(world.channels.size, 2, 'nothing is closed yet');
+  assert.equal(world.voice.get('d1'), teamA.id);
+  assert.match(teamA.sent[0].content, /Game over\. This channel closes <t:\d+:R> and everyone in it is moved back to <#queue>/);
+  assert.equal(teamB.sent.length, 1);
+  await arena.tick();
+  assert.equal(world.channels.size, 2, 'still inside the 30 seconds');
+  assert.equal(teamA.sent.length, 1, 'the notice is posted once');
+  // Nobody is moved in during the last 30 seconds.
+  world.voice.set('d1', 'queue');
+  await join('d1', teamA.id, 'queue');
+  assert.equal(world.moves.length, 2);
+  world.voice.set('d1', teamA.id);
+
+  // 30 seconds later: everyone still in the channels goes to the Queue, channels deleted.
+  await store.saveArenaMatch('m1', { endingAt: new Date(Date.now() - 31_000).toISOString() });
+  await arena.tick();
+  assert.equal(world.channels.size, 0);
+  assert.ok(teamA.deleted && teamB.deleted);
+  assert.equal(world.voice.get('d1'), 'queue');
+  assert.equal(world.voice.get('d2'), 'queue');
   assert.deepEqual(await store.listArenaMatches(), []);
 });
