@@ -4,10 +4,11 @@
 //                  rating changes, voice activity); older matches are loaded from the FACEIT hub
 //   match cards    one message per match in arena-games, edited in place from draft to result
 //   live board     a pinned message in arena-games: every match drafting or live
-//   queue status   a pinned message in arena-games: who is in the Queue voice channel (FACEIT's
-//                  API does not say who is in its queue)
+//   queue status   off by default (ARENA_QUEUE_STATUS=true): FACEIT's API does not say who is in
+//                  its queue; when on, a pinned message shows the Queue voice channel
 //   CF rating      a permanent rating per FACEIT account, with ranks, rank roles and decay
-//   leaderboard    a pinned message in arena-data: the hub's season standings with CF rating
+//   leaderboards   two pinned messages in arena-data: the hub's season standings with CF
+//                  rating, and the top 20 CF ratings of all time
 //   weekly recap   every Monday in arena-data
 //   /arena stats   a player's rating and record
 //   staff tools    /arena rating history | adjust | recalc | ban
@@ -20,6 +21,7 @@ import {
   BOARD_HEADING,
   LEADERBOARD_HEADING,
   QUEUE_HEADING,
+  RATING_BOARD_HEADING,
   STATS_VERSION,
   cancelledGame,
   compactGame,
@@ -36,6 +38,7 @@ import {
   playerIdByNickname,
   playerRecord,
   queueText,
+  ratingBoardText,
   recapText,
   seasonAt,
   statsCard,
@@ -87,6 +90,7 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
   let lastBoardBody = null;
   let lastQueueBody = null;
   let lastLeaderboardBody = null;
+  let lastRatingBoardBody = null;
   let drafting = [];
   let backoffUntil = 0;
   let backoffStep = 0;
@@ -449,18 +453,34 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
     const known = new Set(records.map((record) => record.id));
     const body = { games: [...drafting.filter((match) => !known.has(match.id)).map((match) => ({ number: null, stage: 'drafting', teams: match.teams, url: match.url })), ...live] };
     const key = JSON.stringify(body);
-    if (key !== lastBoardBody && await keptUpsert('board', config.arenaGamesChannelId, liveBoardText({ ...body, updatedAt: new Date(now()) }), BOARD_HEADING)) lastBoardBody = key;
+    if (key !== lastBoardBody && await keptUpsert('board', config.arenaGamesChannelId, liveBoardText(body), BOARD_HEADING)) lastBoardBody = key;
 
+    await refreshQueue(state);
+  }
+
+  // The queue status message is off unless ARENA_QUEUE_STATUS=true: FACEIT's API does not say
+  // who is waiting in the hub queue, and the Queue voice channel is not the same thing. While
+  // it is off, a queue message posted earlier is taken down.
+  async function refreshQueue(state) {
+    if (!config.arenaQueueStatus) {
+      if (!state.queueMessageId) return;
+      const channel = await textChannel(state.queueChannelId || config.arenaGamesChannelId);
+      const message = channel ? await channel.messages.fetch(state.queueMessageId).catch(() => null) : null;
+      await message?.delete?.().catch(() => null);
+      await saveArenaHubState({ queueMessageId: null, queueChannelId: null });
+      lastQueueBody = null;
+      return;
+    }
     const queueChannel = config.arenaQueueChannelId ? await client.channels.fetch(config.arenaQueueChannelId).catch(() => null) : null;
     const queue = [...(queueChannel?.members?.values?.() || [])].filter((member) => !member.user?.bot).map((member) => member.id);
     const queueKey = JSON.stringify(queue);
-    if (queueKey !== lastQueueBody && await keptUpsert('queue', config.arenaGamesChannelId, queueText({ queue, queueChannelId: config.arenaQueueChannelId || null, updatedAt: new Date(now()) }), QUEUE_HEADING)) lastQueueBody = queueKey;
+    if (queueKey !== lastQueueBody && await keptUpsert('queue', config.arenaGamesChannelId, queueText({ queue, queueChannelId: config.arenaQueueChannelId || null }), QUEUE_HEADING)) lastQueueBody = queueKey;
   }
 
   // Someone joined or left the Queue voice channel.
   function onVoiceStateUpdate(oldState, newState) {
     const queueId = config.arenaQueueChannelId;
-    if (!queueId || oldState?.channelId === newState?.channelId) return;
+    if (!config.arenaQueueStatus || !queueId || oldState?.channelId === newState?.channelId) return;
     if (oldState?.channelId === queueId || newState?.channelId === queueId) scheduleBoard();
   }
 
@@ -498,9 +518,11 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
       limit: config.arenaLeaderboardSize || 25,
       ...ratingMaps()
     };
-    const text = leaderboardText({ ...body, updatedAt: new Date(0) });
-    if (text === lastLeaderboardBody) return;
-    if (await keptUpsert('leaderboard', config.arenaDataChannelId, leaderboardText({ ...body, updatedAt: new Date(now()) }), LEADERBOARD_HEADING)) lastLeaderboardBody = text;
+    const text = leaderboardText(body);
+    if (text !== lastLeaderboardBody && await keptUpsert('leaderboard', config.arenaDataChannelId, text, LEADERBOARD_HEADING)) lastLeaderboardBody = text;
+    // Under it: the highest CF ratings of all time (the season standings above reset, these don't).
+    const ratingText = ratingBoardText({ players: [...rating.players.values()], ranks: rating.ranks, banned: rating.banned, limit: config.arenaRatingBoardSize || 20 });
+    if (ratingText !== lastRatingBoardBody && await keptUpsert('ratingBoard', config.arenaDataChannelId, ratingText, RATING_BOARD_HEADING)) lastRatingBoardBody = ratingText;
   }
 
   // A player's place on a season's FACEIT leaderboard, or null.

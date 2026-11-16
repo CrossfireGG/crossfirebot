@@ -416,10 +416,11 @@ export function matchCard({ stage, number: gameNumber, teams = [], map = null, s
 export const BOARD_HEADING = '## 🎮 Arena: live games';
 export const QUEUE_HEADING = '## ⏳ Arena queue';
 export const LEADERBOARD_HEADING = '## 🏆 Arena season leaderboard';
+export const RATING_BOARD_HEADING = '## 🔥 CF Rating leaderboard';
 
 // The pinned live games board (plain text): every match drafting or live.
 //   games: [{ number, stage: 'drafting' | 'live', teams: [{ label }], map, score, cardUrl, url }]
-export function liveBoardText({ games = [], updatedAt = new Date() }) {
+export function liveBoardText({ games = [] }) {
   const lines = [BOARD_HEADING];
   if (!games.length) lines.push('No Arena games live right now.');
   for (const game of games) {
@@ -432,28 +433,26 @@ export function liveBoardText({ games = [], updatedAt = new Date() }) {
       game.cardUrl ? `[match card](${game.cardUrl})` : (game.url ? `[match room](<${game.url}>)` : null)
     ].filter(Boolean).join(' · '));
   }
-  lines.push(`-# Updated <t:${Math.floor(new Date(updatedAt).getTime() / 1000)}:R>`);
   return lines.join('\n').slice(0, 2000);
 }
 
 // The pinned queue status (plain text). FACEIT's API does not say who is waiting in the hub
 // queue, so this lists who is in the Queue voice channel.
-export function queueText({ queue = [], queueChannelId = null, source = 'voice', updatedAt = new Date() }) {
+export function queueText({ queue = [], queueChannelId = null, source = 'voice' }) {
   const where = queueChannelId ? `<#${queueChannelId}>` : 'the Queue voice channel';
   return [
     QUEUE_HEADING,
     queue.length
       ? `**In ${where} (${queue.length}):** ${queue.slice(0, 30).map((id) => `<@${id}>`).join(' ')}${queue.length > 30 ? ` +${queue.length - 30} more` : ''}`
       : `Nobody is in ${where} right now.`,
-    source === 'voice' ? '-# FACEIT does not share who is in its queue, so this shows the Queue voice channel.' : null,
-    `-# Updated <t:${Math.floor(new Date(updatedAt).getTime() / 1000)}:R>`
+    source === 'voice' ? '-# FACEIT does not share who is in its queue, so this shows the Queue voice channel.' : null
   ].filter(Boolean).join('\n').slice(0, 2000);
 }
 
 // The pinned season leaderboard (plain text): the FACEIT hub's standings, each row with the
 // player's CF rating and rank. Placement and banned players are left out.
 //   items: FACEIT leaderboard rows   ranks: { [playerId]: { label, placing } }   ratings: { [playerId]: rating }
-export function leaderboardText({ name, items = [], ranks = {}, ratings = {}, banned = new Set(), running = true, url = null, limit = 25, updatedAt = new Date() }) {
+export function leaderboardText({ name, items = [], ranks = {}, ratings = {}, banned = new Set(), running = true, url = null, limit = 25 }) {
   const shown = items.filter((row) => {
     const id = row.player?.user_id;
     return id && !banned.has(id) && ranks[id] && !ranks[id].placing;
@@ -467,8 +466,28 @@ export function leaderboardText({ name, items = [], ranks = {}, ratings = {}, ba
     ...(list.length ? list : ['Nobody is ranked this season yet.']),
     '',
     url ? `**Full standings:** <${url}>` : null,
-    `-# Season standings from FACEIT; CF rating and rank are permanent. Updated <t:${Math.floor(new Date(updatedAt).getTime() / 1000)}:R>`
+    '-# Season standings from FACEIT; CF rating and rank are permanent.'
   ].filter((line) => line !== null).join('\n');
+  let list = rows;
+  while (list.length > 3 && build(list).length > 2000) list = list.slice(0, -1);
+  return build(list).slice(0, 2000);
+}
+
+// The pinned CF Rating leaderboard (plain text): the highest ratings of all time, whatever the
+// season. Placement and banned players are left out.
+//   players: [{ id, nickname, rating, wins, losses, games }]   ranks: { [playerId]: { label, placing } }
+export function ratingBoardText({ players = [], ranks = {}, banned = new Set(), limit = 20 }) {
+  const shown = players
+    .filter((player) => !banned.has(player.id) && ranks[player.id] && !ranks[player.id].placing)
+    .sort((a, b) => b.rating - a.rating || (b.wins || 0) - (a.wins || 0) || (b.games || 0) - (a.games || 0) || String(a.id).localeCompare(String(b.id)))
+    .slice(0, limit);
+  const rows = shown.map((player, index) => `**#${index + 1}**  ${esc(player.nickname || '?')}  ${ranks[player.id].label} · ${player.rating}  (${player.wins}–${player.losses})`);
+  const build = (list) => [
+    `${RATING_BOARD_HEADING} · top ${limit}`,
+    ...(list.length ? list : ['Nobody is ranked yet.']),
+    '',
+    '-# CF rating is permanent and does not reset with seasons. Wins and losses are all time.'
+  ].join('\n');
   let list = rows;
   while (list.length > 3 && build(list).length > 2000) list = list.slice(0, -1);
   return build(list).slice(0, 2000);

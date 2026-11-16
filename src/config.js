@@ -278,11 +278,16 @@ export function getConfig() {
     // ARENA_HUB_FEATURES=false turns these off (the team voice channels keep working).
     arenaHubFeatures: !/^(false|0|off|no)$/i.test(process.env.ARENA_HUB_FEATURES || ''),
     arenaGamesChannelId: process.env.ARENA_GAMES_CHANNEL_ID || '1571983572116570122',
+    // The pinned queue status in arena-games. Off: FACEIT's API does not return who is waiting
+    // in the hub queue. true shows who is in the Queue voice channel instead.
+    arenaQueueStatus: /^(true|1|on|yes)$/i.test(process.env.ARENA_QUEUE_STATUS || ''),
     arenaDataChannelId: process.env.ARENA_DATA_CHANNEL_ID || '1571982492439683143',
     // The clock the Monday recap and the daily decay run on, and their times (24-hour HH:MM).
     arenaTimeZone: process.env.ARENA_TIME_ZONE?.trim() || 'America/Chicago',
     arenaRecapTime: arenaClock(process.env.ARENA_RECAP_TIME, '12:00'),
     arenaDecayTime: arenaClock(process.env.ARENA_DECAY_TIME, '05:00'),
+    // How many rows the pinned CF Rating leaderboard (all time) shows.
+    arenaRatingBoardSize: Math.min(40, Math.max(3, Number(process.env.ARENA_RATING_BOARD_SIZE || 20) || 20)),
     // How many rows the pinned season leaderboard shows.
     arenaLeaderboardSize: Math.min(40, Math.max(3, Number(process.env.ARENA_LEADERBOARD_SIZE || 25) || 25)),
     // CF Rating: every number can be tuned here without touching the code.

@@ -134,6 +134,7 @@ const config = {
   arenaGamesChannelId: 'games',
   arenaDataChannelId: 'data',
   arenaQueueChannelId: 'queue',
+  arenaQueueStatus: false,
   arenaTeamSize: 5,
   arenaTimeZone: 'America/Chicago',
   arenaRecapTime: '12:00',

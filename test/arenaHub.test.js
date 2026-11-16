@@ -22,6 +22,7 @@ const {
   latestSeason,
   leaderboardText,
   liveBoardText,
+  ratingBoardText,
   matchCard,
   playerIdByNickname,
   playerRecord,
@@ -211,11 +212,11 @@ test('the pinned messages: live board, queue, season leaderboard', () => {
   const board = liveBoardText({ games: [
     { number: null, stage: 'drafting', teams: [{ label: 'Team A' }, { label: 'Team B' }], url: 'https://r' },
     { number: 12, stage: 'live', teams: [{ label: 'Team Zoro' }, { label: 'Team Beta' }], map: 'Mirage', cardUrl: 'https://discord.com/channels/g/c/m' }
-  ], updatedAt: new Date(0) });
+  ] });
   assert.match(board, /^## 🎮 Arena: live games\n\*\*New game\*\* · drafting · Team A vs Team B · \[match room\]\(<https:\/\/r>\)\n\*\*Arena 12\*\* · live · Team Zoro vs Team Beta · Mirage · \[match card\]\(https:\/\/discord\.com\/channels\/g\/c\/m\)/);
   assert.match(liveBoardText({}), /^## 🎮 Arena: live games\nNo Arena games live right now\./);
 
-  assert.match(queueText({ queue: ['111', '222'], queueChannelId: 'q', updatedAt: new Date(0) }), /^## ⏳ Arena queue\n\*\*In <#q> \(2\):\*\* <@111> <@222>\n-# FACEIT does not share who is in its queue/);
+  assert.match(queueText({ queue: ['111', '222'], queueChannelId: 'q' }), /^## ⏳ Arena queue\n\*\*In <#q> \(2\):\*\* <@111> <@222>\n-# FACEIT does not share who is in its queue/);
   assert.match(queueText({ queueChannelId: 'q' }), /Nobody is in <#q> right now\./);
 
   const items = [
@@ -226,10 +227,10 @@ test('the pinned messages: live board, queue, season leaderboard', () => {
     { position: 5, player: { user_id: 'ghost', nickname: 'NoRating' }, won: 1, lost: 1 }
   ];
   const ranks = { king: { label: 'Rank X 👑', placing: false }, new: { label: 'Placing 3/5', placing: true }, ban: { label: 'Inferno I', placing: false }, inf: { label: 'Inferno II', placing: false } };
-  const text = leaderboardText({ name: 'Season 8', items, ranks, ratings: { king: 1452, new: 1060, ban: 1500, inf: 1318 }, banned: new Set(['ban']), url: 'https://hub', updatedAt: new Date(0) });
+  const text = leaderboardText({ name: 'Season 8', items, ranks, ratings: { king: 1452, new: 1060, ban: 1500, inf: 1318 }, banned: new Set(['ban']), url: 'https://hub' });
   assert.match(text, /^## 🏆 Arena season leaderboard · Season 8\n\*\*#1\*\*  King  Rank X 👑 · 1452  \(32–14\)\n\*\*#2\*\*  Infer\\_no  Inferno II · 1318  \(28–15\)\n\n\*\*Full standings:\*\* <https:\/\/hub>/);
   assert.doesNotMatch(text, /Newbie|Cheater|NoRating/, 'placement, banned and unrated players are hidden');
-  assert.match(text, /Updated <t:0:R>$/);
+  assert.doesNotMatch(text + board + queueText({ queueChannelId: 'q' }), /Updated/, 'no "updated x ago" line on the pinned messages');
   assert.match(leaderboardText({ name: 'Season 8', items: [], running: false }), /Season 8 \(final\)\nNobody is ranked this season yet\./);
   const many = Array.from({ length: 60 }, (_, index) => ({ player: { user_id: `p${index}`, nickname: 'x'.repeat(50) }, won: 1, lost: 0 }));
   const long = leaderboardText({ name: 'S', items: many, ranks: Object.fromEntries(many.map((row) => [row.player.user_id, { label: 'Ember II', placing: false }])), ratings: {}, limit: 25 });
@@ -332,11 +333,12 @@ function fakeWorld() {
       const message = { id: `${id}-m${sent.length + 1}`, channelId: id, payload, edits: 0, author: { id: 'bot' }, get content() { return message.payload.content || ''; } };
       message.edit = async (next) => { message.payload = next; message.edits += 1; };
       message.pin = async () => { pinned.push(message.id); };
+      message.delete = async () => { message.deleted = true; };
       sent.push(message);
       return message;
     },
     messages: {
-      fetch: async (messageId) => sent.find((message) => message.id === messageId) || Promise.reject(Object.assign(new Error('Unknown Message'), { code: 10008 })),
+      fetch: async (messageId) => sent.find((message) => message.id === messageId && !message.deleted) || Promise.reject(Object.assign(new Error('Unknown Message'), { code: 10008 })),
       fetchPinned: async () => new Map(sent.filter((message) => message.channelId === id && pinned.includes(message.id)).map((message) => [message.id, message]))
     }
   });
@@ -398,6 +400,7 @@ test('arena hub: match from draft to result with ratings, boards, roles, rank-up
     arenaGamesChannelId: 'games',
     arenaDataChannelId: 'data',
     arenaQueueChannelId: 'queue',
+    arenaQueueStatus: true, // the queue message is off by default; on here to cover it
     arenaTeamSize: 5,
     arenaTimeZone: 'America/Chicago',
     arenaRecapTime: '12:00',
@@ -584,6 +587,17 @@ test('arena hub: match from draft to result with ratings, boards, roles, rank-up
   await hub2.tick();
   assert.equal(world.sent.length, before2, 'no second board, queue or leaderboard message');
   assert.equal((await store.getArenaHubState()).boardMessageId, board.id);
+
+  // With the queue status off (the default), the queue message posted earlier is taken down
+  // and no new one is posted.
+  const hub3 = createArenaHub({ client: world.client, faceit, config: { ...config, arenaQueueStatus: false }, games, ratingStore, isStaff: () => true, now: () => clock.ms });
+  world.queueMembers.set('d-q9', world.member('d-q9'));
+  await hub3.tick();
+  assert.equal(queue.deleted, true);
+  assert.equal((await store.getArenaHubState()).queueMessageId, null);
+  assert.equal(world.sent.length, before2, 'nothing new is posted');
+  await hub3.tick();
+  assert.equal(world.sent.filter((message) => message.content.startsWith('## ⏳ Arena queue') && !message.deleted).length, 0);
 });
 
 test('arena hub: stats reply has a Post in channel button; older matches get their stats refreshed', async () => {
@@ -662,4 +676,70 @@ test('arena hub: stats reply has a Post in channel button; older matches get the
   // A season on the button is kept.
   await hub.handleStats(interactionFor(replies, { as: 'd-a1', season: 7 }));
   assert.equal(replies.at(-1).components[0].components[0].data.custom_id, 'arenast:a1:7');
+});
+
+test('the pinned CF Rating leaderboard: top 20 of all time, placement and banned hidden', async () => {
+  const players = [
+    { id: 'king', nickname: 'King', rating: 1530, wins: 97, losses: 53, games: 150 },
+    { id: 'ban', nickname: 'Cheater', rating: 1600, wins: 50, losses: 2, games: 52 },
+    { id: 'new', nickname: 'Newbie', rating: 1100, wins: 3, losses: 0, games: 3 },
+    { id: 'inf', nickname: 'Infer_no', rating: 1318, wins: 28, losses: 15, games: 43 },
+    { id: 'tie', nickname: 'Tied', rating: 1318, wins: 30, losses: 20, games: 50 }
+  ];
+  const banned = new Set(['ban']);
+  const ranks = assignRanks(players, { banned });
+  const text = ratingBoardText({ players, ranks, banned });
+  assert.equal(text, [
+    '## 🔥 CF Rating leaderboard · top 20',
+    '**#1**  King  Rank X 👑 · 1530  (97–53)',
+    '**#2**  Tied  Inferno II · 1318  (30–20)',
+    '**#3**  Infer\\_no  Inferno II · 1318  (28–15)',
+    '',
+    '-# CF rating is permanent and does not reset with seasons. Wins and losses are all time.'
+  ].join('\n'));
+  assert.match(ratingBoardText({ players: [], ranks: {} }), /Nobody is ranked yet\./);
+  const many = Array.from({ length: 60 }, (_, index) => ({ id: `p${index}`, nickname: `Player ${index}`, rating: 1300 - index, wins: 10, losses: 5, games: 15 }));
+  const top = ratingBoardText({ players: many, ranks: assignRanks(many) });
+  assert.equal((top.match(/\*\*#/g) || []).length, 20, 'twenty rows');
+  assert.match(top, /\*\*#20\*\*  Player 19  /);
+
+  // The bot keeps it pinned in arena-data under the season leaderboard, and edits it in place.
+  const world = fakeWorld();
+  const games = createGameStore(path.join(tempDir, 'board-games.json'));
+  const past = Array.from({ length: 6 }, (_, index) => hubMatch({ id: `rb${index}`, winner: 'faction1', score: [13, 5], finishedMs: Date.UTC(2026, 10, 1 + index, 20) }));
+  for (const match of past) await games.upsert(compactGame(match, hubStats(match), { seasons: SEASONS }));
+  const faceit = {
+    request: async (requestPath) => {
+      if (requestPath.startsWith('/leaderboards/hubs/hub?')) return { items: LEADERBOARDS };
+      if (requestPath === '/hubs/hub') return { faceit_url: 'https://www.faceit.com/{lang}/hub/hub/Arena' };
+      return { items: [] };
+    },
+    getMatchRaw: async () => null,
+    getMatchStats: async () => null,
+    getPlayerByNickname: async () => null
+  };
+  const config = { arenaEnabled: true, arenaHubId: 'hub', arenaGamesChannelId: 'games', arenaDataChannelId: 'data', arenaQueueChannelId: 'queue', arenaTeamSize: 5, arenaTimeZone: 'America/Chicago', arenaRecapTime: '12:00', arenaDecayTime: '05:00', arenaLeaderboardSize: 25, arenaRatingBoardSize: 20, arenaBannedFaceitIds: [] };
+  const ratingStore = createRatingStore(path.join(tempDir, 'board-ratings.json'));
+  await store.saveArenaHubState({ backfill: { offset: 0, done: true }, leaderboardMessageId: null, ratingBoardMessageId: null, boardMessageId: null, queueMessageId: null });
+  let clock = Date.UTC(2026, 10, 8, 1);
+  const hub = createArenaHub({ client: world.client, faceit, config, games, ratingStore, isStaff: () => true, now: () => clock });
+  await hub.tick();
+  const pinnedData = world.inChannel('data').filter((message) => world.pinned.includes(message.id));
+  assert.deepEqual(pinnedData.map((message) => message.content.split('\n')[0]), ['## 🏆 Arena season leaderboard · Season 8', '## 🔥 CF Rating leaderboard · top 20']);
+  const board = pinnedData[1];
+  assert.match(board.content, /^## 🔥 CF Rating leaderboard · top 20\n\*\*#1\*\*  A-nick1  Blaze [IV]+ · \d+  \(6–0\)\n/);
+  assert.equal((board.content.match(/\*\*#/g) || []).length, 10);
+  for (const message of [...world.inChannel('data'), ...world.inChannel('games')]) assert.doesNotMatch(message.content, /Updated/);
+  assert.deepEqual(world.inChannel('games').map((message) => message.content.split('\n')[0]), ['## 🎮 Arena: live games'], 'no queue message by default');
+  // A staff adjustment changes the order: the same message is edited.
+  const replies = [];
+  await hub.handleRating(interactionFor(replies, { staff: true, sub: 'adjust', player: 'B-nick3', amount: 600, reason: 'test' }));
+  clock += 60_000;
+  await hub.tick();
+  assert.equal(board.edits, 1);
+  assert.match(board.content, /^## 🔥 CF Rating leaderboard · top 20\n\*\*#1\*\*  B-nick3  Rank X 👑 · /);
+  assert.equal(world.inChannel('data').filter((message) => message.content.startsWith('## 🔥 CF Rating leaderboard')).length, 1);
+  clock += 11 * 60_000;
+  await hub.tick();
+  assert.equal(board.edits, 1, 'not edited when nothing changed');
 });
