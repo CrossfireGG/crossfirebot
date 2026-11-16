@@ -221,7 +221,17 @@ export function getConfig() {
     vetoMapPool: parseCsvValue(process.env.VETO_MAP_POOL || ''),
     vetoSeeds: parseNamedNumbers(process.env.VETO_SEEDS || ''),
     vetoCaptainOnly: process.env.VETO_CAPTAIN_ONLY !== 'false',
-    vetoSidePolicy: process.env.VETO_SIDE_POLICY || 'Staff decides sides after the Discord veto.',
+    // Server locations, decided before the maps: ban, ban, the one left is played on.
+    // VETO_SERVER_LOCATIONS=none turns the server step off.
+    vetoServerLocations: parseCsvValue(process.env.VETO_SERVER_LOCATIONS ?? 'Chicago,Denver,Dallas').filter((value) => !/^(none|off)$/i.test(value)).slice(0, 5),
+    // Each veto turn (first-action choice, ban, pick, side) has this long; when it runs out the
+    // team and staff are pinged. Teams are pinged VETO_NOTICE_MINUTES before match time that the
+    // veto is in their match room; it starts VETO_START_MINUTES before match time.
+    vetoTurnSeconds: Math.max(15, Number(process.env.VETO_TURN_SECONDS || 120) || 120),
+    vetoNoticeMinutes: Math.max(1, Number(process.env.VETO_NOTICE_MINUTES || 60) || 60),
+    vetoStartMinutes: Math.max(1, Number(process.env.VETO_START_MINUTES || 20) || 20),
+    // Empty = the built-in text: the team that didn't pick the map chooses its side; deciders are a knife round.
+    vetoSidePolicy: process.env.VETO_SIDE_POLICY?.trim() || '',
     vetoAdvantageTeam: process.env.VETO_ADVANTAGE_TEAM || null,
     vetoStaffChannelId: process.env.VETO_STAFF_CHANNEL_ID || process.env.ADMIN_SCHEDULE_CHANNEL_ID || null,
     streamRequestChannelId: process.env.STREAM_REQUEST_CHANNEL_ID || null,

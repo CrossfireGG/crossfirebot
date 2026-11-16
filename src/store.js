@@ -50,7 +50,8 @@ function normalizeDb(db) {
     arenaMatches: db.arenaMatches || {},
     voiceRooms: { setup: db.voiceRooms?.setup || null, rooms: db.voiceRooms?.rooms || {} },
     reactionRoleMessages: db.reactionRoleMessages || {},
-    picks: db.picks || {}
+    picks: db.picks || {},
+    vetoSettings: db.vetoSettings || {}
   };
 }
 
@@ -360,6 +361,18 @@ export async function saveVeto(veto, expectedVersion = null) {
       updatedAt: new Date().toISOString()
     };
     return db.vetoes[veto.matchId];
+  });
+}
+
+// Veto settings staff change from Discord: { mapPool: [7 maps], mapPoolSetBy, mapPoolSetAt }.
+export async function getVetoSettings() {
+  return (await snapshot()).vetoSettings || {};
+}
+
+export async function saveVetoSettings(patch) {
+  return mutateDb((db) => {
+    db.vetoSettings = { ...(db.vetoSettings || {}), ...patch };
+    return { ...db.vetoSettings };
   });
 }
 

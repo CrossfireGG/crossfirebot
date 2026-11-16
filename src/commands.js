@@ -161,14 +161,21 @@ export const commands = [
     .addSubcommand((subcommand) =>
       subcommand
         .setName('veto')
-        .setDescription('Start, inspect, reset, cancel, or override a veto')
+        .setDescription('Start, pause, resume, reset, inspect or cancel a veto, or set its seeds')
         .addStringOption((option) => option.setName('action').setDescription('Veto action').setRequired(true).addChoices(
-          { name: 'start', value: 'start' },
+          { name: 'start (or resume a paused veto)', value: 'start' },
+          { name: 'pause (stops the clock)', value: 'pause' },
+          { name: 'resume', value: 'resume' },
           { name: 'inspect', value: 'inspect' },
-          { name: 'reset', value: 'reset' },
+          { name: 'undo (take back the last step)', value: 'undo' },
+          { name: 'reset (start over)', value: 'reset' },
+          { name: 'standin (let a player act as captain this match)', value: 'standin' },
           { name: 'cancel', value: 'cancel' },
-          { name: 'set seeds', value: 'seeds' }
+          { name: 'set seeds', value: 'seeds' },
+          { name: 'maps (show or set the map pool)', value: 'maps' }
         ))
+        .addUserOption((option) => option.setName('user').setDescription('For standin: the player who acts as captain in this match (run again to remove)').setRequired(false))
+        .addStringOption((option) => option.setName('maps').setDescription('For maps: the seven maps, e.g. Dust2 Mirage Nuke Ancient Inferno Anubis Cache').setRequired(false).setMaxLength(200))
         .addChannelOption((option) => option.setName('match_room').setDescription('Linked Discord match room').setRequired(false))
         .addIntegerOption((option) => option.setName('team_a_seed').setDescription('Team A tournament seed').setRequired(false).setMinValue(1))
         .addIntegerOption((option) => option.setName('team_b_seed').setDescription('Team B tournament seed').setRequired(false).setMinValue(1))

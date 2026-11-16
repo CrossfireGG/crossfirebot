@@ -9,7 +9,7 @@ import { getConfig } from '../src/config.js';
 import { makeMatchPermissionOverwrites } from '../src/discordProvision.js';
 import { isAuthorizedStaffMember, parseForceDirective } from '../src/operationsPolicy.js';
 import { extractFaceitTeamId } from '../src/sheetRoles.js';
-import { applyVetoAction, chooseFirstAction, createVeto } from '../src/vetoEngine.js';
+import { applyServerBan, applyVetoAction, chooseFirstAction, chooseSide, createVeto, expectedVetoAction, markTurnTimedOut, parseMapPool, pauseVeto, undoVeto, vetoCanUndo, resumeVeto, turnLengthText, vetoActionLines, vetoFinalLines, vetoInProgress, vetoServerLines, vetoTurnExpired, vetoTurnText } from '../src/vetoEngine.js';
 import {
   buildScheduleChangeNotice,
   classifyFaceitScheduleChange,
@@ -49,11 +49,207 @@ test('grand-final veto awards the remaining map to the configured upper-bracket 
   assert.throws(() => createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 2 }, format: 'bo5_advantage' }), /advantage team/);
   let veto = createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 2 }, format: 'bo5_advantage', advantageTeam: 'teamB' });
   veto = chooseFirstAction(veto, 'teamA', 'self');
-  for (const map of mapPool.slice(0, 6)) veto = applyVetoAction(veto, veto.currentTeam, map);
+  for (const map of mapPool.slice(0, 6)) {
+    veto = applyVetoAction(veto, veto.currentTeam, map);
+    if (veto.pendingSide) {
+      assert.equal(veto.status, 'active', 'not complete until the last side is chosen');
+      veto = chooseSide(veto, veto.pendingSide.team, 'T');
+    }
+  }
   assert.equal(veto.status, 'complete');
   assert.equal(veto.final.awardedMap, 'Train');
   assert.equal(veto.final.startingScore, '1-0 Bravo');
   assert.equal(veto.final.playableMaps.length, 4);
+  assert.equal(veto.final.maps.length, 4);
+  assert.ok(veto.final.maps.every((entry) => entry.side === 'T' && !entry.knife), 'no knife round in the Grand Final: every map is a pick');
+});
+
+test('veto sides: the team that did not pick the map chooses its side; the decider is a knife round', () => {
+  let veto = chooseFirstAction(createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3' }), 'teamA', 'self');
+  veto = applyVetoAction(veto, 'teamA', 'Ancient'); // ban
+  veto = applyVetoAction(veto, 'teamB', 'Anubis'); // ban
+  assert.throws(() => chooseSide(veto, 'teamA', 'CT'), /no side to choose/);
+  veto = applyVetoAction(veto, 'teamA', 'Mirage'); // pick
+  assert.equal(expectedVetoAction(veto), 'side');
+  assert.deepEqual(veto.pendingSide, { map: 'Mirage', team: 'teamB' });
+  assert.match(vetoTurnText(veto), /^Bravo: choose your \*\*starting side\*\* on \*\*Mirage\*\*/);
+  assert.throws(() => applyVetoAction(veto, 'teamB', 'Nuke'), /side on Mirage must be chosen first/);
+  assert.throws(() => chooseSide(veto, 'teamA', 'CT'), /other team chooses the side/);
+  assert.throws(() => chooseSide(veto, 'teamB', 'Middle'), /Invalid side/);
+  veto = chooseSide(veto, 'teamB', 'CT');
+  assert.equal(veto.currentTeam, 'teamB', 'the side chooser then makes their own pick');
+  assert.equal(vetoActionLines(veto)[2], '3. **Alpha** pick Mirage (**Bravo** starts CT)');
+  veto = applyVetoAction(veto, 'teamB', 'Nuke'); // pick
+  veto = chooseSide(veto, 'teamA', 'T');
+  veto = applyVetoAction(veto, 'teamA', 'Dust2'); // ban
+  veto = applyVetoAction(veto, 'teamB', 'Inferno'); // ban
+  assert.equal(veto.status, 'complete');
+  assert.deepEqual(veto.final.playableMaps, ['Mirage', 'Nuke', 'Train']);
+  assert.equal(veto.final.decider, 'Train');
+  assert.deepEqual(vetoFinalLines(veto), [
+    'Map 1: **Mirage** · Alpha pick · **Bravo** starts CT, Alpha starts T',
+    'Map 2: **Nuke** · Bravo pick · **Alpha** starts T, Bravo starts CT',
+    'Map 3: **Train** · decider · 🔪 **knife round** for sides',
+    'Starting score: **0-0**'
+  ]);
+  // A veto finished before sides existed still prints.
+  assert.deepEqual(vetoFinalLines({ teamA: 'Alpha', teamB: 'Bravo', final: { playableMaps: ['Mirage', 'Train'], decider: 'Train', startingScore: '0-0' } }), [
+    'Map 1: **Mirage**', 'Map 2: **Train** · decider · 🔪 **knife round** for sides', 'Starting score: **0-0**'
+  ]);
+});
+
+test('veto turn clock: 2 minutes per turn, restarted each turn, staff pause and resume', () => {
+  const t0 = Date.parse('2026-11-17T01:40:00Z');
+  const MIN = 60 * 1000;
+  let veto = createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3', now: t0 });
+  assert.equal(veto.turnSeconds, 120);
+  assert.equal(turnLengthText(veto), '2 minutes');
+  assert.equal(turnLengthText({ turnSeconds: 90 }), '90 seconds');
+  assert.equal(veto.turnDeadlineAt, new Date(t0 + 2 * MIN).toISOString(), 'choosing who acts first is a timed turn too');
+  assert.match(vetoTurnText(veto), new RegExp(`time runs out <t:${(t0 + 2 * MIN) / 1000}:R>`));
+  assert.equal(vetoTurnExpired(veto, t0 + 2 * MIN - 1), false);
+  assert.equal(vetoTurnExpired(veto, t0 + 2 * MIN), true);
+
+  veto = chooseFirstAction(veto, 'teamA', 'self', t0 + MIN);
+  assert.equal(veto.turnDeadlineAt, new Date(t0 + 3 * MIN).toISOString(), 'each turn gets a fresh 2 minutes');
+  veto = applyVetoAction(veto, 'teamA', 'Ancient', t0 + MIN);
+  veto = applyVetoAction(veto, 'teamB', 'Anubis', t0 + MIN);
+  veto = applyVetoAction(veto, 'teamA', 'Mirage', t0 + 2 * MIN);
+  assert.equal(veto.turnDeadlineAt, new Date(t0 + 4 * MIN).toISOString(), 'choosing a side is a timed turn');
+
+  // Time runs out: reported once, nothing is chosen for the team, and they can still choose.
+  assert.equal(vetoTurnExpired(veto, t0 + 5 * MIN), true);
+  veto = markTurnTimedOut(veto, t0 + 5 * MIN);
+  assert.equal(vetoTurnExpired(veto, t0 + 6 * MIN), false, 'only reported once');
+  assert.match(vetoTurnText(veto), /Time is up/);
+  assert.deepEqual(veto.pendingSide, { map: 'Mirage', team: 'teamB' });
+  veto = chooseSide(veto, 'teamB', 'CT', t0 + 6 * MIN);
+  assert.equal(veto.turnTimedOutAt, null);
+  assert.equal(veto.turnDeadlineAt, new Date(t0 + 8 * MIN).toISOString());
+
+  // Pause: the clock stops and nobody can choose. Resume: the full time again.
+  assert.throws(() => resumeVeto(veto, t0 + 6 * MIN), /not paused/);
+  veto = pauseVeto(veto, t0 + 7 * MIN);
+  assert.equal(veto.turnDeadlineAt, null);
+  assert.equal(vetoTurnExpired(veto, t0 + 60 * MIN), false, 'no timeout while paused');
+  assert.match(vetoTurnText(veto), /Paused by staff/);
+  assert.throws(() => applyVetoAction(veto, 'teamB', 'Nuke', t0 + 8 * MIN), /paused by staff/);
+  assert.throws(() => pauseVeto(veto, t0 + 8 * MIN), /already paused/);
+  veto = resumeVeto(veto, t0 + 30 * MIN);
+  assert.equal(veto.pausedAt, null);
+  assert.equal(veto.turnDeadlineAt, new Date(t0 + 32 * MIN).toISOString());
+  assert.equal(veto.currentTeam, 'teamB', 'the same team is still up');
+
+  veto = applyVetoAction(veto, 'teamB', 'Nuke', t0 + 31 * MIN);
+  veto = chooseSide(veto, 'teamA', 'T', t0 + 31 * MIN);
+  veto = applyVetoAction(veto, 'teamA', 'Dust2', t0 + 31 * MIN);
+  veto = applyVetoAction(veto, 'teamB', 'Inferno', t0 + 31 * MIN);
+  assert.equal(veto.status, 'complete');
+  assert.equal(veto.turnDeadlineAt, null, 'no clock once it is over');
+  assert.equal(vetoInProgress(veto), false);
+  assert.throws(() => pauseVeto(veto), /not in progress/);
+
+  // Starting again after a finished veto clears the old result (the store merges onto the old record).
+  const again = { ...veto, ...createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3', now: t0 }) };
+  assert.equal(again.final, null);
+  assert.equal(again.pausedAt, null);
+  assert.equal(again.status, 'choosing_first_action');
+});
+
+test('veto server location: ban, ban, the one left over, before any map', () => {
+  const serverPool = ['Chicago', 'Denver', 'Dallas'];
+  let veto = createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3', serverPool });
+  assert.deepEqual(vetoServerLines(veto), ['Left: Chicago, Denver, Dallas']);
+  veto = chooseFirstAction(veto, 'teamA', 'opponent'); // Bravo acts first
+  assert.equal(expectedVetoAction(veto), 'server');
+  assert.match(vetoTurnText(veto), /^Bravo: \*\*ban\*\* a server location\./);
+  assert.throws(() => applyVetoAction(veto, 'teamB', 'Ancient'), /server location must be decided first/);
+  assert.throws(() => applyServerBan(veto, 'teamA', 'Denver'), /not your team/);
+  veto = applyServerBan(veto, 'teamB', 'Denver');
+  assert.equal(veto.server, null);
+  assert.throws(() => applyServerBan(veto, 'teamA', 'Denver'), /no longer available/);
+  veto = applyServerBan(veto, 'teamA', 'Dallas');
+  assert.equal(veto.server, 'Chicago');
+  assert.equal(veto.currentTeam, 'teamB', 'the map veto starts with the team acting first');
+  assert.equal(expectedVetoAction(veto), 'ban');
+  assert.deepEqual(vetoServerLines(veto), ['1. **Bravo** ban Denver', '2. **Alpha** ban Dallas', 'Server: **Chicago**']);
+  assert.throws(() => applyServerBan(veto, 'teamB', 'Chicago'), /no server location to ban/);
+  veto = applyVetoAction(veto, 'teamB', 'Ancient');
+  veto = applyVetoAction(veto, 'teamA', 'Anubis');
+  veto = chooseSide(applyVetoAction(veto, 'teamB', 'Mirage'), 'teamA', 'CT');
+  veto = chooseSide(applyVetoAction(veto, 'teamA', 'Nuke'), 'teamB', 'T');
+  veto = applyVetoAction(veto, 'teamB', 'Dust2');
+  veto = applyVetoAction(veto, 'teamA', 'Inferno');
+  assert.equal(veto.status, 'complete');
+  assert.equal(vetoFinalLines(veto)[0], 'Server: **Chicago**');
+  // No locations configured: straight to the maps, as before.
+  const plain = chooseFirstAction(createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3' }), 'teamA', 'self');
+  assert.equal(expectedVetoAction(plain), 'ban');
+  assert.deepEqual(vetoServerLines(plain), []);
+  assert.throws(() => createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3', serverPool: ['Chicago', 'Chicago'] }), /must all be different/);
+});
+
+test('veto undo: staff take back one step at a time, down to the first choice', () => {
+  const t0 = Date.parse('2026-11-17T01:40:00Z');
+  const serverPool = ['Chicago', 'Denver', 'Dallas'];
+  const start = createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3', serverPool, now: t0 });
+  assert.equal(vetoCanUndo(start), false);
+  assert.throws(() => undoVeto(start), /nothing to undo/);
+  let veto = chooseFirstAction(start, 'teamA', 'self', t0);
+  veto = applyServerBan(veto, 'teamA', 'Denver', t0);
+  veto = applyServerBan(veto, 'teamB', 'Dallas', t0);
+  assert.equal(veto.server, 'Chicago');
+  veto = applyVetoAction(veto, 'teamA', 'Ancient', t0);
+  veto = applyVetoAction(veto, 'teamB', 'Anubis', t0);
+  veto = applyVetoAction(veto, 'teamA', 'Mirage', t0);
+  const beforeSide = veto;
+  veto = chooseSide(veto, 'teamB', 'CT', t0);
+
+  // Undo the side: back to choosing it, with a fresh clock.
+  veto = undoVeto(veto, t0 + 60_000);
+  assert.deepEqual(veto.pendingSide, beforeSide.pendingSide);
+  assert.equal(veto.actions[2].side, undefined);
+  assert.equal(veto.turnDeadlineAt, new Date(t0 + 180_000).toISOString());
+  // Undo the pick: the map is available again and it is the picker's turn.
+  veto = undoVeto(veto, t0);
+  assert.equal(veto.pendingSide, null);
+  assert.ok(veto.availableMaps.includes('Mirage'));
+  assert.equal(veto.currentTeam, 'teamA');
+  assert.equal(expectedVetoAction(veto), 'pick');
+  // ...two map bans, then the second server ban: the server is undecided again.
+  veto = undoVeto(undoVeto(undoVeto(veto, t0), t0), t0);
+  assert.equal(veto.server, null);
+  assert.deepEqual(veto.availableServers, ['Chicago', 'Dallas']);
+  assert.equal(veto.currentTeam, 'teamB');
+  // ...the first server ban and the first-action choice.
+  veto = undoVeto(undoVeto(veto, t0), t0);
+  assert.equal(veto.status, 'choosing_first_action');
+  assert.equal(veto.firstActionTeam, null);
+  assert.equal(vetoCanUndo(veto), false);
+
+  // A finished veto can be undone too (a wrong last click); a paused one stays paused.
+  let done = chooseFirstAction(createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3', now: t0 }), 'teamA', 'self', t0);
+  done = applyVetoAction(applyVetoAction(done, 'teamA', 'Ancient', t0), 'teamB', 'Anubis', t0);
+  done = chooseSide(applyVetoAction(done, 'teamA', 'Mirage', t0), 'teamB', 'CT', t0);
+  done = chooseSide(applyVetoAction(done, 'teamB', 'Nuke', t0), 'teamA', 'T', t0);
+  done = applyVetoAction(done, 'teamA', 'Dust2', t0);
+  const paused = undoVeto(pauseVeto(done, t0), t0);
+  assert.ok(paused.pausedAt);
+  assert.equal(paused.turnDeadlineAt, null);
+  done = applyVetoAction(done, 'teamB', 'Inferno', t0);
+  assert.equal(done.status, 'complete');
+  done = undoVeto(done, t0);
+  assert.equal(done.status, 'active');
+  assert.equal(done.final, null);
+  assert.equal(done.currentTeam, 'teamB');
+  assert.ok(done.turnDeadlineAt);
+});
+
+test('veto map pool typed by staff: seven different maps, commas or spaces', () => {
+  assert.deepEqual(parseMapPool('Dust2 Mirage, Nuke, Ancient, Inferno, Anubis, Cache'), ['Dust2', 'Mirage', 'Nuke', 'Ancient', 'Inferno', 'Anubis', 'Cache']);
+  assert.throws(() => parseMapPool('Dust2, Mirage, Nuke'), /exactly seven different maps \(got 3/);
+  assert.throws(() => parseMapPool('Dust2 dust2 Nuke Ancient Inferno Anubis Cache'), /seven different maps/);
+  assert.throws(() => parseMapPool(''), /got 0\)/);
 });
 
 test('staff authorization uses permissions and explicit IDs, never role names', () => {

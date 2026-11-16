@@ -429,16 +429,19 @@ export function vetoSummary({ veto = null, match = null, faceitVeto = null } = {
   if (veto?.status === 'complete' && veto.final) {
     const teamName = (side) => (side === 'teamA' ? veto.teamA : veto.teamB);
     const picks = veto.actions.filter((action) => action.action === 'pick');
-    const maps = picks.map((action) => ({ map: action.map, note: `${teamName(action.team)} pick` }));
-    if (veto.final.decider) maps.push({ map: veto.final.decider, note: 'decider' });
+    // Sides (bot vetoes with side choice): the team that didn't pick starts on the side it chose.
+    const sideNote = (action) => (action.side ? `${teamName(action.sideTeam)} starts ${action.side}` : null);
+    const knife = Boolean(veto.final.maps?.some((entry) => entry.knife));
+    const maps = picks.map((action) => ({ map: action.map, note: [`${teamName(action.team)} pick`, sideNote(action)].filter(Boolean).join(' · ') }));
+    if (veto.final.decider) maps.push({ map: veto.final.decider, note: knife ? 'decider · knife round' : 'decider' });
     if (veto.final.awardedMap) maps.unshift({ map: veto.final.awardedMap, note: `awarded to ${veto.final.startingScore?.replace(/^1-0\s*/, '') || 'upper bracket team'}` });
     const bans = veto.actions.filter((action) => action.action === 'ban').map((action) => `${prettyMapName(action.map)} (${teamName(action.team)})`);
     const order = [
       ...(veto.final.awardedMap ? [{ kind: 'awarded', map: veto.final.awardedMap, team: veto.final.startingScore?.replace(/^1-0\s*/, '') || 'upper bracket team' }] : []),
-      ...veto.actions.map((action) => ({ kind: action.action === 'pick' ? 'pick' : 'ban', map: action.map, team: teamName(action.team) })),
-      ...(veto.final.decider ? [{ kind: 'decider', map: veto.final.decider }] : [])
+      ...veto.actions.map((action) => ({ kind: action.action === 'pick' ? 'pick' : 'ban', map: action.map, team: teamName(action.team), sides: sideNote(action) })),
+      ...(veto.final.decider ? [{ kind: 'decider', map: veto.final.decider, knife }] : [])
     ];
-    return { state: 'done', maps: maps.map((entry) => ({ ...entry, map: prettyMapName(entry.map) })), bans, order: numberOrder(order) };
+    return { state: 'done', maps: maps.map((entry) => ({ ...entry, map: prettyMapName(entry.map) })), bans, order: numberOrder(order), server: veto.server || null };
   }
   if (veto && ['active', 'choosing_first_action'].includes(veto.status)) {
     const teamName = (side) => (side === 'teamA' ? veto.teamA : veto.teamB);
@@ -479,13 +482,14 @@ function numberOrder(steps) {
 //   **Mirage** · O Fire pick → Map 1
 //   **Dust2** · decider (left over) → Map 3
 export function vetoOrderLines(vetoInfo) {
-  return (vetoInfo?.order || []).map((step) => {
+  const lines = (vetoInfo?.order || []).map((step) => {
     const random = step.random ? ' (random)' : '';
     if (step.kind === 'ban') return `${step.map} · ${step.team} ban${random}`;
-    if (step.kind === 'pick') return `**${step.map}** · ${step.team} pick${random} → Map ${step.mapNumber}`;
+    if (step.kind === 'pick') return `**${step.map}** · ${step.team} pick${random} → Map ${step.mapNumber}${step.sides ? ` · ${step.sides}` : ''}`;
     if (step.kind === 'awarded') return `**${step.map}** · awarded to ${step.team} → Map ${step.mapNumber}`;
-    return `**${step.map}** · decider (left over) → Map ${step.mapNumber}`;
+    return `**${step.map}** · decider (left over) → Map ${step.mapNumber}${step.knife ? ' · knife round for sides' : ''}`;
   });
+  return vetoInfo?.server ? [`Server: **${vetoInfo.server}**`, ...lines] : lines;
 }
 
 const FACEIT_PRE_VETO = new Set(['SCHEDULED', 'CHECK_IN']);
