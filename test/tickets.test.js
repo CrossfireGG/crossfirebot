@@ -9,14 +9,24 @@ import {
   shouldBumpRoster,
   ticketAlertText,
   ticketChannelName,
+  ticketTopicLabel,
+  LEAGUE_TICKET_KINDS,
+  TICKET_SUBJECTS,
   TICKET_TOPICS
 } from '../src/tickets.js';
 
 const NOW = Date.UTC(2026, 10, 11, 20);
 const HOUR = 60 * 60 * 1000;
 
-test('the panel has the five topics', () => {
-  assert.deepEqual(TICKET_TOPICS.map((topic) => topic.label), ['General Support', 'Match / FACEIT Issue', 'Roster Change', 'Arena / 10mans', 'Apply to Crossfire']);
+test('the panel asks for one of four subjects; League and Arena then ask what it is about', () => {
+  assert.deepEqual(TICKET_SUBJECTS.map((subject) => subject.label), ['League', 'Arena', 'Apply to Crossfire', 'General Support']);
+  assert.deepEqual(LEAGUE_TICKET_KINDS.map((kind) => kind.label), ['Match / FACEIT Issue', 'Roster Change']);
+  // Every League choice is a ticket topic the bot knows how to open.
+  for (const kind of LEAGUE_TICKET_KINDS) assert.ok(TICKET_TOPICS.some((topic) => topic.key === kind.value), kind.value);
+  assert.equal(ticketTopicLabel({ topic: 'match' }), 'League · Match / FACEIT Issue');
+  assert.equal(ticketTopicLabel({ topic: 'roster' }), 'League · Roster Change');
+  assert.equal(ticketTopicLabel({ topic: 'apply' }), 'Apply to Crossfire');
+  assert.equal(ticketTopicLabel({ topic: 'support' }), 'General Support');
 });
 
 test('a live or about-to-start match issue is urgent and pings admins', () => {
@@ -52,7 +62,7 @@ test('ticket channel names and the header card', () => {
     number: 42, topic: 'match', openerId: '1', priority: 'urgent', priorityReason: 'Match is live',
     answers: [{ label: 'Team', value: 'CLUB 333' }, { label: 'Match link', value: '' }, { label: "What's happening", value: 'Server crashed' }]
   });
-  assert.equal(header.title, '🎫 Ticket #0042 · Match / FACEIT Issue');
+  assert.equal(header.title, '🎫 Ticket #0042 · League · Match / FACEIT Issue');
   assert.equal(header.description, 'The Admin team has been notified and will assist you as soon as possible. Please provide any details or evidence to help us handle this ticket.');
   assert.deepEqual(header.fields.map((field) => field.name), ['Opened by', 'Handled by', 'Priority', 'Team', "What's happening"]);
   assert.equal(header.fields[1].value, 'Not claimed yet');

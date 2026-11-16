@@ -276,7 +276,9 @@ import {
   ticketChannelName,
   ticketNumberText,
   ticketTopic,
-  TICKET_TOPICS
+  TICKET_SUBJECTS,
+  LEAGUE_TICKET_KINDS,
+  leagueTicketKind
 } from './tickets.js';
 import { buildRoundup, buildSocialCard, buildSocialResultCard, matchTopPlayer, normalizeHandle, teamSocials } from './socialInfo.js';
 import { buildPrepPack, compactBotVeto, compactFaceitVeto, compactMatchStats, faceitVetoUnderway, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, seasonSources, teamKey, vetoSummary } from './prepPack.js';
@@ -570,6 +572,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_topic') {
       await handleTicketTopic(interaction);
+      return;
+    }
+    if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_league_kind') {
+      await handleLeagueTicketKind(interaction);
       return;
     }
     if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_arena_kind') {
@@ -7463,9 +7469,9 @@ async function handleTicketStart(interaction) {
   const select = new StringSelectMenuBuilder()
     .setCustomId('ticket_topic')
     .setPlaceholder('What do you need help with?')
-    .addOptions(TICKET_TOPICS.map((topic) => ({ label: topic.label, description: topic.description.slice(0, 100), value: topic.key, emoji: topic.emoji })));
+    .addOptions(TICKET_SUBJECTS.map((subject) => ({ label: subject.label, description: subject.description.slice(0, 100), value: subject.key, emoji: subject.emoji })));
   await interaction.reply({
-    content: 'What do you need help with? Pick a topic, answer a few questions, and a private ticket opens with the staff.',
+    content: 'What do you need help with? Pick a subject, answer a few questions, and a private ticket opens with the staff.',
     components: [new ActionRowBuilder().addComponents(select)],
     ephemeral: true
   });
@@ -7685,26 +7691,58 @@ async function openTicket({ guild, parentId, opener, topic, answers, priority, e
   return { ticket: opened, channel };
 }
 
-// The topic dropdown on the panel.
+// The subject dropdown on the panel: League, Arena, Apply to Crossfire, General Support. League
+// and Arena show a second dropdown (what it's about); the other two go straight to their form.
 async function handleTicketTopic(interaction) {
   if (config.ticketsStaffOnly && !isTicketStaff(interaction.member) && !isArenaTicketStaff(interaction.member)) {
     await interaction.reply({ content: 'The new ticket system is being tested by staff right now. For now, please use the usual ticket channel.', ephemeral: true });
     return;
   }
-  const topic = interaction.values?.[0];
-  if (!ticketTopic(topic)) {
-    await interaction.reply({ content: 'Pick a topic from the list.', ephemeral: true });
+  const subject = interaction.values?.[0];
+  if (subject === 'league') {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId('ticket_league_kind')
+      .setPlaceholder('What is it about?')
+      .addOptions(LEAGUE_TICKET_KINDS.map((kind) => ({ label: kind.label, description: kind.description.slice(0, 100), value: kind.value, emoji: kind.emoji })));
+    await interaction.update({
+      content: '🏆 **League.** What is it about?',
+      components: [new ActionRowBuilder().addComponents(select)]
+    });
     return;
   }
-  if (topic === 'arena') {
+  if (subject === 'arena') {
     const select = new StringSelectMenuBuilder()
       .setCustomId('ticket_arena_kind')
       .setPlaceholder('What is it about?')
       .addOptions(ARENA_TICKET_KINDS.map((kind) => ({ label: kind.label, description: kind.description.slice(0, 100), value: kind.value, emoji: kind.emoji })));
     await interaction.update({
-      content: '🎮 **Arena / 10mans.** What is it about?',
+      content: '🎮 **Arena.** What is it about?',
       components: [new ActionRowBuilder().addComponents(select)]
     });
+    return;
+  }
+  await startTopicTicket(interaction, subject);
+}
+
+// League: the second dropdown (a match / FACEIT issue, or a roster change).
+async function handleLeagueTicketKind(interaction) {
+  if (config.ticketsStaffOnly && !isTicketStaff(interaction.member) && !isArenaTicketStaff(interaction.member)) {
+    await interaction.reply({ content: 'The new ticket system is being tested by staff right now. For now, please use the usual ticket channel.', ephemeral: true });
+    return;
+  }
+  const kind = leagueTicketKind(interaction.values?.[0]);
+  if (!kind) {
+    await interaction.reply({ content: 'Pick an option from the list.', ephemeral: true });
+    return;
+  }
+  await startTopicTicket(interaction, kind.value);
+}
+
+// Opens the form for a topic ('support', 'apply', 'match', 'roster'), or for a captain's roster
+// change the ticket itself.
+async function startTopicTicket(interaction, topic) {
+  if (!ticketTopic(topic) || topic === 'arena') {
+    await interaction.reply({ content: 'Pick a topic from the list.', ephemeral: true });
     return;
   }
   const open = (await listTickets({ status: 'open' })).find((ticket) => ticket.openerId === interaction.user.id && ticket.topic === topic);

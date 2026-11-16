@@ -9,6 +9,25 @@ export const TICKET_TOPICS = [
   { key: 'apply', label: 'Apply to Crossfire', emoji: '📝', description: 'Apply to join the Crossfire staff or crew', prefix: 'apply' }
 ];
 
+// The first dropdown on the panel. League and Arena then ask what it's about (a second
+// dropdown); the other two go straight to their form.
+export const TICKET_SUBJECTS = [
+  { key: 'league', label: 'League', emoji: '🏆', description: 'Season matches and teams: a match or FACEIT problem, or a roster change' },
+  { key: 'arena', label: 'Arena', emoji: '🎮', description: 'Crossfire Arena 10mans: report a player, live game problem, appeal, FACEIT link help' },
+  { key: 'apply', label: 'Apply to Crossfire', emoji: '📝', description: 'Apply to join the Crossfire staff or crew' },
+  { key: 'support', label: 'General Support', emoji: '🛟', description: 'Questions or help with anything else' }
+];
+
+// League tickets: the opener picks one of these. Each is one of the topics above.
+export const LEAGUE_TICKET_KINDS = [
+  { value: 'match', label: 'Match / FACEIT Issue', emoji: '⚔️', description: 'A problem with a match, the FACEIT room or a server' },
+  { value: 'roster', label: 'Roster Change', emoji: '🔁', description: 'Captains: add, remove, bench or promote players' }
+];
+
+export function leagueTicketKind(value) {
+  return LEAGUE_TICKET_KINDS.find((kind) => kind.value === value) || null;
+}
+
 export function ticketTopic(key) {
   return TICKET_TOPICS.find((topic) => topic.key === key) || null;
 }
@@ -30,10 +49,12 @@ export const ARENA_LIVE_PROBLEMS = ["Server down / can't connect", 'Someone left
 export const ARENA_APPEAL_TYPES = ['Ban', 'Cooldown / queue timeout', 'Elo or result penalty', 'Other'];
 export const ARENA_LINK_ISSUES = ['Someone else has my FACEIT linked', "I'm not getting moved to my team's channel", 'Wrong FACEIT account linked to me', "Can't join the Arena hub", 'Other'];
 
-// The topic as people read it: "Arena · Report a player", "General Support".
+// The topic as people read it: "League · Roster Change", "Arena · Report a player",
+// "General Support".
 export function ticketTopicLabel(ticket) {
   const topic = ticketTopic(ticket?.topic);
   if (ticket?.topic === 'arena' && arenaTicketKind(ticket.arenaKind)) return `Arena · ${arenaTicketKind(ticket.arenaKind).label}`;
+  if (leagueTicketKind(ticket?.topic)) return `League · ${leagueTicketKind(ticket.topic).label}`;
   return topic?.label || 'Support';
 }
 
