@@ -230,6 +230,11 @@ export function getConfig() {
     vetoTurnSeconds: Math.max(15, Number(process.env.VETO_TURN_SECONDS || 120) || 120),
     vetoNoticeMinutes: Math.max(1, Number(process.env.VETO_NOTICE_MINUTES || 60) || 60),
     vetoStartMinutes: Math.max(1, Number(process.env.VETO_START_MINUTES || 20) || 20),
+    // Pinged in the match room when a veto finishes (default: League Admins), so they can set the
+    // server and maps on FACEIT. VETO_COMPLETE_PING_ROLE_IDS=none turns the ping off.
+    vetoCompletePingRoleIds: parseSnowflakeList(process.env.VETO_COMPLETE_PING_ROLE_IDS ?? '1128907825167482900'),
+    // Both teams are pinged once more this many minutes before the veto starts (0 = off).
+    vetoSoonMinutes: /^\d+$/.test(String(process.env.VETO_SOON_MINUTES ?? '').trim()) ? Number(process.env.VETO_SOON_MINUTES) : 5,
     // Empty = the built-in text: the team that didn't pick the map chooses its side; deciders are a knife round.
     vetoSidePolicy: process.env.VETO_SIDE_POLICY?.trim() || '',
     vetoAdvantageTeam: process.env.VETO_ADVANTAGE_TEAM || null,

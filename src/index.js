@@ -9725,9 +9725,15 @@ async function announceVetoResult(veto, stored) {
   const roleIds = vetoTeamRoleIds(stored);
   const room = veto.channelId ? await client.channels.fetch(veto.channelId).catch(() => null) : null;
   if (room?.isTextBased?.()) {
+    // League Admins are pinged with the result so they can set the server and maps on FACEIT.
+    const adminRoleIds = config.vetoCompletePingRoleIds;
     await room.send({
-      content: `✅ ${roleIds.map((id) => `<@&${id}>`).join(' ')} **Map veto complete**\n${result}`.slice(0, 2000),
-      allowedMentions: { parse: [], roles: roleIds }
+      content: [
+        `✅ ${roleIds.map((id) => `<@&${id}>`).join(' ')} **Map veto complete**`,
+        result,
+        adminRoleIds.length ? `${adminRoleIds.map((id) => `<@&${id}>`).join(' ')} the veto is done: please set this up on FACEIT.` : null
+      ].filter(Boolean).join('\n').slice(0, 2000),
+      allowedMentions: { parse: [], roles: [...roleIds, ...adminRoleIds] }
     }).catch(() => null);
   }
   const coverage = await getMainStreamCoverage(veto.matchId).catch(() => null);
@@ -10445,10 +10451,26 @@ async function runOperationsTick() {
     const scheduledAtIso = new Date(startMs).toISOString();
 
     if (startMs - now > startLeadMs) {
-      // Not time to start yet: the heads-up, once per scheduled time.
-      if (existing?.noticeFor === scheduledAtIso) continue;
       const roleIds = vetoTeamRoleIds(stored);
       const vetoAtIso = new Date(startMs - startLeadMs).toISOString();
+      const untilVetoMs = startMs - now - startLeadMs;
+      const soonMs = config.vetoSoonMinutes * 60 * 1000;
+      // The heads-up went out already: both teams get one more ping VETO_SOON_MINUTES (5)
+      // before the veto starts. Not when the veto is blocked (it would not start).
+      if (existing?.noticeFor === scheduledAtIso) {
+        if (soonMs > 0 && untilVetoMs <= soonMs && existing.soonNoticeFor !== scheduledAtIso && existing.status !== 'blocked') {
+          const pinged = await channel.send({
+            content: `${roleIds.map((id) => `<@&${id}>`).join(' ')} ⏳ **The map veto starts ${discordTimestamp(vetoAtIso, 'R')}** (at ${discordTimestamp(vetoAtIso, 't')}), here in this channel. ${config.vetoCaptainOnly ? 'Captains, be ready.' : 'Have someone from each team ready.'}`.trim(),
+            allowedMentions: { parse: [], roles: roleIds }
+          }).then(() => true).catch((error) => {
+            console.error(`Veto ${config.vetoSoonMinutes}-minute ping for ${stored.match.id} failed:`, error.message);
+            return false;
+          });
+          if (pinged) await saveVeto({ ...existing, soonNoticeFor: scheduledAtIso }, existing.version);
+        }
+        continue;
+      }
+      // Not time to start yet: the heads-up, once per scheduled time.
       const sent = await channel.send({
         content: [
           `${roleIds.map((id) => `<@&${id}>`).join(' ')} 📢 **Map veto reminder**`.trim(),
@@ -10467,7 +10489,9 @@ async function runOperationsTick() {
         teamA: stored.match.teamA,
         teamB: stored.match.teamB,
         status: existing?.status || 'scheduled',
-        noticeFor: scheduledAtIso
+        noticeFor: scheduledAtIso,
+        // A heads-up that goes out this close to the veto (a late approval) covers the short ping too.
+        soonNoticeFor: untilVetoMs <= soonMs ? scheduledAtIso : (existing?.soonNoticeFor || null)
       }, existing?.version ?? null);
       // Tell staff now, not at start time, if the veto can't start (no seeds, map pool...).
       try {
