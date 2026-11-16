@@ -7520,7 +7520,7 @@ function ticketModal(topicKey) {
     );
   }
   // Roster Change opened by staff for a team.
-  return modal.setTitle('Roster Change').addLabelComponents(ticketText('team', 'Team name (as on the Roster Tracking tab)', { max: 100 }));
+  return modal.setTitle('Roster Change').addLabelComponents(ticketText('team', 'Team name on FACEIT', { max: 100 }));
 }
 
 async function onDutyAdminIds(now = Date.now()) {

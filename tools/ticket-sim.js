@@ -69,7 +69,7 @@ const FORMS = {
     para('experience', 'Relevant experience'),
     para('links', 'Links (portfolio, channel, VODs…)', { required: false })
   ] },
-  roster: { title: 'Roster Change', fields: [text('team', 'Team name (as on the Roster Tracking tab)')] },
+  roster: { title: 'Roster Change', fields: [text('team', 'Team name on FACEIT')] },
   'arena:report': { title: 'Arena: Report a player', fields: [
     matchLink(true),
     text('who', 'Who are you reporting? (FACEIT names)', { placeholder: 'One or more names, separated by commas' }),
