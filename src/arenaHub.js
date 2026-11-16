@@ -20,6 +20,7 @@ import {
   BOARD_HEADING,
   LEADERBOARD_HEADING,
   QUEUE_HEADING,
+  STATS_VERSION,
   cancelledGame,
   compactGame,
   createGameStore,
@@ -38,7 +39,8 @@ import {
   recapText,
   seasonAt,
   statsCard,
-  weeklyRecap
+  weeklyRecap,
+  withStats
 } from './arenaGames.js';
 import { arenaFaceitUrl, arenaMatchOver, arenaTeams, arenaTeamsLocked, parseFaceitNickname } from './arenaLogic.js';
 import { RANKS, RATING_DEFAULTS, assignRanks, decayStatus, expectedWin, rankLevel, rankName, ratingSummary, ratingSummaryText, replayRatings } from './arenaRating.js';
@@ -59,6 +61,8 @@ const BACKFILL_PER_TICK = 15;
 const BACKFILL_MAX_OFFSET = 1000;
 const ROLE_CHANGES_PER_TICK = 30;
 const HISTORY_PER_PAGE = 10;
+// How often one person can post their stats card in a channel.
+const SHARE_COOLDOWN_MS = 30 * 1000;
 
 // Midnight on a YYYY-MM-DD day in a time zone, as a timestamp.
 export function zoneMidnightMs(dateKey, timeZone = 'America/Chicago') {
@@ -92,6 +96,7 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
   let rating = null;
   const cardSignatures = new Map();
   const positionCache = new Map();
+  const lastShared = new Map();
   const warned = new Set();
 
   function warnOnce(key, message) {
@@ -614,6 +619,32 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
     await saveArenaHubState({ backfill: { offset: next, done: false } });
   }
 
+  // Matches saved before the stats they keep were extended (HLTV rating needs the rounds and
+  // multi-kills) get their stats read again from FACEIT, a few per pass. Until a match has
+  // them its loss protection falls back to ADR. Nothing is announced for these.
+  async function upgradeStats() {
+    const state = await getArenaHubState();
+    if (!state.backfill?.done || now() < backoffUntil) return;
+    const old = (await games.all()).filter((game) => isFinished(game) && (game.sv || 1) < STATS_VERSION);
+    if (!old.length) return;
+    const records = [];
+    for (const game of old.slice(0, BACKFILL_PER_TICK)) {
+      try {
+        records.push(withStats(game, await faceit.getMatchStats(game.id)));
+      } catch (error) {
+        if (rateLimited(error)) break;
+        // FACEIT has no stats for this match (404): nothing more to get. Anything else is a
+        // passing problem, so the match is left for the next pass.
+        if (/^FACEIT 404:/.test(String(error?.message || ''))) records.push(withStats(game, null));
+      }
+    }
+    if (!records.length) return;
+    await games.upsert(records);
+    await recompute();
+    leaderboardAt = 0;
+    if (old.length <= records.length) console.log(`[Arena] match stats refreshed for HLTV rating on ${(await games.all()).filter(isFinished).length} matches`);
+  }
+
   async function finishBackfill(offset) {
     await saveArenaHubState({ backfill: { offset, done: true } });
     await recompute();
@@ -638,10 +669,44 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
     return { playerId, discordId: playerId ? links[playerId]?.discordId || null : null, typed: nickname, links };
   }
 
+  // The stats card for one player: { card } or { message } when there is nothing to show.
+  async function statsFor(playerId, { askedSeason = null, discordId = null, typed = null, links = null } = {}) {
+    if (!rating) await recompute();
+    const all = await games.all();
+    const list = await seasons();
+    const known = links || await listArenaLinks();
+    const shown = askedSeason ?? (currentSeason(list, now()) || latestSeason(list, now()))?.season ?? null;
+    const allTime = playerRecord(all, playerId, { ratings: rating.games });
+    const nickname = allTime.nickname || known[playerId]?.nickname || typed || 'Player';
+    const state = await getArenaHubState();
+    const loading = !state.backfill?.done;
+    if (!allTime.played) return { message: `**${nickname}** has no Arena games on record.${loading ? ' Older games are still being loaded from FACEIT, so try again later.' : ''}` };
+    const season = shown !== null ? playerRecord(all, playerId, { season: shown, ratings: rating.games }) : null;
+    // Asking for a season shows that season's last games.
+    if (askedSeason !== null && season) allTime.last = season.last;
+    const player = rating.players.get(playerId) || null;
+    return {
+      card: statsCard({
+        nickname,
+        discordId: discordId ?? known[playerId]?.discordId ?? null,
+        faceitUrl: `https://www.faceit.com/en/players/${encodeURIComponent(nickname)}`,
+        rating: player,
+        rank: rankOf(playerId),
+        allTime,
+        season,
+        seasonName: shown !== null ? (list.find((entry) => entry.season === shown)?.name || `Season ${shown}`) : null,
+        position: shown !== null && season?.played ? await seasonPosition(shown, playerId).catch(() => null) : null,
+        decay: player ? decayStatus(player, now(), settings) : null,
+        loading
+      })
+    };
+  }
+
+  // /arena stats. Only the person asking sees the reply; a "Post in channel" button under it
+  // (or share:true) puts the card in the channel for everyone.
   async function handleStats(interaction) {
     const share = interaction.options.getBoolean('share') || false;
     await interaction.deferReply({ ephemeral: !share });
-    if (!rating) await recompute();
     const who = await resolvePlayer(interaction.options.getString('player'), interaction.user.id);
     if (!who.playerId) {
       await interaction.editReply({
@@ -654,35 +719,36 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
       });
       return;
     }
-    const all = await games.all();
-    const list = await seasons();
     const asked = interaction.options.getInteger('season');
-    const shown = asked ?? (currentSeason(list, now()) || latestSeason(list, now()))?.season ?? null;
-    const allTime = playerRecord(all, who.playerId, { ratings: rating.games });
-    const nickname = allTime.nickname || who.links[who.playerId]?.nickname || who.typed || 'Player';
-    const state = await getArenaHubState();
-    const loading = !state.backfill?.done;
-    if (!allTime.played) {
-      await interaction.editReply(`**${nickname}** has no Arena games on record.${loading ? ' Older games are still being loaded from FACEIT, so try again later.' : ''}`);
+    const result = await statsFor(who.playerId, { askedSeason: asked, discordId: who.discordId, typed: who.typed, links: who.links });
+    if (!result.card) {
+      await interaction.editReply(result.message);
       return;
     }
-    const season = shown !== null ? playerRecord(all, who.playerId, { season: shown, ratings: rating.games }) : null;
-    // Asking for a season shows that season's last games.
-    if (asked !== null && season) allTime.last = season.last;
-    const player = rating.players.get(who.playerId) || null;
-    await interaction.editReply(cardPayload(statsCard({
-      nickname,
-      discordId: who.discordId,
-      faceitUrl: `https://www.faceit.com/en/players/${encodeURIComponent(nickname)}`,
-      rating: player,
-      rank: rankOf(who.playerId),
-      allTime,
-      season,
-      seasonName: shown !== null ? (list.find((entry) => entry.season === shown)?.name || `Season ${shown}`) : null,
-      position: shown !== null && season?.played ? await seasonPosition(shown, who.playerId).catch(() => null) : null,
-      decay: player ? decayStatus(player, now(), settings) : null,
-      loading
-    })));
+    const payload = cardPayload(result.card);
+    if (!share) {
+      payload.components = [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`arenast:${who.playerId}:${asked ?? 'now'}`).setLabel('Post in channel').setStyle(ButtonStyle.Primary)
+      )];
+    }
+    await interaction.editReply(payload);
+  }
+
+  // "Post in channel" under a stats reply: the card goes in the channel for everyone to see.
+  async function shareStats(interaction, playerId, seasonText) {
+    const last = lastShared.get(interaction.user.id) || 0;
+    if (now() - last < SHARE_COOLDOWN_MS) {
+      await interaction.reply({ content: `You just posted one. Try again in ${Math.ceil((SHARE_COOLDOWN_MS - (now() - last)) / 1000)} seconds.`, ephemeral: true });
+      return;
+    }
+    const asked = /^[0-9]+$/.test(String(seasonText)) ? Number(seasonText) : null;
+    const result = await statsFor(playerId, { askedSeason: asked });
+    if (!result.card) {
+      await interaction.reply({ content: result.message, ephemeral: true });
+      return;
+    }
+    lastShared.set(interaction.user.id, now());
+    await interaction.reply({ ...cardPayload(result.card), content: `Shared by <@${interaction.user.id}>`, ephemeral: false });
   }
 
   function historyPayload(playerId, nickname, page, gameUrls) {
@@ -756,8 +822,14 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
     }
   }
 
-  // Buttons: rating history pages and the recalc confirmation.
+  // Buttons: "Post in channel" under a stats reply (anyone), and for staff the rating history
+  // pages and the recalc confirmation.
   async function handleComponent(interaction) {
+    const parts = String(interaction.customId).split(':');
+    if (parts[0] === 'arenast') {
+      await shareStats(interaction, parts[1], parts[2]);
+      return;
+    }
     if (!isStaff(interaction.member)) {
       await interaction.reply({ content: 'Only Staff and Arena Admins can use the rating tools.', ephemeral: true });
       return;
@@ -799,6 +871,7 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
       await step('rank roles', syncRankRoles);
       await step('weekly recap', postWeeklyRecap);
       await step('older matches', backfill);
+      await step('stats refresh', upgradeStats);
     } finally {
       running = false;
     }

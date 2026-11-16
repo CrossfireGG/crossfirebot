@@ -6,6 +6,7 @@ import {
   assignRanks,
   decayStatus,
   expectedWin,
+  hltvRating,
   lossProtection,
   ratingChange,
   ratingSummary,
@@ -236,4 +237,39 @@ test('the sanity summary after a recalc', () => {
   assert.equal(summary.top.length, 10);
   assert.equal(summary.top[0].rating, summary.max);
   assert.equal(Object.values(summary.perRank).reduce((sum, count) => sum + count, 0), 10);
+});
+
+test('HLTV Rating 1.0 from the match stats', () => {
+  // 25 kills, 15 deaths in 26 rounds, with four double-kill rounds and two triple-kill rounds:
+  // kill 1.416, survival 1.335, multi-kill (11 + 16 + 18) / 26 / 1.277 = 1.355 -> 1.37.
+  assert.equal(hltvRating({ kills: 25, deaths: 15, rounds: 26, k2: 4, k3: 2 }), 1.37);
+  // No multi-kills: every kill is a single.
+  assert.equal(hltvRating({ kills: 20, deaths: 12, rounds: 20 }), 1.16);
+  // An average game is close to 1.00.
+  assert.equal(hltvRating({ kills: 17, deaths: 17, rounds: 24, k2: 3, k3: 1 }), 0.98);
+  assert.equal(hltvRating({ kills: 0, deaths: 20, rounds: 20 }), 0);
+  assert.equal(hltvRating({ kills: 10, deaths: 5, rounds: 0 }), 0, 'no rounds, no rating');
+  // An ace round counts for much more than five single kills.
+  assert.ok(hltvRating({ kills: 5, deaths: 10, rounds: 20, k5: 1 }) > hltvRating({ kills: 5, deaths: 10, rounds: 20 }));
+});
+
+test('loss protection goes by HLTV rating; ADR when a match has no rating, or when set to ADR', () => {
+  // b1 has the best HLTV rating on the losing team but ordinary damage; b2 the reverse.
+  const byRating = game('g1', 0, 0, { adr: { b1: 80, b2: 130, b3: 80, b4: 80, b5: 80 } });
+  for (const line of byRating.teams.flat().flatMap((team) => team.players)) line.hr = 1;
+  byRating.teams[1].players[0].hr = 1.6;
+  byRating.teams[1].players[1].hr = 0.9;
+  let result = replayRatings([byRating], [], { nowMs: T0 }).games.get('g1').players;
+  assert.equal(result.b1.protection, '50', 'the best rating on the losing side is protected');
+  assert.equal(result.b1.change, -12);
+  assert.equal(result.b2.protection, 'none', 'damage alone no longer protects');
+  assert.equal(result.b2.change, -24);
+  // The same match with the setting on ADR.
+  result = replayRatings([byRating], [], { nowMs: T0, settings: { ...S, protectionStat: 'adr' } }).games.get('g1').players;
+  assert.equal(result.b1.protection, 'none');
+  assert.equal(result.b2.protection, '50');
+  // An older match saved without HLTV ratings: ADR is used.
+  result = replayRatings([game('g1', 0, 0, { adr: { b1: 130, b2: 115, b3: 85, b4: 85, b5: 85 } })], [], { nowMs: T0 }).games.get('g1').players;
+  assert.equal(result.b1.protection, '50');
+  assert.equal(result.b2.protection, '75');
 });

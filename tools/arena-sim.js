@@ -207,12 +207,14 @@ function simStats(match, winner, carry) {
     const adr = Math.round((62 + (base % 34) + (won ? 6 : 0)) * boost * 10) / 10;
     const kills = Math.round(adr / 4.2);
     const deaths = won ? 13 + (base % 5) : 17 + (base % 5);
-    return { player_id: player.player_id, nickname: player.nickname, player_stats: { Kills: String(kills), Deaths: String(deaths), Assists: String(2 + (base % 7)), ADR: String(adr), 'K/D Ratio': (kills / deaths).toFixed(2), 'Headshots %': String(30 + (base % 35)), MVPs: String(base % 6) } };
+    const doubles = Math.min(Math.floor(kills / 5), 4);
+    const triples = kills > 22 ? 1 : 0;
+    return { player_id: player.player_id, nickname: player.nickname, player_stats: { Kills: String(kills), Deaths: String(deaths), Assists: String(2 + (base % 7)), ADR: String(adr), 'K/D Ratio': (kills / deaths).toFixed(2), 'Headshots %': String(30 + (base % 35)), MVPs: String(base % 6), 'Double Kills': String(doubles), 'Triple Kills': String(triples), 'Quadro Kills': '0', 'Penta Kills': '0' } };
   };
   const team = (faction, index) => ({
     players: match.teams[faction].roster.map((player, position) => line(player, winner === index, carry && winner !== index && position === 0 ? 1.75 : carry && winner !== index && position === 1 ? 1.25 : 1))
   });
-  return { rounds: [{ round_stats: { Map: match.voting?.map?.pick?.[0] || 'de_mirage' }, teams: [team('faction1', 0), team('faction2', 1)] }] };
+  return { rounds: [{ round_stats: { Map: match.voting?.map?.pick?.[0] || 'de_mirage', Rounds: '22' }, teams: [team('faction1', 0), team('faction2', 1)] }] };
 }
 
 // ---------- what the page can do ----------
@@ -343,7 +345,7 @@ const actions = {
     if (body.customId) await hub.handleComponent(interaction);
     else if (body.command === 'stats') await hub.handleStats(interaction);
     else await hub.handleRating(interaction);
-    const shared = replies.some((reply) => reply.public);
+    const shared = replies.some((reply) => reply.public || reply.ephemeral === false);
     const last = replies.filter((reply) => !reply.public).at(-1);
     ephemeral = last ? [{ label: body.label || '/arena', shared, payload: typeof last === 'string' ? { content: last } : last, at: now() }] : [];
     await settle();

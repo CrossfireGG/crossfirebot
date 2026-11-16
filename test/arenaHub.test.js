@@ -96,7 +96,7 @@ test('the match record: finished and cancelled matches, keyed by FACEIT player i
   assert.deepEqual(game.score, [16, 19]);
   assert.equal(game.winner, 1);
   assert.deepEqual(game.teams.map((team) => `${team.label}:${team.captain}`), ['Team Zoro:a1', 'Team Beta:b1']);
-  assert.deepEqual(game.teams[0].players[0], { id: 'a1', n: 'A-nick1', k: 10, d: 12, a: 3, adr: 80, kd: 0.83, hs: 40, mvp: 2 });
+  assert.deepEqual(game.teams[0].players[0], { id: 'a1', n: 'A-nick1', k: 10, d: 12, a: 3, adr: 80, kd: 0.83, hs: 40, mvp: 2, hr: 0.78 });
   assert.equal(game.teams[0].players[4].left, true, 'on the roster with no stats line: they left');
   assert.equal(game.teams[1].players[0].left, undefined);
   assert.deepEqual(game.voice, { a1: { joinedAt: 'x', leftAt: 'y', seconds: 1800 } });
@@ -138,7 +138,7 @@ test('a player record: all time, one season, streaks, the last games and their r
   assert.equal(all.bestStreak, 2);
   assert.equal(all.streak, 2, 'two wins in a row now');
   assert.equal(all.nickname, 'A-nick1');
-  assert.deepEqual(all.last.map((game) => `${game.won ? 'W' : 'L'} ${game.score} ${game.map} ${game.change}`), ['W 13-7 Mirage 19', 'W 13-7 Dust2 22', 'L 7-13 Mirage -30', 'W 13-7 Mirage 21', 'W 13-7 Mirage 24'], 'newest first');
+  assert.deepEqual(all.last.map((game) => `${game.won ? 'W' : 'L'} ${game.score} ${game.map} ${game.change}`), ['W 13-7 Mirage 19', 'W 13-7 Dust2 22', 'L 7-13 Mirage -15', 'W 13-7 Mirage 21', 'W 13-7 Mirage 24'], 'newest first');
   const s7 = playerRecord(games, 'a1', { season: 7 });
   assert.equal(`${s7.won}-${s7.lost}`, '2-1');
   assert.deepEqual(playerSeasons(games, 'a1'), [8, 7]);
@@ -249,12 +249,13 @@ test('/arena stats and the rating history page', () => {
   assert.equal(card.title, '🎮 Arena stats: A-nick1');
   assert.match(card.description, /^\[FACEIT profile\]\(https:\/\/f\) · <@111>\n_Older games are still being loaded/);
   assert.equal(card.fields[0].name, 'CF rating');
-  assert.match(card.fields[0].value, /^\*\*1056\*\* · Ember I\nPeak 1056 · last 5 games: \+56\nDecay starts in 6 days without a game\.$/);
-  assert.match(card.fields[1].value, /^\*\*5\*\* games · \*\*4W–1L\*\* · 80% wins\nK\/D 1\.67 · ADR 80\nBest win streak: 2\nCurrent streak: 2 wins$/);
+  assert.match(card.fields[0].value, /^\*\*1071\*\* · Ember I\nPeak 1071 · last 5 games: \+71\nDecay starts in 6 days without a game\.$/);
+  assert.match(card.fields[1].value, /^\*\*5\*\* games · \*\*4W–1L\*\* · 80% wins\nK\/D 1\.67 · ADR 80 · Rating 1\.16\nBest win streak: 2\nCurrent streak: 2 wins$/);
   assert.equal(card.fields[2].name, 'Season 8');
   assert.match(card.fields[2].value, /\*\*2W–0L\*\* · 100% wins[\s\S]*Season leaderboard: #3$/);
-  assert.match(card.fields[3].value, /^🟢 W · Mirage · 13-7 · 20-12 · ADR 80 · \+19\n/);
-  assert.match(card.fields[3].value, /🔴 L · Mirage · 7-13 · 20-12 · ADR 80 · −30/);
+  assert.match(card.fields[3].value, /^🟢 W · Mirage · 13-7 · 20-12 · 1\.16 rating · \+19\n/);
+  // The loss was protected: a1 played well above their own team (HLTV rating).
+  assert.match(card.fields[3].value, /🔴 L · Mirage · 7-13 · 20-12 · 1\.16 rating · −15 🛡️/);
   // Still placing, not linked, decaying.
   const placing = statsCard({ nickname: 'New', rating: { rating: 1048, peak: 1048 }, rank: { label: 'Placing 2/5', placing: true }, allTime: playerRecord(games.slice(0, 2), 'a1'), decay: { state: 'none' } });
   assert.match(placing.description, /Discord not linked/);
@@ -583,4 +584,82 @@ test('arena hub: match from draft to result with ratings, boards, roles, rank-up
   await hub2.tick();
   assert.equal(world.sent.length, before2, 'no second board, queue or leaderboard message');
   assert.equal((await store.getArenaHubState()).boardMessageId, board.id);
+});
+
+test('arena hub: stats reply has a Post in channel button; older matches get their stats refreshed', async () => {
+  const world = fakeWorld();
+  const clock = { ms: Date.UTC(2026, 10, 12, 1) };
+  const gamesFile = path.join(tempDir, 'share-games.json');
+  const games = createGameStore(gamesFile);
+  // A match saved before HLTV ratings were kept: no rounds, no rating, stats version 1.
+  const old = hubMatch({ id: 'older', winner: 'faction1', score: [13, 7], finishedMs: Date.UTC(2026, 10, 10, 20) });
+  const saved = compactGame(old, hubStats(old), { seasons: SEASONS });
+  delete saved.sv;
+  delete saved.rounds;
+  for (const line of saved.teams.flatMap((team) => team.players)) delete line.hr;
+  await games.upsert(saved);
+  const asked = [];
+  const faceit = {
+    request: async (requestPath) => {
+      if (requestPath.startsWith('/leaderboards/hubs/hub/seasons/8')) return { items: [] };
+      if (requestPath.startsWith('/leaderboards/hubs/hub?')) return { items: LEADERBOARDS };
+      if (requestPath === '/hubs/hub') return { faceit_url: 'https://www.faceit.com/{lang}/hub/hub/Arena' };
+      return { items: [] };
+    },
+    getMatchRaw: async () => old,
+    getMatchStats: async (id) => {
+      asked.push(id);
+      const stats = hubStats(old, { kills: { b1: 30 } });
+      stats.rounds[0].round_stats.Rounds = '20';
+      for (const line of stats.rounds[0].teams.flatMap((team) => team.players)) Object.assign(line.player_stats, { 'Double Kills': '2', 'Triple Kills': '0', 'Quadro Kills': '0', 'Penta Kills': '0' });
+      return stats;
+    },
+    getPlayerByNickname: async () => null
+  };
+  const config = { arenaEnabled: true, arenaHubId: 'hub', arenaGamesChannelId: 'games', arenaDataChannelId: 'data', arenaQueueChannelId: 'queue', arenaTeamSize: 5, arenaTimeZone: 'America/Chicago', arenaRecapTime: '12:00', arenaDecayTime: '05:00', arenaLeaderboardSize: 25, arenaBannedFaceitIds: [] };
+  await store.saveArenaHubState({ backfill: { offset: 0, done: true } });
+  const hub = createArenaHub({ client: world.client, faceit, config, games, ratingStore: createRatingStore(path.join(tempDir, 'share-ratings.json')), isStaff: () => false, now: () => clock.ms });
+
+  // Before the refresh the old match has no HLTV rating, so its loss protection uses ADR.
+  await hub.recompute();
+  assert.equal(hub.ratings().games.get('older').players.b1.protection, 'none');
+  await hub.tick();
+  assert.deepEqual(asked, ['older'], 'its stats are read again from FACEIT');
+  const refreshed = await games.get('older');
+  assert.equal(refreshed.sv, 2);
+  assert.equal(refreshed.rounds, 20);
+  assert.equal(refreshed.teams[1].players[0].hr, 1.64);
+  assert.equal(hub.ratings().games.get('older').players.b1.protection, '50', 'now protected by HLTV rating');
+  await hub.tick();
+  assert.equal(asked.length, 1, 'only once');
+
+  // /arena stats: only you see it, with a button to post it for everyone.
+  const replies = [];
+  await hub.handleStats(interactionFor(replies, { as: 'd-a1' }));
+  const reply = replies.at(-1);
+  const button = reply.components[0].components[0].data;
+  assert.equal(button.label, 'Post in channel');
+  assert.equal(button.custom_id, 'arenast:a1:now');
+  assert.match(reply.embeds[0].data.fields[1].value, /Rating 0\.\d\d/);
+  // Anyone can press it (it is not a staff button). The card is posted publicly, pinging nobody.
+  await hub.handleComponent(interactionFor(replies, { as: 'd-a1', customId: button.custom_id }));
+  const shared = replies.at(-1);
+  assert.equal(shared.ephemeral, false);
+  assert.equal(shared.content, 'Shared by <@d-a1>');
+  assert.equal(shared.embeds[0].data.title, '🎮 Arena stats: A-nick1');
+  assert.deepEqual(shared.allowedMentions, { parse: [] });
+  assert.equal(shared.components, undefined, 'the public copy has no button');
+  // Not again straight away.
+  await hub.handleComponent(interactionFor(replies, { as: 'd-a1', customId: button.custom_id }));
+  assert.match(replies.at(-1).content, /You just posted one\. Try again in \d+ seconds\./);
+  assert.equal(replies.at(-1).ephemeral, true);
+  clock.ms += 31_000;
+  await hub.handleComponent(interactionFor(replies, { as: 'd-a1', customId: button.custom_id }));
+  assert.equal(replies.at(-1).ephemeral, false);
+  // share:true posts it straight away, with no button needed.
+  await hub.handleStats(interactionFor(replies, { as: 'd-a1', share: true }));
+  assert.equal(replies.at(-1).components, undefined);
+  // A season on the button is kept.
+  await hub.handleStats(interactionFor(replies, { as: 'd-a1', season: 7 }));
+  assert.equal(replies.at(-1).components[0].components[0].data.custom_id, 'arenast:a1:7');
 });

@@ -6,7 +6,8 @@
 // A match record (everything is keyed by FACEIT player id):
 //   { id, hubId, number, status: 'finished' | 'cancelled', season, startedAt, finishedAt, map,
 //     server, score: [a, b], winner: 0 | 1, url, hasStats,
-//     teams: [{ label, captain, players: [{ id, n, k, d, a, adr, kd, hs, mvp, left }] }],
+//     rounds, sv (stats version),
+//     teams: [{ label, captain, players: [{ id, n, k, d, a, adr, kd, hs, mvp, hr (HLTV Rating 1.0), left }] }],
 //     voice: { [playerId]: { joinedAt, leftAt, seconds } } }
 // The rating fields of a match (team averages, win chance, each player's rating before/after,
 // K, loss protection, placement) come from the replay in src/arenaRating.js.
@@ -15,6 +16,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { arenaFaceitUrl, arenaTeams } from './arenaLogic.js';
+import { hltvRating } from './arenaRating.js';
 import { prettyMapName } from './matchResult.js';
 
 // ---------- seasons (the FACEIT hub's season leaderboards) ----------
@@ -82,41 +84,71 @@ export function compactGame(match, stats = null, extra = {}) {
   const score = match?.results?.score;
   if (!match?.match_id || !['faction1', 'faction2'].includes(winnerFaction) || !score) return null;
   const round = stats?.rounds?.[0] || null;
-  const statsByPlayer = new Map();
-  for (const team of round?.teams || []) {
-    for (const player of team.players || []) statsByPlayer.set(player.player_id, player.player_stats || {});
-  }
+  const statsByPlayer = statLines(stats);
   const hasStats = statsByPlayer.size > 0;
+  const totals = [number(score.faction1), number(score.faction2)];
+  const rounds = number(round?.round_stats?.Rounds) || totals[0] + totals[1];
   return {
     ...baseRecord(match, extra),
     status: 'finished',
     map: prettyMapName(round?.round_stats?.Map || match.voting?.map?.pick?.[0] || ''),
-    score: [number(score.faction1), number(score.faction2)],
+    score: totals,
     winner: winnerFaction === 'faction1' ? 0 : 1,
     hasStats,
+    rounds,
+    sv: STATS_VERSION,
     teams: arenaTeams(match).map((team) => ({
       label: team.label,
       captain: match.teams?.[team.faction]?.leader || null,
-      players: team.players.map((player) => {
-        const line = statsByPlayer.get(player.playerId);
-        const kills = number(line?.Kills);
-        const deaths = number(line?.Deaths);
-        return {
-          id: player.playerId,
-          n: player.nickname,
-          k: kills,
-          d: deaths,
-          a: number(line?.Assists),
-          adr: number(line?.ADR),
-          kd: number(line?.['K/D Ratio']) || (deaths ? Math.round((kills / deaths) * 100) / 100 : kills),
-          hs: number(line?.['Headshots %']),
-          mvp: number(line?.MVPs),
-          // On the roster but with no line in FACEIT's stats while teammates have one: they
-          // left before the game was played out. Their team is treated as short-handed.
-          ...(hasStats && !line ? { left: true } : {})
-        };
-      })
+      players: team.players.map((player) => statLine(player.playerId, player.nickname, statsByPlayer.get(player.playerId), rounds, hasStats))
     }))
+  };
+}
+
+// Raised when a match's saved stats gain something (2: rounds and HLTV rating). Matches saved
+// with an older version get their stats read again from FACEIT (src/arenaHub.js).
+export const STATS_VERSION = 2;
+
+function statLines(stats) {
+  const lines = new Map();
+  for (const team of stats?.rounds?.[0]?.teams || []) {
+    for (const player of team.players || []) lines.set(player.player_id, player.player_stats || {});
+  }
+  return lines;
+}
+
+function statLine(id, nickname, line, rounds, hasStats) {
+  const kills = number(line?.Kills);
+  const deaths = number(line?.Deaths);
+  return {
+    id,
+    n: nickname,
+    k: kills,
+    d: deaths,
+    a: number(line?.Assists),
+    adr: number(line?.ADR),
+    kd: number(line?.['K/D Ratio']) || (deaths ? Math.round((kills / deaths) * 100) / 100 : kills),
+    hs: number(line?.['Headshots %']),
+    mvp: number(line?.MVPs),
+    hr: line ? hltvRating({ kills, deaths, rounds, k2: number(line['Double Kills']), k3: number(line['Triple Kills']), k4: number(line['Quadro Kills']), k5: number(line['Penta Kills']) }) : 0,
+    // On the roster but with no line in FACEIT's stats while teammates have one: they left
+    // before the game was played out. Their team is treated as short-handed.
+    ...(hasStats && !line ? { left: true } : {})
+  };
+}
+
+// A stored finished match with its stats read again from FACEIT (same players, new numbers).
+// With no stats payload the match is only marked as checked.
+export function withStats(game, stats) {
+  const lines = statLines(stats);
+  if (!lines.size) return { ...game, sv: STATS_VERSION };
+  const rounds = number(stats.rounds?.[0]?.round_stats?.Rounds) || (game.score ? game.score[0] + game.score[1] : 0);
+  return {
+    ...game,
+    hasStats: true,
+    rounds,
+    sv: STATS_VERSION,
+    teams: game.teams.map((team) => ({ ...team, players: team.players.map((player) => statLine(player.id, player.n, lines.get(player.id), rounds, true)) }))
   };
 }
 
@@ -152,7 +184,7 @@ const byFinish = (a, b) => (Date.parse(a.finishedAt || '') || 0) - (Date.parse(b
 // season: a number for one season, null for all time. ratings: the replay's per-game results
 // (Map gameId -> { players: { [id]: { change, protection } } }), for the rating change per game.
 export function playerRecord(games, playerId, { season = null, ratings = null } = {}) {
-  const record = { played: 0, won: 0, lost: 0, kills: 0, deaths: 0, assists: 0, adrTotal: 0, withStats: 0, bestStreak: 0, streak: 0, nickname: null, last: [] };
+  const record = { played: 0, won: 0, lost: 0, kills: 0, deaths: 0, assists: 0, adrTotal: 0, withStats: 0, hrTotal: 0, withRating: 0, bestStreak: 0, streak: 0, nickname: null, last: [] };
   let run = 0;
   for (const game of games.filter(isFinished).sort(byFinish)) {
     if (season !== null && game.season !== season) continue;
@@ -171,6 +203,10 @@ export function playerRecord(games, playerId, { season = null, ratings = null } 
       record.adrTotal += line.adr;
       record.withStats += 1;
     }
+    if (line.hr > 0) {
+      record.hrTotal += line.hr;
+      record.withRating += 1;
+    }
     run = won ? Math.max(run, 0) + 1 : Math.min(run, 0) - 1;
     if (run > record.bestStreak) record.bestStreak = run;
     const rated = ratings?.get?.(game.id)?.players?.[playerId] || null;
@@ -182,6 +218,7 @@ export function playerRecord(games, playerId, { season = null, ratings = null } 
       d: line.d,
       a: line.a,
       adr: line.adr,
+      hr: line.hr || 0,
       finishedAt: game.finishedAt,
       url: game.url,
       season: game.season,
@@ -193,6 +230,7 @@ export function playerRecord(games, playerId, { season = null, ratings = null } 
   record.winRate = record.played ? record.won / record.played : 0;
   record.kd = record.deaths ? record.kills / record.deaths : record.kills;
   record.adr = record.withStats ? record.adrTotal / record.withStats : 0;
+  record.hr = record.withRating ? record.hrTotal / record.withRating : 0;
   record.last = record.last.slice(-5).reverse();
   return record;
 }
@@ -446,7 +484,7 @@ export function statsCard({ nickname, discordId = null, faceitUrl = null, rating
   const record = (entry, extra = []) => (entry.played
     ? [
         `**${entry.played}** game${entry.played === 1 ? '' : 's'} · **${entry.won}W–${entry.lost}L** · ${Math.round(entry.winRate * 100)}% wins`,
-        entry.withStats ? `K/D ${entry.kd.toFixed(2)} · ADR ${Math.round(entry.adr)}` : null,
+        entry.withStats ? `K/D ${entry.kd.toFixed(2)} · ADR ${Math.round(entry.adr)}${entry.hr ? ` · Rating ${entry.hr.toFixed(2)}` : ''}` : null,
         ...extra
       ].filter(Boolean).join('\n')
     : 'No games.');
@@ -474,7 +512,7 @@ export function statsCard({ nickname, discordId = null, faceitUrl = null, rating
     game.map || 'map?',
     game.score,
     `${game.k}-${game.d}`,
-    game.adr ? `ADR ${Math.round(game.adr)}` : null,
+    game.hr ? `${game.hr.toFixed(2)} rating` : (game.adr ? `ADR ${Math.round(game.adr)}` : null),
     game.change === null ? null : `${signed(game.change)}${['50', '75', 'short'].includes(game.protection) ? ' 🛡️' : ''}`
   ].filter(Boolean).join(' · '));
   if (last.length) fields.push({ name: `Last ${last.length} game${last.length === 1 ? '' : 's'}`, value: `${last.join('\n')}${last.some((line) => line.includes('🛡️')) ? '\n-# 🛡️ loss protected' : ''}`.slice(0, 1024), inline: false });

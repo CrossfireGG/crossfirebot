@@ -298,7 +298,9 @@ export function getConfig() {
       rankXMinRating: arenaNumber('ARENA_RATING_RANK_X_MIN', 1400),
       rankXSlots: arenaNumber('ARENA_RATING_RANK_X_SLOTS', 10),
       lossProt50At: arenaNumber('ARENA_RATING_LOSS_PROT_50_AT', 1.30),
-      lossProt75At: arenaNumber('ARENA_RATING_LOSS_PROT_75_AT', 1.15)
+      lossProt75At: arenaNumber('ARENA_RATING_LOSS_PROT_75_AT', 1.15),
+      // Loss protection compares a player with their own team by HLTV Rating 1.0 ('hltv') or ADR ('adr').
+      protectionStat: /^adr$/i.test(process.env.ARENA_RATING_PROTECTION_STAT || '') ? 'adr' : 'hltv'
     },
     // The rank roles (Spark, Ember, Blaze, Inferno, Rank X, Rank X 👑) are found by name or made
     // by the bot and remembered. ARENA_RANK_ROLE_IDS (spark=ID,ember=ID,...) names them instead.

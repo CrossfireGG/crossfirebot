@@ -22,8 +22,28 @@ export const RATING_DEFAULTS = {
   lossProt50At: 1.30,
   lossProt75At: 1.15,
   // A short team (someone left) that loses: its remaining players lose this share.
-  shortTeamMultiplier: 0.5
+  shortTeamMultiplier: 0.5,
+  // What "playing well" is measured by for loss protection: 'hltv' (HLTV Rating 1.0, worked out
+  // from the match stats) or 'adr'. A match without the numbers for HLTV falls back to ADR.
+  protectionStat: 'hltv'
 };
+
+// HLTV Rating 1.0 for one player in one match, from what FACEIT's match stats give:
+//   kill rating     = kills per round / 0.679
+//   survival rating = rounds survived per round / 0.317
+//   multi-kill      = (1K + 4*2K + 9*3K + 16*4K + 25*5K) per round / 1.277
+//   rating          = (kill + 0.7 * survival + multi-kill) / 2.7
+// k2..k5 are the rounds with exactly two, three, four and five kills; the rest of the kills
+// came one to a round. Returns 0 when there are no rounds.
+export function hltvRating({ kills = 0, deaths = 0, rounds = 0, k2 = 0, k3 = 0, k4 = 0, k5 = 0 } = {}) {
+  const played = Number(rounds);
+  if (!(played > 0)) return 0;
+  const k1 = Math.max(0, kills - 2 * k2 - 3 * k3 - 4 * k4 - 5 * k5);
+  const killRating = kills / played / 0.679;
+  const survivalRating = Math.max(0, played - deaths) / played / 0.317;
+  const multiKillRating = (k1 + 4 * k2 + 9 * k3 + 16 * k4 + 25 * k5) / played / 1.277;
+  return Math.round(((killRating + 0.7 * survivalRating + multiKillRating) / 2.7) * 100) / 100;
+}
 
 // Whole numbers, halves away from zero (so +x.5 and -x.5 round the same way).
 export function roundChange(value) {
@@ -35,13 +55,13 @@ export function expectedWin(teamAvg, oppAvg) {
   return 1 / (1 + 10 ** ((oppAvg - teamAvg) / 400));
 }
 
-// A losing player's share of the loss, from how they did against their own team's average ADR.
-// { multiplier, protection: 'none' | '75' | '50' }
-export function lossProtection(playerAdr, teamAvgAdr, settings = RATING_DEFAULTS) {
-  const adr = Number(playerAdr);
-  const average = Number(teamAvgAdr);
-  if (!(adr > 0) || !(average > 0)) return { multiplier: 1, protection: 'none', perf: null };
-  const perf = adr / average;
+// A losing player's share of the loss, from how they did against their own team's average
+// (HLTV rating, or ADR). { multiplier, protection: 'none' | '75' | '50' }
+export function lossProtection(playerValue, teamAverage, settings = RATING_DEFAULTS) {
+  const value = Number(playerValue);
+  const average = Number(teamAverage);
+  if (!(value > 0) || !(average > 0)) return { multiplier: 1, protection: 'none', perf: null };
+  const perf = value / average;
   // Compared to 4 decimals so 1.30 is 1.30 whatever the floating point says.
   const at = (threshold) => Math.round(perf * 10000) >= Math.round(threshold * 10000);
   if (at(settings.lossProt50At)) return { multiplier: 0.5, protection: '50', perf };
@@ -220,8 +240,11 @@ export function replayRatings(games = [], adjustments = [], { nowMs = Date.now()
     const changes = [];
     teams.forEach((team, teamIndex) => {
       const won = game.winner === teamIndex;
-      const adrs = team.map(({ line }) => Number(line.adr)).filter((value) => value > 0);
-      const teamAdr = adrs.length === team.length ? average(adrs) : null;
+      // How each player did against their own team's average: HLTV Rating 1.0 when the match
+      // has it for the whole team, otherwise ADR.
+      const stat = settings.protectionStat !== 'adr' && team.every(({ line }) => Number(line.hr) > 0) ? 'hr' : 'adr';
+      const values = team.map(({ line }) => Number(line[stat])).filter((value) => value > 0);
+      const teamValue = values.length === team.length ? average(values) : null;
       const short = team.some(({ line }) => line.left);
       for (const { line, player } of team) {
         const placement = player.games < settings.placementGames;
@@ -230,7 +253,7 @@ export function replayRatings(games = [], adjustments = [], { nowMs = Date.now()
         if (!won) {
           // A team that played short: the ones who stayed lose half, the one who left loses in full.
           if (short) protection = line.left ? { multiplier: 1, protection: 'none' } : { multiplier: settings.shortTeamMultiplier, protection: 'short' };
-          else if (game.hasStats !== false && teamAdr) protection = lossProtection(line.adr, teamAdr, settings);
+          else if (game.hasStats !== false && teamValue) protection = lossProtection(line[stat], teamValue, settings);
         }
         const change = ratingChange({ teamAvg: teamAvg[teamIndex], oppAvg: teamAvg[1 - teamIndex], k, won, multiplier: protection.multiplier });
         changes.push({ player, won, change, k, protection: protection.protection, placement });

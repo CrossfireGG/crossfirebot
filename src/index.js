@@ -634,7 +634,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleArenaRolesCommand(interaction);
       return;
     }
-    if (/^arenar[hc]:/.test(interaction.customId || '')) {
+    if (/^arena(rh|rc|st):/.test(interaction.customId || '')) {
       await arenaHub.handleComponent(interaction);
       return;
     }
