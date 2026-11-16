@@ -558,7 +558,7 @@ function renderSide() {
 
 function renderPanel() {
   $('top').innerHTML = '<b># open-a-ticket</b> · everyone can see this channel';
-  $('view').innerHTML = botMessage('<div class="embed"><div class="title">⚔️ CROSSFIRE SUPPORT ⚔️</div><div class="body">Need assistance? Our Crossfire Support Team is here to help you in real-time!\\n\\n🛠️ This is the official route for CROSSFIRE support.\\n⬇️ Use the button below to open a support ticket.\\n\\nPlease use tickets to contact staff members.</div></div><div class="rowb" id="panelRow"></div>');
+  $('view').innerHTML = botMessage('<div class="embed"><div class="title">⚔️ CROSSFIRE SUPPORT ⚔️</div><div class="body">Need assistance? Our Crossfire Support Team is here to help you!\\n\\n🛠️ This is the official route for CROSSFIRE support.\\n⬇️ Use the button below to open a support ticket.\\n\\nPlease use tickets to contact staff members.</div></div><div class="rowb" id="panelRow"></div>');
   $('panelRow').appendChild(button('📩 Contact Support', 'danger', function () {
     api({ action: 'start' }).then(function (data) { if (data && data.picker) topicPicker(); });
   }));

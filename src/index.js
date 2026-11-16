@@ -7447,7 +7447,7 @@ async function postTicketPanel(interaction) {
   const embed = new EmbedBuilder()
     .setTitle('⚔️ CROSSFIRE SUPPORT ⚔️')
     .setDescription([
-      'Need assistance? Our Crossfire Support Team is here to help you in real-time!',
+      'Need assistance? Our Crossfire Support Team is here to help you!',
       '',
       '🛠️ This is the official route for CROSSFIRE support.',
       '⬇️ Use the button below to open a support ticket.',
