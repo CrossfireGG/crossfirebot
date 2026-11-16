@@ -221,7 +221,7 @@ export function getConfig() {
     vetoMapPool: parseCsvValue(process.env.VETO_MAP_POOL || ''),
     vetoSeeds: parseNamedNumbers(process.env.VETO_SEEDS || ''),
     vetoCaptainOnly: process.env.VETO_CAPTAIN_ONLY !== 'false',
-    // Server locations, decided before the maps: ban, ban, the one left is played on.
+    // Server locations, decided after the maps: ban, ban, the one left is played on.
     // VETO_SERVER_LOCATIONS=none turns the server step off.
     vetoServerLocations: parseCsvValue(process.env.VETO_SERVER_LOCATIONS ?? 'Chicago,Denver,Dallas').filter((value) => !/^(none|off)$/i.test(value)).slice(0, 5),
     // Each veto turn (first-action choice, ban, pick, side) has this long; when it runs out the

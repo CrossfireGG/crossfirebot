@@ -156,36 +156,56 @@ test('veto turn clock: 2 minutes per turn, restarted each turn, staff pause and 
   assert.equal(again.status, 'choosing_first_action');
 });
 
-test('veto server location: ban, ban, the one left over, before any map', () => {
+test('veto server location: after the maps, ban, ban, the one left over', () => {
   const serverPool = ['Chicago', 'Denver', 'Dallas'];
   let veto = createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3', serverPool });
   assert.deepEqual(vetoServerLines(veto), ['Left: Chicago, Denver, Dallas']);
   veto = chooseFirstAction(veto, 'teamA', 'opponent'); // Bravo acts first
-  assert.equal(expectedVetoAction(veto), 'server');
-  assert.match(vetoTurnText(veto), /^Bravo: \*\*ban\*\* a server location\./);
-  assert.throws(() => applyVetoAction(veto, 'teamB', 'Ancient'), /server location must be decided first/);
-  assert.throws(() => applyServerBan(veto, 'teamA', 'Denver'), /not your team/);
-  veto = applyServerBan(veto, 'teamB', 'Denver');
-  assert.equal(veto.server, null);
-  assert.throws(() => applyServerBan(veto, 'teamA', 'Denver'), /no longer available/);
-  veto = applyServerBan(veto, 'teamA', 'Dallas');
-  assert.equal(veto.server, 'Chicago');
-  assert.equal(veto.currentTeam, 'teamB', 'the map veto starts with the team acting first');
+  // Maps first.
   assert.equal(expectedVetoAction(veto), 'ban');
-  assert.deepEqual(vetoServerLines(veto), ['1. **Bravo** ban Denver', '2. **Alpha** ban Dallas', 'Server: **Chicago**']);
-  assert.throws(() => applyServerBan(veto, 'teamB', 'Chicago'), /no server location to ban/);
+  assert.throws(() => applyServerBan(veto, 'teamB', 'Denver'), /maps are chosen first, then the server/);
   veto = applyVetoAction(veto, 'teamB', 'Ancient');
   veto = applyVetoAction(veto, 'teamA', 'Anubis');
   veto = chooseSide(applyVetoAction(veto, 'teamB', 'Mirage'), 'teamA', 'CT');
   veto = chooseSide(applyVetoAction(veto, 'teamA', 'Nuke'), 'teamB', 'T');
   veto = applyVetoAction(veto, 'teamB', 'Dust2');
   veto = applyVetoAction(veto, 'teamA', 'Inferno');
+  // The maps are done, but the veto is not: the server location is next.
+  assert.equal(veto.status, 'active');
+  assert.equal(veto.final, null);
+  assert.equal(expectedVetoAction(veto), 'server');
+  assert.equal(veto.currentTeam, 'teamB', 'the team acting first bans a server first');
+  assert.match(vetoTurnText(veto), /^Bravo: \*\*ban\*\* a server location\./);
+  assert.ok(veto.turnDeadlineAt, 'server bans are timed turns');
+  assert.throws(() => applyVetoAction(veto, 'teamB', 'Train'), /no remaining veto actions/);
+  assert.throws(() => applyServerBan(veto, 'teamA', 'Denver'), /not your team/);
+  veto = applyServerBan(veto, 'teamB', 'Denver');
+  assert.equal(veto.server, null);
+  assert.equal(veto.status, 'active');
+  assert.throws(() => applyServerBan(veto, 'teamA', 'Denver'), /no longer available/);
+  veto = applyServerBan(veto, 'teamA', 'Dallas');
+  // The last server ban ends the veto.
+  assert.equal(veto.server, 'Chicago');
   assert.equal(veto.status, 'complete');
-  assert.equal(vetoFinalLines(veto)[0], 'Server: **Chicago**');
-  // No locations configured: straight to the maps, as before.
-  const plain = chooseFirstAction(createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3' }), 'teamA', 'self');
+  assert.equal(veto.turnDeadlineAt, null);
+  assert.deepEqual(vetoServerLines(veto), ['1. **Bravo** ban Denver', '2. **Alpha** ban Dallas', 'Server: **Chicago**']);
+  assert.deepEqual(vetoFinalLines(veto), [
+    'Map 1: **Mirage** · Bravo pick · **Alpha** starts CT, Bravo starts T',
+    'Map 2: **Nuke** · Alpha pick · **Bravo** starts T, Alpha starts CT',
+    'Map 3: **Train** · decider · 🔪 **knife round** for sides',
+    'Server: **Chicago**',
+    'Starting score: **0-0**'
+  ]);
+  assert.throws(() => applyServerBan(veto, 'teamB', 'Chicago'), /no server location to ban/);
+  // No locations configured: the veto ends with the last map, as before.
+  let plain = chooseFirstAction(createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3' }), 'teamA', 'self');
   assert.equal(expectedVetoAction(plain), 'ban');
   assert.deepEqual(vetoServerLines(plain), []);
+  plain = applyVetoAction(applyVetoAction(plain, 'teamA', 'Ancient'), 'teamB', 'Anubis');
+  plain = chooseSide(applyVetoAction(plain, 'teamA', 'Mirage'), 'teamB', 'CT');
+  plain = chooseSide(applyVetoAction(plain, 'teamB', 'Nuke'), 'teamA', 'T');
+  plain = applyVetoAction(applyVetoAction(plain, 'teamA', 'Dust2'), 'teamB', 'Inferno');
+  assert.equal(plain.status, 'complete');
   assert.throws(() => createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3', serverPool: ['Chicago', 'Chicago'] }), /must all be different/);
 });
 
@@ -196,9 +216,6 @@ test('veto undo: staff take back one step at a time, down to the first choice', 
   assert.equal(vetoCanUndo(start), false);
   assert.throws(() => undoVeto(start), /nothing to undo/);
   let veto = chooseFirstAction(start, 'teamA', 'self', t0);
-  veto = applyServerBan(veto, 'teamA', 'Denver', t0);
-  veto = applyServerBan(veto, 'teamB', 'Dallas', t0);
-  assert.equal(veto.server, 'Chicago');
   veto = applyVetoAction(veto, 'teamA', 'Ancient', t0);
   veto = applyVetoAction(veto, 'teamB', 'Anubis', t0);
   veto = applyVetoAction(veto, 'teamA', 'Mirage', t0);
@@ -216,33 +233,44 @@ test('veto undo: staff take back one step at a time, down to the first choice', 
   assert.ok(veto.availableMaps.includes('Mirage'));
   assert.equal(veto.currentTeam, 'teamA');
   assert.equal(expectedVetoAction(veto), 'pick');
-  // ...two map bans, then the second server ban: the server is undecided again.
+  // ...the two map bans and the first-action choice.
   veto = undoVeto(undoVeto(undoVeto(veto, t0), t0), t0);
-  assert.equal(veto.server, null);
-  assert.deepEqual(veto.availableServers, ['Chicago', 'Dallas']);
-  assert.equal(veto.currentTeam, 'teamB');
-  // ...the first server ban and the first-action choice.
-  veto = undoVeto(undoVeto(veto, t0), t0);
   assert.equal(veto.status, 'choosing_first_action');
   assert.equal(veto.firstActionTeam, null);
   assert.equal(vetoCanUndo(veto), false);
 
-  // A finished veto can be undone too (a wrong last click); a paused one stays paused.
-  let done = chooseFirstAction(createVeto({ match, mapPool, seeds: { teamA: 1, teamB: 8 }, format: 'bo3', now: t0 }), 'teamA', 'self', t0);
+  // Through to the end: maps, sides, then the server bans.
+  let done = chooseFirstAction(start, 'teamA', 'self', t0);
   done = applyVetoAction(applyVetoAction(done, 'teamA', 'Ancient', t0), 'teamB', 'Anubis', t0);
   done = chooseSide(applyVetoAction(done, 'teamA', 'Mirage', t0), 'teamB', 'CT', t0);
   done = chooseSide(applyVetoAction(done, 'teamB', 'Nuke', t0), 'teamA', 'T', t0);
-  done = applyVetoAction(done, 'teamA', 'Dust2', t0);
+  done = applyVetoAction(applyVetoAction(done, 'teamA', 'Dust2', t0), 'teamB', 'Inferno', t0);
+  done = applyServerBan(done, 'teamA', 'Denver', t0);
+  // A paused veto stays paused when a step is undone.
   const paused = undoVeto(pauseVeto(done, t0), t0);
   assert.ok(paused.pausedAt);
   assert.equal(paused.turnDeadlineAt, null);
-  done = applyVetoAction(done, 'teamB', 'Inferno', t0);
+  assert.deepEqual(paused.availableServers, serverPool);
+  done = applyServerBan(done, 'teamB', 'Dallas', t0);
   assert.equal(done.status, 'complete');
+  assert.equal(done.server, 'Chicago');
+
+  // A finished veto can be undone too (a wrong last click): the last server ban comes back.
   done = undoVeto(done, t0);
   assert.equal(done.status, 'active');
   assert.equal(done.final, null);
+  assert.equal(done.server, null);
+  assert.deepEqual(done.availableServers, ['Chicago', 'Dallas']);
   assert.equal(done.currentTeam, 'teamB');
   assert.ok(done.turnDeadlineAt);
+  // ...then the first server ban, then the last map ban.
+  done = undoVeto(done, t0);
+  assert.equal(expectedVetoAction(done), 'server');
+  assert.equal(done.currentTeam, 'teamA');
+  done = undoVeto(done, t0);
+  assert.equal(expectedVetoAction(done), 'ban');
+  assert.equal(done.currentTeam, 'teamB');
+  assert.ok(done.availableMaps.includes('Inferno'));
 });
 
 test('veto map pool typed by staff: seven different maps, commas or spaces', () => {

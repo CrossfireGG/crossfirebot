@@ -9220,6 +9220,20 @@ function adminDecisionEmbed({ approved, stored, proposal, adminId }) {
 
   if (approved) {
     embed.setFooter({ text: 'The match channel is now marked scheduled.' });
+    // Playoff matches: say right away where and when the map veto happens.
+    const startMs = Date.parse(proposal?.scheduledAtIso || '');
+    if (isPlayoffMatch(stored.match) && Number.isFinite(startMs)) {
+      const vetoAtIso = new Date(startMs - config.vetoStartMinutes * 60 * 1000).toISOString();
+      embed.addFields({
+        name: 'Map Veto',
+        value: [
+          `The map veto (bans, picks and sides, then the server location) happens **here in this channel**, starting at ${discordTimestamp(vetoAtIso, 't')}, ${config.vetoStartMinutes} minutes before match time.`,
+          `${config.vetoCaptainOnly ? '**Team captains** make the choices, so each captain needs to be here.' : 'Someone from each team needs to be here.'} Each turn has ${turnLengthText({ turnSeconds: config.vetoTurnSeconds })}.`,
+          `You will be pinged here ${config.vetoNoticeMinutes} minutes before the match as a reminder.`
+        ].join('\n'),
+        inline: false
+      });
+    }
   }
 
   return embed;
@@ -9811,8 +9825,8 @@ function vetoMessagePayload(veto, stored) {
     .addFields(
       { name: 'Map Pool Snapshot', value: veto.mapPool.join(', ') },
       { name: 'Seeds', value: `${veto.teamA}: #${veto.teamASeed}\n${veto.teamB}: #${veto.teamBSeed}\nSource: ${veto.seedSource}` },
-      ...(veto.serverPool?.length ? [{ name: `Server Location (${veto.serverPool.join(', ')})`, value: vetoServerLines(veto).join('\n').slice(0, 1024) }] : []),
       { name: 'Actions', value: actionLines },
+      ...(veto.serverPool?.length ? [{ name: `Server Location (${veto.serverPool.join(', ')})`, value: vetoServerLines(veto).join('\n').slice(0, 1024) }] : []),
       final ? { name: 'Final Result', value: final } : { name: 'Current Turn', value: vetoTurnText(veto) },
       { name: 'Side Policy', value: veto.sidePolicy },
       ...(veto.staffActions?.length ? [{ name: 'Chosen by staff', value: veto.staffActions.map((entry) => `<@${entry.staffId}> for **${entry.team === 'teamA' ? veto.teamA : veto.teamB}**: ${entry.label}`).join('\n').slice(0, 1024) }] : []),
@@ -9871,8 +9885,8 @@ function formatVetoStatus(veto) {
     `Format: ${veto.format}`,
     `Map pool: ${(veto.mapPool || []).join(', ')}`,
     vetoInProgress(veto) ? `Turn: ${vetoTurnText(veto)}` : null,
-    ...vetoServerLines(veto),
     ...vetoActionLines(veto),
+    ...vetoServerLines(veto),
     ...vetoFinalLines(veto)
   ].filter(Boolean).join('\n'));
 }
@@ -10438,7 +10452,7 @@ async function runOperationsTick() {
       const sent = await channel.send({
         content: [
           `${roleIds.map((id) => `<@&${id}>`).join(' ')} 📢 **Map veto reminder**`.trim(),
-          `Your match is at ${discordTimestamp(scheduledAtIso, 't')}. The map veto (bans, picks and sides) happens **here in this channel**, starting at ${discordTimestamp(vetoAtIso, 't')} (${discordTimestamp(vetoAtIso, 'R')}), ${config.vetoStartMinutes} minutes before match time.`,
+          `Your match is at ${discordTimestamp(scheduledAtIso, 't')}. The map veto (bans, picks and sides, then the server location) happens **here in this channel**, starting at ${discordTimestamp(vetoAtIso, 't')} (${discordTimestamp(vetoAtIso, 'R')}), ${config.vetoStartMinutes} minutes before match time.`,
           `${config.vetoCaptainOnly ? 'Team captains make the choices, so captains need to be here.' : 'Have someone from each team here.'} Each turn has ${turnLengthText({ turnSeconds: config.vetoTurnSeconds })}.`
         ].join('\n'),
         allowedMentions: { parse: [], roles: roleIds }

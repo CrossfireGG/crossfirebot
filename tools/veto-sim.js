@@ -209,8 +209,8 @@ function message() {
   const fields = [
       { name: 'Map Pool Snapshot', value: veto.mapPool.join(', ') },
       { name: 'Seeds', value: `${veto.teamA}: #${veto.teamASeed}\n${veto.teamB}: #${veto.teamBSeed}\nSource: ${veto.seedSource}` },
-      ...(veto.serverPool.length ? [{ name: `Server Location (${veto.serverPool.join(', ')})`, value: vetoServerLines(veto).join('\n') }] : []),
       { name: 'Actions', value: actionLines },
+      ...(veto.serverPool.length ? [{ name: `Server Location (${veto.serverPool.join(', ')})`, value: vetoServerLines(veto).join('\n') }] : []),
       final ? { name: 'Final Result', value: final, turn: true } : { name: 'Current Turn', value: vetoTurnText(veto), turn: true },
       { name: 'Side Policy', value: veto.sidePolicy },
       ...(veto.staffActions?.length ? [{ name: 'Chosen by staff', value: veto.staffActions.map((entry) => `@${entry.staffId} for **${nameOf(entry.team)}**: ${entry.label}`).join('\n') }] : []),

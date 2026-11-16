@@ -563,7 +563,7 @@ The first time the bot starts with this on, it makes a **🔊 Voice** category w
 Runs in the match room for playoff matches (Rules 3.4); staff enter the result into FACEIT by hand.
 
 - **Before the match:** 60 minutes before the approved match time both team roles are pinged that the veto happens in their match room (`VETO_NOTICE_MINUTES`). The veto starts 20 minutes before match time (`VETO_START_MINUTES`). If seeds, the map pool or the Grand Final advantage team are missing, staff are told at the 60-minute mark.
-- **Server:** before the maps the teams ban a server location each (`VETO_SERVER_LOCATIONS`, default Chicago, Denver, Dallas; the team acting first bans first) and the one left over is where the match is played.
+- **Server:** after the maps and sides the teams ban a server location each (`VETO_SERVER_LOCATIONS`, default Chicago, Denver, Dallas; the team acting first bans first) and the one left over is where the match is played.
 - **Order:** the higher seed chooses who acts first. BO3: ban, ban, pick, pick, ban, ban, decider. Grand Final: ban, ban, pick, pick, pick, pick; the map left over is awarded to the Upper Bracket winner (1-0, not played). Ban buttons are red, pick buttons green.
 - **Sides:** after a team picks a map, the other team chooses the side it starts on (CT or T). A decider map is a knife round.
 - **Clock:** every turn (who acts first, ban, pick, side) has 2 minutes (`VETO_TURN_SECONDS`). The team whose turn it is gets pinged each turn. When the time runs out the team is pinged again and staff are pinged in the veto staff channel; nothing is chosen for the team.

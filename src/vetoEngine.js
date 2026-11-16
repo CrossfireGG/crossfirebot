@@ -43,7 +43,7 @@ export function createVeto({ match, mapPool, seeds, format, advantageTeam = null
     availableMaps: [...mapPool],
     actions: [],
     pendingSide: null,
-    // Server location, decided before the maps: the teams ban in turn (the team acting first
+    // Server location, decided after the maps: the teams ban in turn (the team acting first
     // goes first) until one is left. With no locations, or only one, there is nothing to ban.
     serverPool: [...serverPool],
     availableServers: [...serverPool],
@@ -83,28 +83,35 @@ function needsServer(veto) {
   return (veto.serverPool?.length || 0) > 1 && !veto.server;
 }
 
-// Server location: ban, ban, ... and the one left over is where the match is played.
+// The maps (and the sides on them) are all chosen.
+function mapsDone(veto) {
+  return !veto.pendingSide && veto.stepIndex >= veto.steps.length;
+}
+
+// Server location, after the maps: ban, ban, ... and the one left over is where the match is
+// played. The team acting first bans first.
 export function applyServerBan(veto, actorTeam, serverName, now = Date.now()) {
+  if (veto.status === 'active' && needsServer(veto) && !mapsDone(veto)) throw new Error('The maps are chosen first, then the server location.');
   if (veto.status !== 'active' || !needsServer(veto)) throw new Error('There is no server location to ban right now.');
   assertNotPaused(veto);
   if (actorTeam !== veto.currentTeam) throw new Error('It is not your team’s turn.');
   if (!veto.availableServers.includes(serverName)) throw new Error('That server location is no longer available.');
   const availableServers = veto.availableServers.filter((server) => server !== serverName);
   const decided = availableServers.length === 1;
-  return remember(veto, withTurnClock({
+  const next = {
     ...veto,
     availableServers,
     serverActions: [...(veto.serverActions || []), { index: (veto.serverActions || []).length + 1, team: actorTeam, server: serverName }],
     server: decided ? availableServers[0] : null,
-    // The map veto then starts with the team acting first.
-    currentTeam: decided ? veto.firstActionTeam : oppositeTeam(actorTeam)
-  }, now));
+    currentTeam: oppositeTeam(actorTeam)
+  };
+  // The last server ban ends the veto.
+  return remember(veto, decided ? finishIfDone(next, now) : withTurnClock(next, now));
 }
 
 export function applyVetoAction(veto, actorTeam, mapName, now = Date.now()) {
   if (veto.status !== 'active') throw new Error('This veto is not active.');
   assertNotPaused(veto);
-  if (needsServer(veto)) throw new Error('The server location must be decided first.');
   if (actorTeam !== veto.currentTeam) throw new Error('It is not your team’s turn.');
   if (veto.pendingSide) throw new Error(`A starting side on ${veto.pendingSide.map} must be chosen first.`);
   if (!veto.availableMaps.includes(mapName)) throw new Error('That map is no longer available.');
@@ -139,8 +146,10 @@ export function chooseSide(veto, actorTeam, side, now = Date.now()) {
 }
 
 function finishIfDone(next, now) {
-  if (next.pendingSide || next.stepIndex < next.steps.length) return withTurnClock(next, now);
+  if (!mapsDone(next)) return withTurnClock(next, now);
   if (next.availableMaps.length !== 1) throw new Error('Veto configuration did not leave exactly one map.');
+  // Maps done: the server location is next, starting with the team acting first.
+  if (needsServer(next)) return withTurnClock({ ...next, currentTeam: next.firstActionTeam }, now);
   return {
     ...next,
     status: 'complete',
@@ -175,13 +184,13 @@ export function buildFinalResult(veto) {
   };
 }
 
-// 'server' (ban a server location), 'ban' or 'pick' (a map), 'side' (a starting side on the map
-// just picked), or null.
+// 'ban' or 'pick' (a map), 'side' (a starting side on the map just picked), then 'server' (ban a
+// server location) once the maps are done, or null.
 export function expectedVetoAction(veto) {
   if (veto.status !== 'active') return null;
-  if (needsServer(veto)) return 'server';
   if (veto.pendingSide) return 'side';
-  return veto.steps[veto.stepIndex] || null;
+  if (veto.stepIndex < veto.steps.length) return veto.steps[veto.stepIndex];
+  return needsServer(veto) ? 'server' : null;
 }
 
 // ---------- undo ----------
@@ -311,7 +320,7 @@ export function vetoFinalLines(veto) {
     }
     return parts.join(' · ');
   });
-  if (veto.server) lines.unshift(`Server: **${veto.server}**`);
+  if (veto.server) lines.push(`Server: **${veto.server}**`);
   if (final.awardedMap) lines.push(`Awarded map (not played): **${final.awardedMap}**`);
   lines.push(`Starting score: **${final.startingScore}**`);
   return lines;
