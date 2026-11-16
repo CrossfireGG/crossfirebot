@@ -299,8 +299,9 @@ export function getConfig() {
     // When a ticket opens, an alert pings Tournament Operations in this channel.
     ticketAlertChannelId: process.env.TICKET_ALERT_CHANNEL_ID || '1570180203026849792',
     ticketAlertRoleIds: parseSnowflakeList(process.env.TICKET_ALERT_ROLE_IDS ?? tournamentOpsRoleIds.join(',')),
-    // While testing, only staff can open tickets from the panel. Set TICKETS_STAFF_ONLY=false to open it to everyone.
-    ticketsStaffOnly: process.env.TICKETS_STAFF_ONLY !== 'false',
+    // Everyone can open tickets from the panel. Set TICKETS_STAFF_ONLY=true to let only staff
+    // open them (for testing a change).
+    ticketsStaffOnly: /^(true|1|on|yes)$/i.test(String(process.env.TICKETS_STAFF_ONLY || '').trim()),
     // Arena / 10mans tickets: these league-server roles (Arena Admin, Arena Operations) can see,
     // claim and close them. The alert goes to #arena-tickets in CROSSFIRE INTERNAL and pings that
     // server's Arena role (who can also Claim from the alert).
