@@ -276,6 +276,9 @@ export function getConfig() {
     // in the hub queue. true shows who is in the Queue voice channel instead.
     arenaQueueStatus: /^(true|1|on|yes)$/i.test(process.env.ARENA_QUEUE_STATUS || ''),
     arenaDataChannelId: process.env.ARENA_DATA_CHANNEL_ID || '1571982492439683143',
+    // Rank-ups ("X just reached Ember") go to Arena chat, one message per game. Empty = the
+    // channel named "arena-chat" (found by name); none found = arena-data.
+    arenaChatChannelId: process.env.ARENA_CHAT_CHANNEL_ID || '',
     // The clock the Monday recap and the daily decay run on, and their times (24-hour HH:MM).
     arenaTimeZone: process.env.ARENA_TIME_ZONE?.trim() || 'America/Chicago',
     arenaRecapTime: arenaClock(process.env.ARENA_RECAP_TIME, '12:00'),

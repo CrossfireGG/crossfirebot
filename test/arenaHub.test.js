@@ -743,3 +743,47 @@ test('the pinned CF Rating leaderboard: top 20 of all time, placement and banned
   await hub.tick();
   assert.equal(board.edits, 1, 'not edited when nothing changed');
 });
+
+test('rank-ups go to Arena chat, one message for everyone a game moved up', async () => {
+  const world = fakeWorld();
+  const clock = { ms: Date.UTC(2026, 10, 12, 1) };
+  // Arena chat is found by name in the server (no ARENA_CHAT_CHANNEL_ID set).
+  const chat = { id: 'chat', name: '💬┃arena-chat', parentId: 'cat', guild: world.guild, isTextBased: () => true, posts: [], send: async (payload) => { chat.posts.push(payload); return { id: `chat-m${chat.posts.length}` }; } };
+  const fetchChannel = world.client.channels.fetch;
+  world.client.channels.fetch = async (id) => (id === 'chat' ? chat : fetchChannel(id));
+  world.guild.channels = { fetch: async () => new Map([['general', { id: 'general', name: 'general', isTextBased: () => true }], ['staff', { id: 'staff', name: 'arena-chat-staff', isTextBased: () => true }], ['chat', chat]]) };
+  // Team A has won five in a row (Ember I); a sixth win takes all five to Blaze.
+  const games = createGameStore(path.join(tempDir, 'chat-games.json'));
+  for (let n = 1; n <= 5; n += 1) {
+    const past = hubMatch({ id: `chat-p${n}`, winner: 'faction1', score: [13, 5], finishedMs: Date.UTC(2026, 10, 10, n) });
+    await games.upsert(compactGame(past, hubStats(past), { seasons: SEASONS }));
+  }
+  const sixth = hubMatch({ id: 'chat-g6', winner: 'faction1', score: [13, 5], finishedMs: Date.UTC(2026, 10, 12, 0) });
+  const faceit = {
+    request: async (requestPath) => (requestPath.startsWith('/leaderboards/hubs/hub?') ? { items: LEADERBOARDS } : { items: [] }),
+    getMatchRaw: async () => sixth,
+    getMatchStats: async () => hubStats(sixth),
+    getPlayerByNickname: async () => null
+  };
+  const config = { arenaEnabled: true, arenaHubId: 'hub', arenaGamesChannelId: 'games', arenaDataChannelId: 'data', arenaCategoryId: 'cat', arenaQueueChannelId: 'queue', arenaTeamSize: 5, arenaTimeZone: 'America/Chicago', arenaRecapTime: '12:00', arenaDecayTime: '05:00', arenaLeaderboardSize: 25, arenaBannedFaceitIds: [] };
+  await store.saveArenaHubState({ backfill: { offset: 0, done: true } });
+  const hub = createArenaHub({ client: world.client, faceit, config, games, ratingStore: createRatingStore(path.join(tempDir, 'chat-ratings.json')), isStaff: () => false, now: () => clock.ms });
+  await hub.recompute();
+  assert.match(hub.ratings().ranks.a1.label, /^Ember /);
+
+  const record = { id: 'chat-g6', number: 13, teams: [], voice: {} };
+  await store.saveArenaMatch('chat-g6', record);
+  await hub.hooks.onEnd(record, 'FINISHED');
+  assert.equal(chat.posts.length, 1, 'one message for the whole game');
+  const lines = chat.posts[0].content.split('\n');
+  assert.equal(lines[0], '🔥 **Rank ups from Arena 13**');
+  assert.deepEqual(lines.slice(1).map((line) => line.replace(/ \(<@[^>]+>\)/, '')), [1, 2, 3, 4, 5].map((n) => `**A-nick${n}** reached **Blaze**`));
+  assert.deepEqual(chat.posts[0].allowedMentions, { parse: [] }, 'nobody is pinged');
+  assert.equal(world.inChannel('data').filter((message) => /reached/.test(message.content)).length, 0, 'not in arena-data');
+
+  // ARENA_CHAT_CHANNEL_ID wins over the name.
+  const set = createArenaHub({ client: world.client, faceit, config: { ...config, arenaChatChannelId: 'data' }, games, ratingStore: createRatingStore(path.join(tempDir, 'chat-ratings-2.json')), isStaff: (member) => Boolean(member?.staff), now: () => clock.ms });
+  await set.recompute();
+  await set.handleRating(interactionFor([], { staff: true, sub: 'adjust', player: 'B-nick1', amount: 400, reason: 'test' }));
+  assert.match(world.inChannel('data').at(-1).content, /^🔥 \*\*B-nick1\*\*.* just reached \*\*\w+\*\*\.$/);
+});

@@ -10,6 +10,7 @@
 //   leaderboards   two pinned messages in arena-data: the hub's season standings with CF
 //                  rating, and the top 20 CF ratings of all time
 //   weekly recap   every Monday in arena-data
+//   rank-ups       in Arena chat, one message per game
 //   /arena stats   a player's rating and record
 //   staff tools    /arena rating history | adjust | recalc | ban
 // Nothing here pings anyone. Rules and text: src/arenaGames.js and src/arenaRating.js.
@@ -177,8 +178,9 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
 
   // Replays every finished match, the staff adjustments and the decay from the start rating.
   // This is the only way ratings are ever produced, so a live update, the daily decay and a
-  // staff recalc all give the same numbers. announce: post rank-ups this replay caused.
-  async function recompute({ announce = false } = {}) {
+  // staff recalc all give the same numbers. announce: post rank-ups this replay caused (`game`:
+  // the finished game that caused them, for the heading when there are several).
+  async function recompute({ announce = false, game = null } = {}) {
     const all = (await games.all()).filter(isFinished);
     const data = await ratingStore.get();
     const banned = await bannedSet();
@@ -187,13 +189,39 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
     const previous = rating;
     rating = { ...result, ranks, banned };
     const state = await getArenaHubState();
-    if (announce && previous && state.backfill?.done) await announceRankUps(previous, rating).catch((error) => console.warn(`[Arena] rank-up post failed: ${error.message}`));
+    if (announce && previous && state.backfill?.done) await announceRankUps(previous, rating, game).catch((error) => console.warn(`[Arena] rank-up post failed: ${error.message}`));
     return rating;
   }
 
-  // "Name just reached Blaze." for anyone who moved up into a higher rank (not a division, and
-  // not finishing placement). The first Rank X and the first Rank X 👑 ever get a bigger post.
-  async function announceRankUps(before, after) {
+  // Where rank-ups go: ARENA_CHAT_CHANNEL_ID, else the server's Arena chat channel found by name
+  // ("arena-chat", "💬・arena-chat", ...; one in the Arena category first), else arena-data.
+  let arenaChatId = null;
+  async function rankUpChannel() {
+    if (config.arenaChatChannelId) return textChannel(config.arenaChatChannelId);
+    if (arenaChatId) {
+      const known = await textChannel(arenaChatId);
+      if (known) return known;
+      arenaChatId = null;
+    }
+    const anchor = await client.channels.fetch(config.arenaDataChannelId || config.arenaGamesChannelId).catch(() => null);
+    const all = anchor?.guild?.channels?.fetch ? await anchor.guild.channels.fetch().catch(() => null) : null;
+    const words = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const named = [...(all?.values?.() || [])].filter((channel) => channel?.isTextBased?.() && /\barena\b/.test(words(channel.name)) && /\bchat\b/.test(words(channel.name)));
+    const exact = named.filter((channel) => words(channel.name) === 'arena chat');
+    const pick = (list) => list.find((channel) => channel.parentId === config.arenaCategoryId) || list[0];
+    const found = pick(exact) || pick(named);
+    if (found) {
+      arenaChatId = found.id;
+      return found;
+    }
+    warnOnce('arena-chat', 'no Arena chat channel found (name it "arena-chat" or set ARENA_CHAT_CHANNEL_ID); rank-ups go to arena-data');
+    return textChannel(config.arenaDataChannelId);
+  }
+
+  // "Name just reached Blaze." in Arena chat for anyone who moved up into a higher rank (not a
+  // division, and not finishing placement). Everyone a game moved up is in one message. The first
+  // Rank X and the first Rank X 👑 ever get a bigger line.
+  async function announceRankUps(before, after, game = null) {
     const ups = [];
     for (const player of after.players.values()) {
       const was = before.ranks[player.id]?.key || 'unranked';
@@ -212,15 +240,17 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
       if (first.crown) data.firsts.crown = at;
       return first;
     });
-    const channel = await textChannel(config.arenaDataChannelId);
+    const channel = await rankUpChannel();
     if (!channel) return;
     const who = (entry) => `**${entry.nickname}**${links[entry.playerId]?.discordId ? ` (<@${links[entry.playerId].discordId}>)` : ''}`;
-    const lines = [];
+    // Several at once: "🔥 Rank ups from Arena 12" and one line each.
+    const several = ups.length > 1;
+    const lines = several ? [`🔥 **Rank ups${game?.number ? ` from Arena ${game.number}` : ''}**`] : [];
     for (const entry of ups) {
       const big = (entry.key === 'crown' && firsts.crown) || (['rankx', 'crown'].includes(entry.key) && firsts.rankx);
       lines.push(big
         ? `# 🔥 ${who(entry)} is the first player ever to reach ${entry.rank}!`
-        : `🔥 ${who(entry)} just reached **${entry.rank}**.`);
+        : several ? `${who(entry)} reached **${entry.rank}**` : `🔥 ${who(entry)} just reached **${entry.rank}**.`);
       if (entry.key === 'crown') firsts.crown = false;
       firsts.rankx = false;
     }
@@ -405,7 +435,7 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
       return true;
     }
     await games.upsert(game);
-    await recompute({ announce: true });
+    await recompute({ announce: true, game });
     const message = await cardMessage(matchId);
     await message?.edit(cardPayload(matchCard({
       stage: 'finished', number: game.number, teams: game.teams, game, result: rating.games.get(matchId) || null, links, placementGames: settings.placementGames, ...ratingMaps()
