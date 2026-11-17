@@ -25,7 +25,8 @@ const DEFAULTS = {
   format: 'bo3',
   advantageTeam: 'teamA',
   mapPool: 'Dust2, Mirage, Nuke, Ancient, Inferno, Anubis, Cache',
-  serverPool: 'Chicago, Denver, Dallas',
+  // The bot no longer has a server step; fill this in to try the old one.
+  serverPool: '',
   captainOnly: true,
   turnSeconds: 120
 };

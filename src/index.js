@@ -9294,7 +9294,7 @@ function adminDecisionEmbed({ approved, stored, proposal, adminId }) {
       embed.addFields({
         name: 'Map Veto',
         value: [
-          `The map veto (bans, picks and sides, then the server location) happens **here in this channel**, starting at ${discordTimestamp(vetoAtIso, 't')}, ${config.vetoStartMinutes} minutes before match time.`,
+          `The map veto (bans, picks and sides) happens **here in this channel**, starting at ${discordTimestamp(vetoAtIso, 't')}, ${config.vetoStartMinutes} minutes before match time.`,
           `${config.vetoCaptainOnly ? '**Team captains** make the choices, so each captain needs to be here.' : 'Someone from each team needs to be here.'} Each turn has ${turnLengthText({ turnSeconds: config.vetoTurnSeconds })}.`,
           `You will be pinged here ${config.vetoNoticeMinutes} minutes before the match as a reminder.`
         ].join('\n'),
@@ -9503,8 +9503,7 @@ async function buildVetoForStoredMatch(stored, existing) {
     advantageTeam: existing?.advantageTeam || configuredAdvantageTeam,
     captainOnly: config.vetoCaptainOnly,
     sidePolicy: config.vetoSidePolicy || undefined,
-    turnSeconds: config.vetoTurnSeconds,
-    serverPool: config.vetoServerLocations
+    turnSeconds: config.vetoTurnSeconds
   });
   return { veto, format, seeds };
 }
@@ -9788,32 +9787,15 @@ async function refreshMatchIntro(stored) {
 async function announceVetoResult(veto, stored) {
   await notifyStaffVetoComplete(veto, stored).catch(() => null);
   const result = vetoFinalLines(veto).join('\n');
-  const title = `**${veto.teamA} vs ${veto.teamB}**`;
   const roleIds = vetoTeamRoleIds(stored);
   const room = veto.channelId ? await client.channels.fetch(veto.channelId).catch(() => null) : null;
   if (room?.isTextBased?.()) {
-    // League Admins are pinged with the result so they can set the server and maps on FACEIT.
-    const adminRoleIds = config.vetoCompletePingRoleIds;
     await room.send({
-      content: [
-        `✅ ${roleIds.map((id) => `<@&${id}>`).join(' ')} **Map veto complete**`,
-        result,
-        adminRoleIds.length ? `${adminRoleIds.map((id) => `<@&${id}>`).join(' ')} the veto is done: please set this up on FACEIT.` : null
-      ].filter(Boolean).join('\n').slice(0, 2000),
-      allowedMentions: { parse: [], roles: [...roleIds, ...adminRoleIds] }
+      content: `✅ ${roleIds.map((id) => `<@&${id}>`).join(' ')} **Map veto complete**\n${result}`.slice(0, 2000),
+      allowedMentions: { parse: [], roles: roleIds }
     }).catch(() => null);
   }
-  const coverage = await getMainStreamCoverage(veto.matchId).catch(() => null);
-  if (!coverage) return;
-  const scheduleChannelId = coverage.scheduleChannelId || config.productionScheduleChannelId;
-  const schedule = scheduleChannelId ? await client.channels.fetch(scheduleChannelId).catch(() => null) : null;
-  if (!schedule?.isTextBased?.()) return;
-  const crewIds = crewUserIds(coverage.crew || {});
-  await schedule.send({
-    content: `🗺️ ${crewIds.map((id) => `<@${id}>`).join(' ')} **Veto result:** ${title}\n${result}`.slice(0, 2000),
-    reply: coverage.scheduleMessageId && coverage.scheduleChannelId === schedule.id ? { messageReference: coverage.scheduleMessageId, failIfNotExists: false } : undefined,
-    allowedMentions: { parse: [], users: crewIds }
-  }).catch(() => null);
+  // Main stream crews get the maps in the match stats (prep) channel, not on the Schedule post.
 }
 
 // The staff row on the veto message: Pause / Resume, Undo and Reset (reset asks first).
@@ -10541,7 +10523,7 @@ async function runOperationsTick() {
       const sent = await channel.send({
         content: [
           `${roleIds.map((id) => `<@&${id}>`).join(' ')} 📢 **Map veto reminder**`.trim(),
-          `Your match is at ${discordTimestamp(scheduledAtIso, 't')}. The map veto (bans, picks and sides, then the server location) happens **here in this channel**, starting at ${discordTimestamp(vetoAtIso, 't')} (${discordTimestamp(vetoAtIso, 'R')}), ${config.vetoStartMinutes} minutes before match time.`,
+          `Your match is at ${discordTimestamp(scheduledAtIso, 't')}. The map veto (bans, picks and sides) happens **here in this channel**, starting at ${discordTimestamp(vetoAtIso, 't')} (${discordTimestamp(vetoAtIso, 'R')}), ${config.vetoStartMinutes} minutes before match time.`,
           `${config.vetoCaptainOnly ? 'Team captains make the choices, so captains need to be here.' : 'Have someone from each team here.'} Each turn has ${turnLengthText({ turnSeconds: config.vetoTurnSeconds })}.`
         ].join('\n'),
         allowedMentions: { parse: [], roles: roleIds }

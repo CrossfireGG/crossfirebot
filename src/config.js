@@ -221,18 +221,12 @@ export function getConfig() {
     vetoMapPool: parseCsvValue(process.env.VETO_MAP_POOL || ''),
     vetoSeeds: parseNamedNumbers(process.env.VETO_SEEDS || ''),
     vetoCaptainOnly: process.env.VETO_CAPTAIN_ONLY !== 'false',
-    // Server locations, decided after the maps: ban, ban, the one left is played on.
-    // VETO_SERVER_LOCATIONS=none turns the server step off.
-    vetoServerLocations: parseCsvValue(process.env.VETO_SERVER_LOCATIONS ?? 'Chicago,Denver,Dallas').filter((value) => !/^(none|off)$/i.test(value)).slice(0, 5),
     // Each veto turn (first-action choice, ban, pick, side) has this long; when it runs out the
     // team and staff are pinged. Teams are pinged VETO_NOTICE_MINUTES before match time that the
     // veto is in their match room; it starts VETO_START_MINUTES before match time.
     vetoTurnSeconds: Math.max(15, Number(process.env.VETO_TURN_SECONDS || 120) || 120),
     vetoNoticeMinutes: Math.max(1, Number(process.env.VETO_NOTICE_MINUTES || 60) || 60),
     vetoStartMinutes: Math.max(1, Number(process.env.VETO_START_MINUTES || 20) || 20),
-    // Pinged in the match room when a veto finishes (default: League Admins), so they can set the
-    // server and maps on FACEIT. VETO_COMPLETE_PING_ROLE_IDS=none turns the ping off.
-    vetoCompletePingRoleIds: parseSnowflakeList(process.env.VETO_COMPLETE_PING_ROLE_IDS ?? '1128907825167482900'),
     // Both teams are pinged once more this many minutes before the veto starts (0 = off).
     vetoSoonMinutes: /^\d+$/.test(String(process.env.VETO_SOON_MINUTES ?? '').trim()) ? Number(process.env.VETO_SOON_MINUTES) : 5,
     // Empty = the built-in text: the team that didn't pick the map chooses its side; deciders are a knife round.
