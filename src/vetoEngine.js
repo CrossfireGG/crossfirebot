@@ -271,12 +271,18 @@ function teamName(veto, team) {
   return team === 'teamA' ? veto.teamA : veto.teamB;
 }
 
-// "3. **Alpha** pick Mirage (**Bravo** starts CT)"
+// "3. **Alpha** pick Mirage (**Bravo** starts CT)". Once the maps are done, the map left over
+// closes the list: "7. **Train** decider (left over) · 🔪 knife round for sides", or the Grand
+// Final's map awarded to the Upper Bracket team.
 export function vetoActionLines(veto) {
-  return (veto.actions || []).map((entry) => {
+  const lines = (veto.actions || []).map((entry) => {
     const line = `${entry.index}. **${teamName(veto, entry.team)}** ${entry.action} ${entry.map}`;
     return entry.side ? `${line} (**${teamName(veto, entry.sideTeam)}** starts ${entry.side})` : line;
   });
+  const final = veto.final;
+  if (final?.decider) lines.push(`${lines.length + 1}. **${final.decider}** decider (left over) · 🔪 knife round for sides`);
+  else if (final?.awardedMap) lines.push(`${lines.length + 1}. **${final.awardedMap}** left over: awarded, not played (${final.startingScore})`);
+  return lines;
 }
 
 // What the team whose turn it is has to do, without the clock.

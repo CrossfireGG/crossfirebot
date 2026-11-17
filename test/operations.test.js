@@ -59,6 +59,7 @@ test('grand-final veto awards the remaining map to the configured upper-bracket 
   assert.equal(veto.status, 'complete');
   assert.equal(veto.final.awardedMap, 'Train');
   assert.equal(veto.final.startingScore, '1-0 Bravo');
+  assert.equal(vetoActionLines(veto).at(-1), '7. **Train** left over: awarded, not played (1-0 Bravo)');
   assert.equal(veto.final.playableMaps.length, 4);
   assert.equal(veto.final.maps.length, 4);
   assert.ok(veto.final.maps.every((entry) => entry.side === 'T' && !entry.knife), 'no knife round in the Grand Final: every map is a pick');
@@ -86,6 +87,9 @@ test('veto sides: the team that did not pick the map chooses its side; the decid
   assert.equal(veto.status, 'complete');
   assert.deepEqual(veto.final.playableMaps, ['Mirage', 'Nuke', 'Train']);
   assert.equal(veto.final.decider, 'Train');
+  // The Actions list (veto message and the staff copy) ends with the decider.
+  assert.equal(vetoActionLines(veto).length, 7);
+  assert.equal(vetoActionLines(veto).at(-1), '7. **Train** decider (left over) · 🔪 knife round for sides');
   assert.deepEqual(vetoFinalLines(veto), [
     'Map 1: **Mirage** · Alpha pick · **Bravo** starts CT, Alpha starts T',
     'Map 2: **Nuke** · Bravo pick · **Alpha** starts T, Bravo starts CT',
