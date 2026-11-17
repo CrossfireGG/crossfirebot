@@ -1,7 +1,9 @@
 // Crossfire Arena 10mans voice: when a game's draft is done on FACEIT, each team gets a private
-// voice channel in the Arena category (everyone can see it; only its players and Arena staff can join) and its
-// players are dragged in. Anyone on the game who connects to voice later, or walks into the
-// Queue, is moved to their team. Each player is moved once per game: after that they can leave
+// voice channel in the Arena category named after the team ("🔵 Team Zoro"; everyone can see it,
+// only its players and Arena staff can join). When the game goes live (FACEIT ONGOING: the knife
+// round starts) its players are dragged in; before that they can join by themselves. Anyone on the
+// game who connects to voice later, or walks into the Queue, is moved to their team (once the game
+// is live). Each player is moved once per game: after that they can leave
 // and come back by themselves (they keep permission to join). 30 seconds after the game ends
 // everyone still in the channels goes back to the Queue and the two channels are deleted.
 //
@@ -27,6 +29,7 @@ import {
   arenaChannelName,
   arenaDragOnJoin,
   arenaFaceitUrl,
+  arenaMatchLive,
   arenaMatchOver,
   arenaResolveTeams,
   arenaTeams,
@@ -224,7 +227,7 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
       let channel = channels[team.faction] ? await guild.channels.fetch(channels[team.faction]).catch(() => null) : null;
       if (!channel) {
         channel = await guild.channels.create({
-          name: arenaChannelName(record.number, team, index),
+          name: arenaChannelName(team, index),
           type: ChannelType.GuildVoice,
           parent: config.arenaCategoryId,
           permissionOverwrites: overwrites,
@@ -249,12 +252,18 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
       }
     }
 
-    // Each player is moved into their team channel once per game, the first time it can be
-    // done (now if they are in voice, otherwise when they connect or join the Queue; see
+    // Nobody is moved until the game is live on the server (FACEIT ONGOING: the knife round has
+    // started); until then they can join their channel by themselves. Once it has been live it
+    // stays that way for this game.
+    const liveAt = record.liveAt || (arenaMatchLive(match.status) ? new Date().toISOString() : null);
+    if (liveAt && !record.liveAt) console.log(`[Arena] game ${record.number} (${record.id}) is live: moving players to their team channels`);
+
+    // From then, each player is moved into their team channel once per game, the first time it
+    // can be done (now if they are in voice, otherwise when they connect or join the Queue; see
     // onVoiceStateUpdate). After that they are never moved again, so someone who steps out to
     // talk elsewhere is left alone. They keep permission to join back by themselves.
     const moved = movedMap(record);
-    for (const team of teams) {
+    for (const team of liveAt ? teams : []) {
       const channelId = channels[team.faction];
       if (!channelId) continue;
       for (const discordId of members[team.faction]) {
@@ -283,6 +292,7 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
       map: prettyMapName(match.voting?.map?.pick?.[0] || '') || record.map || null,
       channels,
       overwriteKeys,
+      liveAt,
       moved,
       voice,
       voiceAt: new Date().toISOString(),
@@ -377,17 +387,31 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
     for (const channelId of Object.values(record.channels || {})) {
       const channel = await guild.channels.fetch(channelId).catch(() => null);
       if (!channel) continue;
-      if (config.arenaQueueChannelId) {
-        for (const member of channel.members?.values?.() || []) {
-          await member.voice.setChannel(config.arenaQueueChannelId, 'Crossfire Arena: game over').catch(() => null);
-        }
-      }
+      await moveAllToQueue(channel, `game ${record.number}`, 'Crossfire Arena: game over');
       await channel.delete(`Crossfire Arena game ${record.number} over`).catch((error) => warn(`delete:${channelId}`, `couldn't delete ${channel.name}: ${error.message}`));
     }
     await deleteClaimPost(record);
     await deleteArenaMatch(record.id);
     active.delete(record.id);
     console.log(`[Arena] game ${record.number} (${record.id}) ${String(status || 'over').toLowerCase()}: channels removed`);
+  }
+
+  // Everyone still in a team channel is moved to the Queue before the channel is deleted
+  // (deleting a voice channel would just disconnect them). A move that fails (a Discord hiccup)
+  // is tried once more; anyone still left is reported.
+  async function moveAllToQueue(channel, what, reason) {
+    if (!config.arenaQueueChannelId) return;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const left = [...(channel.members?.values?.() || [])];
+      if (!left.length) return;
+      for (const member of left) {
+        await member.voice.setChannel(config.arenaQueueChannelId, reason).catch((error) => {
+          if (attempt) warn(`queue:${member.id}`, `couldn't move ${member.id} from ${channel.name} back to the Queue (${what}): ${error.message}`);
+        });
+      }
+    }
+    const stuck = [...(channel.members?.values?.() || [])].length;
+    if (stuck) warn(`queue:${channel.id}`, `${stuck} still in ${channel.name} after moving everyone to the Queue (${what}). The bot needs Move Members and Connect on the Queue channel.`);
   }
 
   // ---------- linking ----------
@@ -556,7 +580,7 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
     await refreshGamesFor(player.player_id).catch((error) => warn('refresh', `refresh after link failed: ${error.message}`));
     const replaced = result.replaced?.length ? ` (replaced: ${result.replaced.map((link) => `**${link.nickname}** ↔ <@${link.discordId}>`).join(', ')})` : '';
     return selfLink
-      ? `✅ You're linked to **${result.link.nickname}** on FACEIT. When your Arena draft is done, be in any voice channel and I'll move you to your team.`
+      ? `✅ You're linked to **${result.link.nickname}** on FACEIT. When your Arena game goes live (knife round), be in any voice channel and I'll move you to your team.`
       : `✅ Linked **${result.link.nickname}** to <@${targetUser.id}>${replaced}.`;
   }
 
@@ -618,9 +642,12 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
     await refreshGamesFor(playerId);
     const guild = interaction.guild || await arenaGuild();
     const inVoice = Boolean(guild?.voiceStates.cache.get(interaction.user.id)?.channelId);
-    await interaction.editReply(inVoice
-      ? `✅ You're linked to **${player.nickname}**. Moving you to your team now.`
-      : `✅ You're linked to **${player.nickname}**. Join any voice channel (the **Queue** is easiest) and I'll move you to your team.`);
+    const live = Boolean((await currentRecord(matchId))?.liveAt);
+    await interaction.editReply(!live
+      ? `✅ You're linked to **${player.nickname}**. You can join your team's channel now; when the game goes live (knife round) I'll move you there${inVoice ? '' : ' if you\'re in voice (the **Queue** is easiest)'}.`
+      : inVoice
+        ? `✅ You're linked to **${player.nickname}**. Moving you to your team now.`
+        : `✅ You're linked to **${player.nickname}**. Join any voice channel (the **Queue** is easiest) and I'll move you to your team.`);
   }
 
   // ---------- voice ----------
@@ -635,11 +662,12 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
         if (!ids.includes(newState.id)) continue;
         const channelId = record.channels?.[faction];
         if (!channelId || newState.channelId === channelId) return false;
-        // Only the first time this game. After their one move they come and go as they like.
-        if (record.endingAt || movedMap(record)[newState.id]) return false;
+        // Only once the game is live, and only the first time this game. After their one move
+        // they come and go as they like.
+        if (!record.liveAt || record.endingAt || movedMap(record)[newState.id]) return false;
         return withLock(record.id, async () => {
           const current = await currentRecord(record.id);
-          if (!current || current.endingAt || movedMap(current)[newState.id]) return false;
+          if (!current?.liveAt || current.endingAt || movedMap(current)[newState.id]) return false;
           const ok = await newState.setChannel(channelId, 'Crossfire Arena: your team\'s voice channel')
             .then(() => true)
             .catch((error) => {
@@ -764,9 +792,7 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
       for (const channel of channels?.values() || []) {
         if (!channel || channel.parentId !== config.arenaCategoryId || channel.type !== ChannelType.GuildVoice) continue;
         if (keep.has(channel.id) || !isArenaChannelName(channel.name)) continue;
-        for (const member of channel.members?.values?.() || []) {
-          if (config.arenaQueueChannelId) await member.voice.setChannel(config.arenaQueueChannelId, 'Crossfire Arena cleanup').catch(() => null);
-        }
+        await moveAllToQueue(channel, 'cleanup', 'Crossfire Arena cleanup');
         if (await channel.delete('Crossfire Arena cleanup').then(() => true).catch(() => false)) removed += 1;
       }
       await interaction.editReply(`Ended ${ended} game${ended === 1 ? '' : 's'} and removed ${removed} leftover channel${removed === 1 ? '' : 's'}.`);
@@ -789,11 +815,11 @@ export function createArena({ client, faceit, config, isAdminStaff = () => false
       .setColor(0xff5500)
       .setTitle('🎮 Crossfire Arena voice')
       .setDescription([
-        'When your 10man\'s draft is done on FACEIT, I make a **voice channel for each team** (only that team can join) and move you into yours. When the game ends, everyone goes back to the **Queue**.',
+        'When your 10man\'s draft is done on FACEIT, I make a **voice channel for each team** (only that team can join; you can go in right away). When the game goes live (knife round) I move you into yours. When the game ends, everyone goes back to the **Queue**.',
         '',
         '**Link your FACEIT once** so I know who you are: click **Link FACEIT** below. League players are usually linked already.',
         '',
-        '**Be in voice** (the Queue is easiest) when the draft finishes. Discord doesn\'t let bots pull in people who aren\'t in a voice channel.'
+        '**Be in voice** (the Queue is easiest) when the game goes live. Discord doesn\'t let bots pull in people who aren\'t in a voice channel.'
       ].join('\n'));
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('arena_link').setLabel('Link FACEIT').setStyle(ButtonStyle.Primary),

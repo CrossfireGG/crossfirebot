@@ -12,6 +12,14 @@ export function arenaMatchOver(status) {
   return OVER_STATUSES.has(String(status || '').toUpperCase());
 }
 
+// The game is live on the server: FACEIT says ONGOING once everyone has connected and the match
+// starts with the knife round (PAUSED is still live). Players are moved into their team channel
+// from then on, not when the draft ends.
+const LIVE_STATUSES = new Set(['ONGOING', 'PAUSED']);
+export function arenaMatchLive(status) {
+  return LIVE_STATUSES.has(String(status || '').toUpperCase());
+}
+
 // The two teams of a FACEIT match: [{ faction, name, label, players: [{ playerId, nickname, steamId }] }].
 export function arenaTeams(match) {
   return ['faction1', 'faction2'].map((faction, index) => {
@@ -49,13 +57,15 @@ export function arenaFaceitUrl(match) {
   return match?.match_id ? `https://www.faceit.com/en/cs2/room/${match.match_id}` : '';
 }
 
-// The voice channel name for one team: "🔵 Arena 12 · Team Zoro".
-export function arenaChannelName(number, team, index) {
-  return `${index === 0 ? '🔵' : '🔴'} Arena ${number} · ${team.label}`.slice(0, 100);
+// The voice channel name for one team: just the team, "🔵 Team Zoro" / "🔴 Team Beta".
+export function arenaChannelName(team, index) {
+  return `${index === 0 ? '🔵' : '🔴'} ${team.label}`.slice(0, 100);
 }
 
+// A team channel (for clearing leftovers in the Arena category): "🔵 Team Zoro", and the older
+// "🔵 Arena 12 · Team Zoro".
 export function isArenaChannelName(name) {
-  return /^(🔵|🔴) Arena \d+ · /u.test(String(name || ''));
+  return /^(🔵|🔴) \S/u.test(String(name || ''));
 }
 
 // FACEIT players nobody has linked yet, matched to Discord members by name. Only a name that

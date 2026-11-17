@@ -9,6 +9,7 @@ import {
   arenaChannelName,
   arenaDragOnJoin,
   arenaLinkConflict,
+  arenaMatchLive,
   arenaNameKey,
   arenaResolveTeams,
   arenaTeams,
@@ -41,9 +42,10 @@ test('teams: FACEIT factions become labelled teams with Steam IDs', () => {
   assert.equal(first.label, 'Team Zoro');
   assert.equal(second.label, 'Team Beta');
   assert.deepEqual(first.players[0], { playerId: 'a1', nickname: 'A-nick1', steamId: '76561198000000011' });
-  assert.equal(arenaChannelName(12, first, 0), '🔵 Arena 12 · Team Zoro');
-  assert.equal(arenaChannelName(12, second, 1), '🔴 Arena 12 · Team Beta');
-  assert.ok(isArenaChannelName('🔴 Arena 12 · Team Beta'));
+  assert.equal(arenaChannelName(first, 0), '🔵 Team Zoro', 'just the team, no "Arena 12"');
+  assert.equal(arenaChannelName(second, 1), '🔴 Team Beta');
+  assert.ok(isArenaChannelName('🔴 Team Beta'));
+  assert.ok(isArenaChannelName('🔴 Arena 12 · Team Beta'), 'older channels are still cleaned up');
   assert.ok(!isArenaChannelName('Queue'));
 });
 
@@ -56,6 +58,13 @@ test('teams are locked only after the draft, with both sides full, and not once 
   assert.equal(arenaTeamsLocked(faceitMatch({ status: 'ONGOING' })), true);
   assert.equal(arenaTeamsLocked(faceitMatch({ status: 'FINISHED' })), false);
   assert.equal(arenaTeamsLocked(faceitMatch({ status: 'VOTING', a: roster('a', 2), b: roster('b', 2) }), 2), true, 'team size is configurable');
+});
+
+test('a game is live (players get moved) from the knife round: FACEIT ONGOING', () => {
+  for (const status of ['CAPTAIN_PICK', 'VOTING', 'CONFIGURING', 'READY', 'FINISHED', 'CANCELLED', '']) assert.equal(arenaMatchLive(status), false, status);
+  assert.equal(arenaMatchLive('ONGOING'), true);
+  assert.equal(arenaMatchLive('ongoing'), true);
+  assert.equal(arenaMatchLive('PAUSED'), true);
 });
 
 test('name matching: only one clear member per player, ignoring case and symbols', () => {
@@ -117,6 +126,7 @@ test('FACEIT names: nickname, @nickname or a profile link', () => {
 
 function fakeWorld() {
   const moves = [];
+  const failMoves = new Set(); // members whose next move fails once (a Discord hiccup)
   const posts = [];
   const voice = new Map(); // discordId -> channelId
   const channels = new Map();
@@ -188,7 +198,13 @@ function fakeWorld() {
       get members() {
         return new Map([...voice].filter(([, channelId]) => channelId === id).map(([memberId]) => [memberId, {
           id: memberId,
-          voice: { setChannel: async (target) => { moves.push([memberId, target]); voice.set(memberId, target); } }
+          voice: {
+            setChannel: async (target) => {
+              if (failMoves.delete(memberId)) throw new Error('Discord hiccup');
+              moves.push([memberId, target]);
+              voice.set(memberId, target);
+            }
+          }
         }]));
       },
       delete: async () => { channel.deleted = true; channels.delete(id); }
@@ -212,7 +228,7 @@ function fakeWorld() {
     user: { id: 'bot' },
     channels: { fetch: async (id) => (id === categoryId ? category : id === 'info' ? info : Promise.reject(new Error('nope'))) }
   };
-  return { client, guild, voice, channels, moves, posts, queueId };
+  return { client, guild, voice, channels, moves, posts, queueId, failMoves };
 }
 
 test('arena bot: draft done -> private team channels and drags; claim; late join; game over', async () => {
@@ -256,13 +272,24 @@ test('arena bot: draft done -> private team channels and drags; claim; late join
   match = { ...match, status: 'VOTING' };
   await arena.tick();
   const made = [...world.channels.values()];
-  assert.deepEqual(made.map((channel) => channel.name), ['🔵 Arena 1 · Team Zoro', '🔴 Arena 1 · Team Beta']);
+  assert.deepEqual(made.map((channel) => channel.name), ['🔵 Team Zoro', '🔴 Team Beta']);
   const [teamA, teamB] = made;
   const allowed = (channel) => channel.overwrites.filter((entry) => entry.allow?.length && entry.id !== 'bot').map((entry) => entry.id).sort();
   assert.deepEqual(allowed(teamA), ['d1', 'staff', 'zoro'], 'team A: its linked players (zoro by name) and staff');
   assert.deepEqual(allowed(teamB), ['d2', 'staff']);
   const everyone = teamA.overwrites.find((entry) => entry.id === 'g1');
   assert.deepEqual(everyone.deny, [PermissionFlagsBits.Connect], 'everyone can see the channel but not join it');
+  assert.deepEqual(world.moves, [], 'nobody is moved before the game is live');
+  // Not live yet: someone connecting to voice is left alone too.
+  await arena.onVoiceStateUpdate({ channelId: null }, { id: 'd2', channelId: 'general', guild: world.guild, setChannel: async (target) => { world.moves.push(['d2', target]); } });
+  assert.deepEqual(world.moves, []);
+  match = { ...match, status: 'READY' };
+  await arena.tick();
+  assert.deepEqual(world.moves, [], 'server ready, players connecting: still not moved');
+
+  // The knife round starts (FACEIT ONGOING): people in voice are dragged in.
+  match = { ...match, status: 'ONGOING' };
+  await arena.tick();
   assert.deepEqual(world.moves, [['d1', teamA.id], ['zoro', teamA.id]], 'people in voice are dragged; d2 is not in voice');
   assert.equal((await store.listArenaLinks()).a5.source, 'name match');
 
@@ -354,6 +381,9 @@ test('arena bot: one move per game, permission to rejoin, channels close 30 seco
 
   await arena.tick();
   const [teamA, teamB] = [...world.channels.values()];
+  assert.deepEqual(world.moves, [], 'channels are up, nobody moved before the knife round');
+  match = { ...match, status: 'ONGOING' };
+  await arena.tick();
   assert.deepEqual(world.moves, [['d1', teamA.id]], 'd1 was in voice: moved once');
 
   // d1 steps out to talk somewhere else, then walks through the Queue: never moved again.
@@ -401,7 +431,9 @@ test('arena bot: one move per game, permission to rejoin, channels close 30 seco
   assert.equal(world.moves.length, 2);
   world.voice.set('d1', teamA.id);
 
-  // 30 seconds later: everyone still in the channels goes to the Queue, channels deleted.
+  // 30 seconds later: everyone still in the channels goes to the Queue, channels deleted. A move
+  // that fails the first time is tried again, so nobody is dropped from voice with the channel.
+  world.failMoves.add('d1');
   await store.saveArenaMatch('m1', { endingAt: new Date(Date.now() - 31_000).toISOString() });
   await arena.tick();
   assert.equal(world.channels.size, 0);
