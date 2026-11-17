@@ -49,6 +49,7 @@ import {
 } from './arenaGames.js';
 import { arenaDraftPool, arenaFaceitUrl, arenaMatchOver, arenaTeams, arenaTeamsLocked, parseFaceitNickname } from './arenaLogic.js';
 import { RANKS, RATING_DEFAULTS, assignRanks, decayStatus, expectedWin, rankLevel, rankName, ratingSummary, ratingSummaryText, replayRatings } from './arenaRating.js';
+import { gladiatorStatus } from './gladiator.js';
 import { prettyMapName } from './matchResult.js';
 import { getArenaHubState, listArenaLinks, listArenaMatches, saveArenaHubState } from './store.js';
 
@@ -65,6 +66,8 @@ const BACKFILL_PAGE = 50;
 const BACKFILL_PER_TICK = 15;
 const BACKFILL_MAX_OFFSET = 1000;
 const ROLE_CHANGES_PER_TICK = 30;
+const GLADIATOR_ROLE_NAME = 'Gladiator';
+const GLADIATOR_REMINDER_MS = 3 * 24 * 60 * 60 * 1000;
 const HISTORY_PER_PAGE = 10;
 // How often one person can post their stats card in a channel.
 const SHARE_COOLDOWN_MS = 30 * 1000;
@@ -317,6 +320,83 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
       else delete next[discordId];
     }
     await saveArenaHubState({ rankRoleByDiscord: next });
+  }
+
+  // ---------- the Gladiator role ----------
+
+  // The role for people who keep playing Arena (src/gladiator.js has the rules). A role called
+  // "Gladiator" is reused; a missing one is made once. ARENA_GLADIATOR_ROLE_ID names it instead.
+  async function gladiatorRole(guild) {
+    const state = await getArenaHubState();
+    const known = config.arenaGladiatorRoleId || state.gladiatorRoleId || null;
+    if (known && guild.roles.cache?.has?.(known)) return known;
+    const list = [...((await guild.roles.fetch().catch(() => null))?.values?.() || [])];
+    const found = list.find((role) => role.id === known) || list.find((role) => role.name === GLADIATOR_ROLE_NAME);
+    const role = found || await guild.roles.create({ name: GLADIATOR_ROLE_NAME, mentionable: false, reason: 'Crossfire Arena Gladiator role' });
+    if (!found) console.log(`[Arena] made the role "${GLADIATOR_ROLE_NAME}" (${role.id})`);
+    if (role.id !== state.gladiatorRoleId) await saveArenaHubState({ gladiatorRoleId: role.id });
+    return role.id;
+  }
+
+  // Linked players who qualify hold the role; it is taken away when their timer runs out.
+  // With ARENA_GLADIATOR_DMS on (off for now), a holder is sent a DM when the timer starts and
+  // again a few days before it ends.
+  async function syncGladiatorRole() {
+    if (!config.arenaGladiators) return;
+    const state = await getArenaHubState();
+    if (!state.backfill?.done) return;
+    const channel = await textChannel(config.arenaDataChannelId);
+    const guild = channel?.guild || null;
+    if (!guild) return;
+    // Missed games are counted from the first time the role ran, so nobody starts on a timer.
+    const since = Date.parse(state.gladiatorSince || '') || now();
+    if (!state.gladiatorSince) await saveArenaHubState({ gladiatorSince: new Date(since).toISOString() });
+    const status = gladiatorStatus((await games.all()).filter(isFinished), { nowMs: now(), countFromMs: since });
+    const links = await listArenaLinks();
+    const wanted = {};
+    for (const [playerId, link] of Object.entries(links)) {
+      const entry = status.get(playerId);
+      if (link?.discordId && entry?.holds) wanted[link.discordId] = entry;
+    }
+    const current = state.gladiatorByDiscord || {};
+    const changed = [...new Set([...Object.keys(wanted), ...Object.keys(current)])].filter((discordId) => Boolean(wanted[discordId]) !== Boolean(current[discordId]));
+    const next = { ...current };
+    const warnedAbout = { ...(state.gladiatorWarned || {}) };
+    let dirty = false;
+    if (changed.length) {
+      const roleId = await gladiatorRole(guild);
+      for (const discordId of changed.slice(0, ROLE_CHANGES_PER_TICK)) {
+        const member = await guild.members.fetch(discordId).catch(() => null);
+        const has = Boolean(member?.roles?.cache?.has?.(roleId));
+        if (member && wanted[discordId] && !has) await member.roles.add(roleId, 'Crossfire Arena Gladiator').catch((error) => warnOnce('gladiator-add', `could not give the Gladiator role: ${error.message}`));
+        if (member && !wanted[discordId]) await member.roles.remove([roleId], 'Crossfire Arena Gladiator').catch((error) => warnOnce('gladiator-remove', `could not remove the Gladiator role: ${error.message}`));
+        if (wanted[discordId]) next[discordId] = true;
+        else delete next[discordId];
+        dirty = true;
+      }
+    }
+    // The warnings. stage 1: the timer started; stage 2: the reminder near the end.
+    for (const discordId of Object.keys(warnedAbout)) {
+      if (config.arenaGladiatorDms && wanted[discordId]?.timerEndsMs === warnedAbout[discordId].ends) continue;
+      delete warnedAbout[discordId];
+      dirty = true;
+    }
+    for (const [discordId, entry] of Object.entries(config.arenaGladiatorDms ? wanted : {})) {
+      if (!entry.timerEndsMs || !next[discordId]) continue;
+      const closing = entry.timerEndsMs - now() <= GLADIATOR_REMINDER_MS;
+      const sent = warnedAbout[discordId]?.stage || 0;
+      if (sent >= 2 || (sent === 1 && !closing)) continue;
+      const when = Math.floor(entry.timerEndsMs / 1000);
+      const text = sent === 0
+        ? `You hold the **${GLADIATOR_ROLE_NAME}** role in CROSSFIRE Arena, and ${entry.missed} Arena games have finished since your last one. Play one Arena game by <t:${when}:F> (<t:${when}:R>) to keep the role and your vote on Arena changes.`
+        : `Reminder: play one Arena game by <t:${when}:F> (<t:${when}:R>) to keep the **${GLADIATOR_ROLE_NAME}** role. After that it is removed.`;
+      const member = await guild.members.fetch(discordId).catch(() => null);
+      // A member with DMs closed just misses the note.
+      await member?.send?.({ content: text, allowedMentions: { parse: [] } }).catch(() => null);
+      warnedAbout[discordId] = { ends: entry.timerEndsMs, stage: closing ? 2 : 1 };
+      dirty = true;
+    }
+    if (dirty) await saveArenaHubState({ gladiatorByDiscord: next, gladiatorWarned: warnedAbout });
   }
 
   // ---------- match cards ----------
@@ -988,6 +1068,7 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
       await step('live board', refreshBoard);
       if (now() - leaderboardAt >= LEADERBOARD_EVERY_MS) await step('leaderboard', refreshLeaderboard);
       await step('rank roles', syncRankRoles);
+      await step('Gladiator role', syncGladiatorRole);
       await step('weekly recap', postWeeklyRecap);
       await step('older matches', backfill);
       await step('stats refresh', upgradeStats);

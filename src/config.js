@@ -275,12 +275,20 @@ export function getConfig() {
     // The pinned queue status in arena-games. Off: FACEIT's API does not return who is waiting
     // in the hub queue. true shows who is in the Queue voice channel instead.
     arenaQueueStatus: /^(true|1|on|yes)$/i.test(process.env.ARENA_QUEUE_STATUS || ''),
+    // Gladiator, the role for active Arena players: off until ARENA_GLADIATORS=true. The role is
+    // found by name or made; ARENA_GLADIATOR_ROLE_ID names it instead.
+    arenaGladiators: /^(true|1|on|yes)$/i.test(process.env.ARENA_GLADIATORS || ''),
+    // The DMs that warn a holder their timer is running: parked, off unless ARENA_GLADIATOR_DMS=true.
+    arenaGladiatorDms: /^(true|1|on|yes)$/i.test(process.env.ARENA_GLADIATOR_DMS || ''),
+    arenaGladiatorRoleId: /^[0-9]{15,25}$/.test(process.env.ARENA_GLADIATOR_ROLE_ID || '') ? process.env.ARENA_GLADIATOR_ROLE_ID : '',
     // The card posted in arena-games while the captains are picking. ARENA_DRAFT_CARD=false turns it off.
     arenaDraftCard: !/^(false|0|off|no)$/i.test(process.env.ARENA_DRAFT_CARD || ''),
     arenaDataChannelId: process.env.ARENA_DATA_CHANNEL_ID || '1571982492439683143',
     // Rank-ups ("X just reached Ember") go to Arena chat, one message per game. Empty = the
     // channel named "arena-chat" (found by name); none found = arena-data.
     arenaChatChannelId: process.env.ARENA_CHAT_CHANNEL_ID || '',
+    // Where Arena votes (/arena poll) are posted: the Arena bulletin channel.
+    arenaPollChannelId: process.env.ARENA_POLL_CHANNEL_ID || '1457611549542715544',
     // The clock the Monday recap and the daily decay run on, and their times (24-hour HH:MM).
     arenaTimeZone: process.env.ARENA_TIME_ZONE?.trim() || 'America/Chicago',
     arenaRecapTime: arenaClock(process.env.ARENA_RECAP_TIME, '12:00'),

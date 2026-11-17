@@ -1085,3 +1085,40 @@ export async function savePicksState(eventId, patch) {
     return { ...db.picks[eventId] };
   });
 }
+
+// ---------- Arena votes (src/arenaPolls.js) ----------
+// db.arenaPolls: { next, polls: { [id]: { id, question, options, createdBy, createdAt, endsAt, closedAt,
+//   channelId, messageId, eligible: [discordId], votes: { [discordId]: optionIndex }, status } } }
+export async function listArenaPolls() {
+  return Object.values((await snapshot()).arenaPolls?.polls || {});
+}
+
+export async function getArenaPoll(id) {
+  return (await snapshot()).arenaPolls?.polls?.[id] || null;
+}
+
+// Saves a new vote under the next number and returns it.
+export async function saveArenaPoll(poll) {
+  return mutateDb((db) => {
+    db.arenaPolls = db.arenaPolls || { next: 1, polls: {} };
+    const id = db.arenaPolls.next;
+    db.arenaPolls.next = id + 1;
+    db.arenaPolls.polls[id] = { ...poll, id };
+    return { ...db.arenaPolls.polls[id] };
+  });
+}
+
+// Changes one vote in a single step (so two people voting at once both count): change(poll)
+// returns the new record, or null to delete it. Returns what was saved.
+export async function updateArenaPoll(id, change) {
+  return mutateDb((db) => {
+    db.arenaPolls = db.arenaPolls || { next: 1, polls: {} };
+    const next = change(db.arenaPolls.polls[id] || null);
+    if (!next) {
+      delete db.arenaPolls.polls[id];
+      return null;
+    }
+    db.arenaPolls.polls[id] = next;
+    return { ...next };
+  });
+}

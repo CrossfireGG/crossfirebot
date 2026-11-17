@@ -39,6 +39,8 @@ const { createArenaHub, zoneMidnightMs } = await import('../src/arenaHub.js');
 const { createGameStore, createRatingStore, isFinished } = await import('../src/arenaGames.js');
 const { easternParts, addDaysToKey, weekdayIndex } = await import('../src/availability.js');
 const store = await import('../src/store.js');
+const { gladiatorStatus } = await import('../src/gladiator.js');
+const { createArenaPolls } = await import('../src/arenaPolls.js');
 
 const HUB = process.env.ARENA_HUB_ID || 'ae1514c3-0041-4946-8d4f-10772d82e170';
 const real = process.env.FACEIT_API_KEY ? new FaceitClient(process.env.FACEIT_API_KEY, []) : null;
@@ -52,7 +54,7 @@ const now = () => Date.now() + clockOffset;
 const messages = []; // every message, in order
 const roleLog = [];
 const roles = [];
-const names = { users: {}, channels: { games: '🎮┃arena-games', data: '🤖┃arena-data', queue: '⏳Queue', voiceA: '🔵 team voice', voiceB: '🔴 team voice' }, roles: {} };
+const names = { users: {}, channels: { games: '🎮┃arena-games', data: '🤖┃arena-data', bulletin: '📢┃arena-bulletin', queue: '⏳Queue', voiceA: '🔵 team voice', voiceB: '🔴 team voice' }, roles: {} };
 const members = new Map();
 const queueMembers = new Map();
 let ephemeral = []; // what a command answered ("only you can see this")
@@ -64,6 +66,7 @@ function member(id) {
     members.set(id, {
       id,
       user: { bot: false },
+      send: async (payload) => { roleLog.push(`DM to ${names.users[id] || id}: ${payload.content}`); },
       roles: {
         cache: { has: (roleId) => held.has(roleId) },
         add: async (roleId) => { held.add(roleId); roleLog.push(`+ ${names.users[id] || id} gets the ${roleName(roleId)} role`); },
@@ -108,7 +111,7 @@ function makeChannel(id) {
     }
   };
 }
-const channels = { games: makeChannel('games'), data: makeChannel('data'), queue: { id: 'queue', members: queueMembers } };
+const channels = { games: makeChannel('games'), data: makeChannel('data'), bulletin: makeChannel('bulletin'), queue: { id: 'queue', members: queueMembers } };
 const client = { user: { id: 'bot' }, channels: { fetch: async (id) => channels[id] || null } };
 
 // The pretend live match. Everything else FACEIT is asked (seasons, leaderboard, older matches)
@@ -135,6 +138,8 @@ const config = {
   arenaDataChannelId: 'data',
   arenaQueueChannelId: 'queue',
   arenaQueueStatus: false,
+  arenaGladiators: true,
+  arenaPollChannelId: 'bulletin',
   arenaTeamSize: 5,
   arenaTimeZone: 'America/Chicago',
   arenaRecapTime: '12:00',
@@ -146,6 +151,7 @@ const games = createGameStore();
 const ratingStore = createRatingStore();
 let staff = true;
 const hub = createArenaHub({ client, faceit, config, games, ratingStore, isStaff: () => staff, now });
+const polls = createArenaPolls({ client, config, isStaff: () => staff, now });
 
 // ---------- start: the real history ----------
 
@@ -157,6 +163,14 @@ if (real) {
     await store.saveArenaHubState({ backfill: { offset: 0, done: true } });
   }
   await hub.recompute();
+  // Pretend every Gladiator is in the Discord with a linked account.
+  const holders = [...gladiatorStatus((await games.all()).filter(isFinished), { nowMs: now() })].filter(([, entry]) => entry.holds);
+  for (const [index, [playerId]] of holders.entries()) {
+    const nickname = hub.ratings().players.get(playerId)?.nickname || playerId;
+    const discordId = `2000000000000000${String(100 + index)}`;
+    names.users[discordId] = nickname;
+    await store.linkArenaPlayer({ playerId, nickname, discordId, source: 'simulator' }, { replace: true }).catch(() => null);
+  }
   console.log(`Arena simulator: ${(await games.all()).filter(isFinished).length} real matches, ${hub.ratings().players.size} players.`);
 }
 
@@ -174,7 +188,9 @@ function pickPlayers() {
 }
 
 async function linkSome(players) {
+  const linked = await store.listArenaLinks();
   for (const [index, player] of players.entries()) {
+    if (linked[player.id]) continue; // a Gladiator, linked at the start
     if (index % 2 === 1 && index > 5) continue; // leave a few unlinked
     const discordId = `1000000000000000${String(10 + index)}`;
     names.users[discordId] = player.nickname;
@@ -228,6 +244,7 @@ function simStats(match, winner, carry) {
 
 async function settle() {
   await hub.tick();
+  await polls.tick();
   await hub.refreshBoard();
 }
 
@@ -357,9 +374,12 @@ const actions = {
       reply: async (payload) => replies.push(payload),
       deferReply: async (payload) => { if (payload && payload.ephemeral === false) replies.push({ public: true }); },
       editReply: async (payload) => replies.push(payload),
-      update: async (payload) => replies.push(payload)
+      update: async (payload) => replies.push(payload),
+      deferUpdate: async () => {}
     };
-    if (body.customId) await hub.handleComponent(interaction);
+    if (String(body.customId || '').startsWith('arenapoll:')) await polls.handleComponent(interaction);
+    else if (body.command === 'poll') await polls.handleCommand(interaction);
+    else if (body.customId) await hub.handleComponent(interaction);
     else if (body.command === 'stats') await hub.handleStats(interaction);
     else await hub.handleRating(interaction);
     const shared = replies.some((reply) => reply.public || reply.ephemeral === false);

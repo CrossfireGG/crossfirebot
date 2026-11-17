@@ -98,6 +98,21 @@
     <div class="pair"><button id="cmdBan">/arena rating ban</button><button id="cmdUnban">…ban banned:false</button></div>
     <button id="cmdRecalc">/arena rating recalc</button>
   </div>
+
+  <h2>Arena vote (Gladiators)</h2>
+  <label>Question</label>
+  <input type="text" id="pollQ" value="Should captains be the two highest rated players?">
+  <label>Options (2 to 5; leave the rest empty)</label>
+  <div class="stack">
+    <input type="text" id="pollO1" value="Yes">
+    <input type="text" id="pollO2" value="No, keep it random">
+    <input type="text" id="pollO3" value="">
+    <div class="pair"><input type="number" id="pollH" value="72" min="1"><button id="pollStart">/arena poll start</button></div>
+    <div class="pair"><button id="pollClose">/arena poll close</button><button id="pollCancel">…cancel</button></div>
+    <button id="pollVotes">/arena poll votes</button>
+  </div>
+  <label>Click the vote buttons as</label>
+  <select id="voteAs"></select>
 </aside>
 <main>
   <div class="tabs" id="tabs"></div>
@@ -112,6 +127,7 @@ var notice = null;
 var TABS = [
   ['games', '# 🎮┃arena-games'],
   ['data', '# 🤖┃arena-data'],
+  ['bulletin', '# 📢┃arena-bulletin'],
   ['voice', '# team voice chat'],
   ['eph', 'Command replies'],
   ['roles', 'Roles']
@@ -184,8 +200,13 @@ function command(body) {
 
 function render() {
   if (!state) return;
+  var voters = state.linked.filter(function (entry) { return String(entry.discordId).indexOf('2000') === 0; });
+  if ($('voteAs').options.length !== voters.length + 1) {
+    $('voteAs').innerHTML = voters.map(function (entry) { return '<option value="' + esc(entry.discordId) + '">' + esc(entry.nickname) + ' (Gladiator)</option>'; }).join('')
+      + '<option value="300000000000000001">Someone without the role</option>';
+  }
   var by = function (id) { return state.messages.filter(function (m) { return m.channelId === id; }); };
-  var lists = { games: by('games'), data: by('data'), voice: state.messages.filter(function (m) { return m.channelId === 'voiceA' || m.channelId === 'voiceB'; }) };
+  var lists = { games: by('games'), data: by('data'), bulletin: by('bulletin'), voice: state.messages.filter(function (m) { return m.channelId === 'voiceA' || m.channelId === 'voiceB'; }) };
   $('tabs').innerHTML = '';
   TABS.forEach(function (entry) {
     var b = document.createElement('button');
@@ -233,6 +254,26 @@ function render() {
     });
     return;
   }
+  if (tab === 'bulletin' && lists.bulletin.length) {
+    // The votes: their buttons work, clicked as whoever is picked on the left.
+    view.innerHTML = '';
+    lists.bulletin.forEach(function (m) {
+      var wrap = document.createElement('div');
+      wrap.innerHTML = messageHtml(m, true);
+      var row = wrap.querySelector('[data-buttons]');
+      if (row) m.buttons.forEach(function (button) {
+        var b = document.createElement('button');
+        b.textContent = button.label;
+        b.onclick = function () {
+          var pick = $('voteAs');
+          act({ action: 'command', staff: $('staff').checked, customId: button.customId, as: pick.value, label: 'Vote button, clicked by ' + pick.options[pick.selectedIndex].text }).then(function (data) { if (data.ephemeral && data.ephemeral.length) { tab = 'eph'; render(); } });
+        };
+        row.appendChild(b);
+      });
+      view.appendChild(wrap);
+    });
+    return;
+  }
   var list = lists[tab];
   if (!list.length) { view.innerHTML = '<p class="empty">Nothing here yet.</p>'; return; }
   // Pinned messages first (they sit at the top of the channel's pins), then the rest in order.
@@ -260,6 +301,11 @@ $('cmdHistory').onclick = function () { command({ command: 'rating', sub: 'histo
 $('cmdAdjust').onclick = function () { command({ command: 'rating', sub: 'adjust', label: '/arena rating adjust player:' + who() + ' amount:' + $('amount').value, options: { player: who(), amount: $('amount').value, reason: $('reason').value } }); };
 $('cmdBan').onclick = function () { command({ command: 'rating', sub: 'ban', label: '/arena rating ban player:' + who(), options: { player: who() } }); };
 $('cmdUnban').onclick = function () { command({ command: 'rating', sub: 'ban', label: '/arena rating ban player:' + who() + ' banned:false', options: { player: who(), banned: false } }); };
+var pollOptions = function () { return { question: $('pollQ').value, option1: $('pollO1').value, option2: $('pollO2').value, option3: $('pollO3').value, hours: $('pollH').value }; };
+$('pollStart').onclick = function () { command({ command: 'poll', sub: 'start', label: '/arena poll start', options: pollOptions() }); };
+$('pollClose').onclick = function () { command({ command: 'poll', sub: 'close', label: '/arena poll close', options: {} }); };
+$('pollCancel').onclick = function () { command({ command: 'poll', sub: 'cancel', label: '/arena poll cancel', options: {} }); };
+$('pollVotes').onclick = function () { command({ command: 'poll', sub: 'votes', label: '/arena poll votes', options: {} }); };
 $('cmdRecalc').onclick = function () { command({ command: 'rating', sub: 'recalc', label: '/arena rating recalc', options: {} }); };
 api();
 </script>

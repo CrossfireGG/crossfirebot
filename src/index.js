@@ -26,6 +26,7 @@ import { getConfig } from './config.js';
 import { createArena } from './arena.js';
 import { createVoiceRooms } from './voiceRooms.js';
 import { createArenaHub } from './arenaHub.js';
+import { createArenaPolls } from './arenaPolls.js';
 import { createPicks } from './picks.js';
 import { createVetoBot } from './veto.js';
 import { createReactionRoles, parseMessageLink } from './reactionRoles.js';
@@ -483,6 +484,12 @@ const arenaHub = createArenaHub({
   // /arena rating: the bot's admin staff, 🛠️ Staff and Arena Admin.
   isStaff: (member) => isAdminStaff(member) || config.arenaRatingStaffRoleIds.some((roleId) => member?.roles?.cache?.has?.(roleId))
 });
+// Arena votes for Gladiators (src/arenaPolls.js): /arena poll, run by the same staff.
+const arenaPolls = createArenaPolls({
+  client,
+  config,
+  isStaff: (member) => isAdminStaff(member) || config.arenaRatingStaffRoleIds.some((roleId) => member?.roles?.cache?.has?.(roleId))
+});
 // Crossfire Arena 10mans: team voice channels and auto-drag (src/arena.js).
 const arena = createArena({
   client,
@@ -653,6 +660,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isChatInputCommand() && interaction.commandName === 'arena' && interaction.options.getSubcommand(false) === 'roles') {
       await handleArenaRolesCommand(interaction);
+      return;
+    }
+    if (String(interaction.customId || '').startsWith('arenapoll:')) {
+      await arenaPolls.handleComponent(interaction);
+      return;
+    }
+    if (interaction.isChatInputCommand() && interaction.commandName === 'arena' && interaction.options.getSubcommandGroup(false) === 'poll') {
+      await arenaPolls.handleCommand(interaction);
       return;
     }
     if (/^arena(rh|rc|st):/.test(interaction.customId || '')) {
@@ -9900,6 +9915,7 @@ async function runOperationsTick() {
   await refreshMatchStatusesIfDue(now).catch((error) => console.error('Automatic FACEIT status refresh failed:', error));
   await runStreamOperationsTick(now);
   await vetoBot.tick(now);
+  await arenaPolls.tick().catch((error) => console.error('Arena vote check failed:', error));
 }
 
 async function runStreamOperationsTick(now = Date.now()) {
