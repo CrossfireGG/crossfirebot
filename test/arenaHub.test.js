@@ -181,10 +181,10 @@ test('match cards: draft finished, finished with rating changes, cancelled', () 
   ];
   const live = matchCard({ stage: 'live', number: 12, teams, map: 'Mirage', server: 'Chicago', url: 'https://x', status: 'ONGOING', teamAvg: [1113, 1372], expected: [0.18, 0.82], ranks, ratings, links: { a1: { discordId: '111' } } });
   assert.equal(live.title, '🔴 Arena 12: live');
-  assert.match(live.description, /\*\*Team Zoro vs Team Beta\*\*\n\*\*Map:\*\* Mirage · \*\*Server:\*\* Chicago · \[FACEIT match room\]\(https:\/\/x\)\nFACEIT: ongoing/);
+  assert.match(live.description, /\*\*Team Zoro vs Team Beta\*\*\n\*\*Map:\*\* Mirage · \[FACEIT match room\]\(https:\/\/x\)\nFACEIT: ongoing/);
   assert.equal(live.fields[0].name, '🔵 Team Zoro · avg 1113 · 18% to win');
-  assert.equal(live.fields[0].value, 'A\\_nick1 (C) <@111>  Blaze II · 1185\nNewbie  Placing 3/5');
-  assert.equal(live.fields[1].value, 'Carry (C)  Inferno III · 1291\nKing  Rank X 👑 · 1452');
+  assert.equal(live.fields[0].value, '```\nPlayer          Rank          CFR   GP  Win%   Rtg\nA_nick1 (C)     Blaze II     1185    -     -     -\nNewbie          Placing 3/5     -    -     -     -\n```');
+  assert.equal(live.fields[1].value, '```\nPlayer          Rank          CFR   GP  Win%   Rtg\nKing            Rank X       1452    -     -     -\nCarry (C)       Inferno III  1291    -     -     -\n```', 'best CF rating first, no crown inside the table');
 
   const game = { teams: [{ label: 'Team Zoro', captain: 'a1', players: [{ id: 'a1', n: 'A_nick1', k: 20, d: 10, a: 2 }, { id: 'a2', n: 'Newbie', k: 5, d: 12, a: 1 }] }, { label: 'Team Beta', captain: 'b1', players: [{ id: 'b1', n: 'Carry', k: 30, d: 9, a: 4 }, { id: 'b2', n: 'King', k: 8, d: 14, a: 2 }] }], score: [13, 9], winner: 0, map: 'Mirage', server: 'Chicago', url: 'https://x' };
   const result = { players: {
@@ -197,12 +197,14 @@ test('match cards: draft finished, finished with rating changes, cancelled', () 
   assert.equal(done.title, '🏁 Arena 12: Team Zoro win 13-9');
   assert.match(done.description, /\*\*Top fragger:\*\* Carry · 30\/9\/4/);
   assert.equal(done.fields[0].name, '🔵 Team Zoro · 13 🏆');
-  assert.equal(done.fields[0].value, 'A\\_nick1 (C)  Blaze II  +16 → 1201\nNewbie  Placing 4/5');
-  assert.equal(done.fields[1].value, 'Carry (C)  Inferno III  −8 → 1291 (loss protected, carried)\nKing  Rank X 👑  −18 → 1452 (loss protected, 4v5)');
+  assert.match(done.fields[0].value, /^```\nPlayer +K +D +A +ADR +Rtg  CFR\nA_nick1 \(C\) +20 +10 +2 +\S+ +\S+  \+16 > 1201\nNewbie +5 +12 +1 +\S+ +\S+  Placing 4\/5\n```$/);
+  assert.match(done.fields[1].value, /\nCarry \(C\) +30 +9 +4 +\S+ +\S+  −8 > 1291 \*\n/);
+  assert.match(done.fields[1].value, /\nKing .+  −18 > 1452 \*\n/);
+  assert.match(done.description, /-# CFR is the CF rating change\. \* loss protected$/);
   // The stats are not in yet: the result shows, the rating changes wait.
   const waiting = matchCard({ stage: 'finished', number: 12, teams: game.teams, game, pending: true, ranks, ratings });
   assert.match(waiting.description, /Rating changes show here once FACEIT has the match stats/);
-  assert.equal(waiting.fields[0].value, 'A\\_nick1 (C)  Blaze II · 1185\nNewbie  Placing 3/5');
+  assert.match(waiting.fields[0].value, /^```\nPlayer +Rank +CFR +GP +Win% +Rtg\nA_nick1 \(C\) +Blaze II +1185 /);
   const cancelled = matchCard({ stage: 'cancelled', number: 12, teams });
   assert.equal(cancelled.title, '⚪ Arena 12: cancelled');
   assert.match(cancelled.description, /Match cancelled, no rating change\./);
@@ -228,14 +230,14 @@ test('the pinned messages: live board, queue, season leaderboard', () => {
   ];
   const ranks = { king: { label: 'Rank X 👑', placing: false }, new: { label: 'Placing 3/5', placing: true }, ban: { label: 'Inferno I', placing: false }, inf: { label: 'Inferno II', placing: false } };
   const text = leaderboardText({ name: 'Season 8', items, ranks, ratings: { king: 1452, new: 1060, ban: 1500, inf: 1318 }, banned: new Set(['ban']), url: 'https://hub' });
-  assert.match(text, /^## 🏆 Arena season leaderboard · Season 8\n\*\*#1\*\*  King  Rank X 👑 · 1452  \(32–14\)\n\*\*#2\*\*  Infer\\_no  Inferno II · 1318  \(28–15\)\n\n\*\*Full standings:\*\* <https:\/\/hub>/);
+  assert.match(text, /^## 🏆 Arena season leaderboard · Season 8\n```\n #  Player +Rank +CFR +W-L +Win%\n 1  King +Rank X +1452 +32-14 +70%\n 2  Infer_no +Inferno II +1318 +28-15 +65%\n```\n\*\*Full standings:\*\* <https:\/\/hub>/);
   assert.doesNotMatch(text, /Newbie|Cheater|NoRating/, 'placement, banned and unrated players are hidden');
   assert.doesNotMatch(text + board + queueText({ queueChannelId: 'q' }), /Updated/, 'no "updated x ago" line on the pinned messages');
   assert.match(leaderboardText({ name: 'Season 8', items: [], running: false }), /Season 8 \(final\)\nNobody is ranked this season yet\./);
   const many = Array.from({ length: 60 }, (_, index) => ({ player: { user_id: `p${index}`, nickname: 'x'.repeat(50) }, won: 1, lost: 0 }));
   const long = leaderboardText({ name: 'S', items: many, ranks: Object.fromEntries(many.map((row) => [row.player.user_id, { label: 'Ember II', placing: false }])), ratings: {}, limit: 25 });
   assert.ok(long.length <= 2000);
-  assert.ok((long.match(/\*\*#/g) || []).length <= 25, 'top 25 at most');
+  assert.ok((long.match(/\n ?\d+  x/g) || []).length <= 25, 'top 25 at most');
 });
 
 test('/arena stats and the rating history page', () => {
@@ -432,16 +434,47 @@ test('arena hub: match from draft to result with ratings, boards, roles, rank-up
   const lb = world.inChannel('data').find((message) => message.content.startsWith('## 🏆 Arena season leaderboard'));
   assert.match(board.content, /No Arena games live right now\./);
   assert.match(queue.content, /Nobody is in <#queue> right now\./);
-  assert.match(lb.content, new RegExp(`^## 🏆 Arena season leaderboard · Season 8\\n\\*\\*#1\\*\\*  A-nick1  Blaze [IV]+ · ${a1Before}  \\(6–0\\)\\n\\*\\*#2\\*\\*  B-nick1  Spark [IV]+ · \\d+  \\(0–6\\)`));
+  assert.match(lb.content, new RegExp(`^## 🏆 Arena season leaderboard · Season 8\\n\`\`\`\\n #  Player.*\\n 1  A-nick1 +Blaze [IV]+ +${a1Before} +6-0 +100%\\n 2  B-nick1 +Spark [IV]+ +\\d+ +0-6 +0%`));
   assert.ok([board.id, queue.id, lb.id].every((id) => world.pinned.includes(id)));
   assert.deepEqual(world.roles.map((role) => role.name).sort(), ['Blaze', 'Ember', 'Inferno', 'Rank X', 'Rank X 👑', 'Spark'].sort(), 'the existing Blaze role is reused, the rest are made');
   assert.deepEqual(world.roleChanges.sort(), ['+d-a1:Blaze', '+d-b1:Spark']);
 
   // FACEIT lists a match still in the captain draft: it is on the board as drafting.
-  hub.hooks.onPoll([{ ...hubMatch({ id: 'draft1', status: 'CAPTAIN_PICK', winner: null }), teams: { faction1: { name: 'team_Zoro', roster: roster('a').slice(0, 2) }, faction2: { name: 'team_Beta', roster: [] } } }]);
+  const draftMatch = (picked) => ({ ...hubMatch({ id: 'draft1', status: 'CAPTAIN_PICK', winner: null }), teams: { faction1: { name: 'team_Zoro', leader: 'a1', roster: roster('a').slice(0, picked) }, faction2: { name: 'team_Beta', roster: [] } } });
+  await hub.hooks.onPoll([draftMatch(1)]);
   await hub.refreshBoard();
   assert.match(board.content, /\*\*New game\*\* · drafting · Team Zoro vs Team Beta/);
-  hub.hooks.onPoll([]);
+  // The draft card: posted once in arena-games with each listed player's rating and stats,
+  // edited as players are picked, without pinging anyone.
+  const draft = world.inChannel('games').at(-1);
+  const draftEmbed = () => draft.payload.embeds[0].data;
+  const rows = (index) => draftEmbed().fields[index].value.split('\n');
+  assert.equal(draftEmbed().title, '🟡 New Arena game: captains are picking');
+  assert.match(draftEmbed().description, /^\*\*Team Zoro vs Team Beta\*\*\n\[FACEIT match room\]\(https:/);
+  assert.deepEqual(draft.payload.allowedMentions, { parse: [] });
+  assert.deepEqual(draftEmbed().fields.map((field) => field.name), ['🔵 Team Zoro · 1/5', '🔴 Team Beta · 0/5']);
+  assert.equal(rows(0)[1], 'Player          Rank          CFR   GP  Win%   K/D  ADR   Rtg');
+  assert.match(rows(0)[2], /^A-nick1 \(C\)     \S.{10} +(\d+|-) +\d+ +\d+% +\d\.\d\d +\d+ +\d\.\d\d$/);
+  assert.equal(draftEmbed().fields[1].value, 'Nobody yet');
+  await hub.hooks.onPoll([draftMatch(1)]);
+  assert.equal(draft.edits, 0, 'not edited when nothing changed');
+  await hub.hooks.onPoll([draftMatch(2)]);
+  assert.equal(draft.edits, 1);
+  assert.equal(draftEmbed().fields[0].name, '🔵 Team Zoro · 2/5');
+  assert.equal(rows(0).length, 5, 'the column names and two players, inside a code block');
+  // Players FACEIT lists on the match who are on neither team are the pool: shown first, best
+  // CF rating first and new players last, in the same columns.
+  await hub.hooks.onPoll([{ ...draftMatch(2), unpicked: [{ player_id: 'zz', nickname: 'Never_played' }, ...roster('b').slice(0, 2), roster('a')[0]] }]);
+  assert.equal(draft.edits, 2);
+  assert.deepEqual(draftEmbed().fields.map((field) => field.name), ['⚪ Not picked yet · 3', '🔵 Team Zoro · 2/5', '🔴 Team Beta · 0/5']);
+  assert.match(rows(0)[1], /^Player +Rank +CFR +GP +Win% +K\/D +ADR +Rtg$/);
+  assert.match(rows(0)[2], /^B-nick[12] /);
+  assert.equal(rows(0)[4], 'Never_played    Placing 0/5     -    -     -     -    -     -');
+  assert.doesNotMatch(draftEmbed().fields[0].value, /A-nick1/, 'a player on a team is not in the pool');
+  // FACEIT drops the match before the draft is done: the card says cancelled.
+  await hub.hooks.onPoll([]);
+  assert.equal(draftEmbed().title, '⚪ Arena game cancelled during the draft');
+  assert.deepEqual((await store.getArenaHubState()).drafts, {});
 
   // The draft finishes: the card goes up with ranks, ratings, team averages and win chance.
   const record = { id: 'live1', number: 12, faceitUrl: 'https://www.faceit.com/en/cs2/room/live1', channels: { faction1: 'vc1', faction2: 'vc2' }, teams: [{ label: 'Team Zoro', players: [] }, { label: 'Team Beta', players: [] }], voice: { 'd-a1': { first: '2026-11-11T00:05:00.000Z', last: '2026-11-11T00:45:00.000Z', s: 2400 } } };
@@ -449,14 +482,15 @@ test('arena hub: match from draft to result with ratings, boards, roles, rank-up
   await hub.hooks.onSync(record, match);
   const card = world.inChannel('games').at(-1);
   assert.match(world.text(card), /^🔴 Arena 12: live\n\*\*Team Zoro vs Team Beta\*\*/);
-  assert.match(world.text(card), new RegExp(`🔵 Team Zoro · avg ${a1Before} · \\d+% to win\\nA-nick1 \\(C\\) <@d-a1>  Blaze [IV]+ · ${a1Before}\\n`));
+  assert.match(world.text(card), new RegExp(`🔵 Team Zoro · avg ${a1Before} · \\d+% to win\\n\`\`\`\\nPlayer +Rank +CFR +GP +Win% +Rtg\\nA-nick1 \\(C\\) +Blaze [IV]+ +${a1Before} +6 +100% +\\d\\.\\d\\d\\n`));
   assert.deepEqual(card.payload.allowedMentions, { parse: [] }, 'cards ping nobody');
   await hub.hooks.onSync(record, match);
   assert.equal(card.edits, 0, 'nothing changed, nothing edited');
   match = { ...match, status: 'ONGOING', voting: { map: { pick: ['de_nuke'] }, location: { pick: ['Dallas'] } } };
   await hub.hooks.onSync(record, match);
   assert.equal(card.edits, 1);
-  assert.match(world.text(card), /\*\*Map:\*\* Nuke · \*\*Server:\*\* Dallas[\s\S]*FACEIT: ongoing/);
+  assert.match(world.text(card), /\*\*Map:\*\* Nuke · \[FACEIT match room\][\s\S]*FACEIT: ongoing/);
+  assert.doesNotMatch(world.text(card), /Server|Dallas/, 'the server is not shown: Arena games are always in Chicago');
   await hub.refreshBoard();
   assert.match(board.content, /\*\*Arena 12\*\* · live · Team Zoro vs Team Beta · \[match card\]\(https:\/\/discord\.com\/channels\/g1\/games\/[^)]+\)/);
   assert.equal(world.inChannel('games').filter((message) => message.content.startsWith('## 🎮')).length, 1, 'the board is edited in place');
@@ -485,12 +519,12 @@ test('arena hub: match from draft to result with ratings, boards, roles, rank-up
   assert.equal(rated.players.b1.protection, '50', 'b1 carried the losing team');
   assert.equal(rated.players.b2.protection, 'none');
   assert.equal(rated.players.b1.change * 2, rated.players.b2.change, 'half the loss');
-  assert.match(world.text(card), new RegExp(`A-nick1 \\(C\\) <@d-a1>  Blaze [IV]+  \\+${rated.players.a1.change} → ${rated.players.a1.after}`));
-  assert.match(world.text(card), new RegExp(`B-nick1 \\(C\\) <@d-b1>  Spark [IV]+  −${-rated.players.b1.change} → ${rated.players.b1.after} \\(loss protected, carried\\)`));
+  assert.match(world.text(card), new RegExp(`\\nA-nick1 \\(C\\) +\\d+ +\\d+ +\\d+ +\\d+ +\\d\\.\\d\\d  \\+${rated.players.a1.change} > ${rated.players.a1.after}\\n`));
+  assert.match(world.text(card), new RegExp(`\\nB-nick1 \\(C\\) .+  −${-rated.players.b1.change} > ${rated.players.b1.after} \\*\\n`));
   assert.match(world.text(card), /\*\*Top fragger:\*\* B-nick1 · 33\/12\/3/);
   assert.deepEqual((await store.getArenaHubState()).pending, {});
   assert.match(board.content, /No Arena games live right now\./);
-  assert.match(lb.content, new RegExp(`A-nick1  Blaze [IV]+ · ${rated.players.a1.after}`), 'the leaderboard shows the new rating');
+  assert.match(lb.content, new RegExp(` 1  A-nick1 +Blaze [IV]+ +${rated.players.a1.after} `), 'the leaderboard shows the new rating');
 
   // A staff adjustment lifts a1 into Blaze -> Inferno: role swapped, rank-up posted (no ping).
   const replies = [];
@@ -691,17 +725,19 @@ test('the pinned CF Rating leaderboard: top 20 of all time, placement and banned
   const text = ratingBoardText({ players, ranks, banned });
   assert.equal(text, [
     '## 🔥 CF Rating leaderboard · top 20',
-    '**#1**  King  Rank X 👑 · 1530  (97–53)',
-    '**#2**  Tied  Inferno II · 1318  (30–20)',
-    '**#3**  Infer\\_no  Inferno II · 1318  (28–15)',
-    '',
-    '-# CF rating is permanent and does not reset with seasons. Wins and losses are all time.'
+    '```',
+    ' #  Player            Rank         CFR      W-L  Win%',
+    ' 1  King              Rank X      1530    97-53   65%',
+    ' 2  Tied              Inferno II  1318    30-20   60%',
+    ' 3  Infer_no          Inferno II  1318    28-15   65%',
+    '```',
+    '-# CFR is CF rating: permanent, it does not reset with seasons. W-L is all time.'
   ].join('\n'));
   assert.match(ratingBoardText({ players: [], ranks: {} }), /Nobody is ranked yet\./);
   const many = Array.from({ length: 60 }, (_, index) => ({ id: `p${index}`, nickname: `Player ${index}`, rating: 1300 - index, wins: 10, losses: 5, games: 15 }));
   const top = ratingBoardText({ players: many, ranks: assignRanks(many) });
-  assert.equal((top.match(/\*\*#/g) || []).length, 20, 'twenty rows');
-  assert.match(top, /\*\*#20\*\*  Player 19  /);
+  assert.equal((top.match(/\n ?\d+  Player \d/g) || []).length, 20, 'twenty rows');
+  assert.match(top, /\n20  Player 19 /);
 
   // The bot keeps it pinned in arena-data under the season leaderboard, and edits it in place.
   const world = fakeWorld();
@@ -727,8 +763,8 @@ test('the pinned CF Rating leaderboard: top 20 of all time, placement and banned
   const pinnedData = world.inChannel('data').filter((message) => world.pinned.includes(message.id));
   assert.deepEqual(pinnedData.map((message) => message.content.split('\n')[0]), ['## 🏆 Arena season leaderboard · Season 8', '## 🔥 CF Rating leaderboard · top 20']);
   const board = pinnedData[1];
-  assert.match(board.content, /^## 🔥 CF Rating leaderboard · top 20\n\*\*#1\*\*  A-nick1  Blaze [IV]+ · \d+  \(6–0\)\n/);
-  assert.equal((board.content.match(/\*\*#/g) || []).length, 10);
+  assert.match(board.content, /^## 🔥 CF Rating leaderboard · top 20\n```\n.*\n 1  A-nick1 +Blaze [IV]+ +\d+ +6-0 +100%\n/);
+  assert.equal((board.content.match(/\n ?\d+  [AB]-nick\d /g) || []).length, 10);
   for (const message of [...world.inChannel('data'), ...world.inChannel('games')]) assert.doesNotMatch(message.content, /Updated/);
   assert.deepEqual(world.inChannel('games').map((message) => message.content.split('\n')[0]), ['## 🎮 Arena: live games'], 'no queue message by default');
   // A staff adjustment changes the order: the same message is edited.
@@ -737,7 +773,7 @@ test('the pinned CF Rating leaderboard: top 20 of all time, placement and banned
   clock += 60_000;
   await hub.tick();
   assert.equal(board.edits, 1);
-  assert.match(board.content, /^## 🔥 CF Rating leaderboard · top 20\n\*\*#1\*\*  B-nick3  Rank X 👑 · /);
+  assert.match(board.content, /^## 🔥 CF Rating leaderboard · top 20\n```\n.*\n 1  B-nick3 +Rank X +/);
   assert.equal(world.inChannel('data').filter((message) => message.content.startsWith('## 🔥 CF Rating leaderboard')).length, 1);
   clock += 11 * 60_000;
   await hub.tick();

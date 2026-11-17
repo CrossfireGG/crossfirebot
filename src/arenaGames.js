@@ -336,19 +336,68 @@ export function recapText(recap, { fromMs, toMs, seasonName = null, rankUps = []
 
 // ---------- match cards ----------
 
-// One player's line on a card.
-//   before the game: "Name  Blaze II · 1185"   /  "Name  Placing 3/5"
-//   after the game:  "Name  Blaze II  +16 → 1201"  /  "… −8 → 1291 (loss protected, carried)"
-function playerLine(name, { rank = null, rating = null, rated = null, captain = false, discordId = null, placementGames = 5 } = {}) {
-  const who = `${esc(name)}${captain ? ' (C)' : ''}${discordId ? ` <@${discordId}>` : ''}`;
-  if (rated) {
-    // Still placing after this game: no rating shown yet.
-    if (rated.placement && rated.gameNumber < placementGames) return `${who}  Placing ${rated.gameNumber}/${placementGames}`;
-    const note = rated.protection === 'short' ? ' (loss protected, 4v5)' : ['50', '75'].includes(rated.protection) ? ' (loss protected, carried)' : '';
-    return `${who}  ${rank?.label || ''}  ${signed(rated.change)} → ${rated.after}${note}`.replace(/ {3,}/g, '  ');
-  }
-  if (!rank || rank.placing) return `${who}  ${rank?.label || `Placing 0/${placementGames}`}`;
-  return `${who}  ${rank.label} · ${rating}`;
+// A lineup table for the draft and live match cards (a code block, so the columns line up):
+// best CF rating first, players still placing after them, with how each has played in Arena.
+//   "Player          Rank          CFR   GP  Win%   Rtg"
+//   "A_nick1 (C)     Blaze II     1185   43   58%  1.08"
+// wide (the draft card) adds K/D and ADR before Rtg.
+//   records: { [playerId]: playerRecord(...) } (all time)
+function lineupTable(team, { ranks = {}, ratings = {}, records = {}, placementGames = 5, wide = false, empty = 'No players' } = {}) {
+  const text = (value) => String(value ?? '').replace(/`/g, "'");
+  const row = (name, rank, cfr, games, win, kd, adr, hr) => [
+    `${text(name).slice(0, 15).padEnd(15)} ${text(rank).slice(0, 11).padEnd(11)}${text(cfr).padStart(6)}${text(games).padStart(5)}${text(win).padStart(6)}`,
+    wide ? `${text(kd).padStart(6)}${text(adr).padStart(5)}` : '',
+    text(hr).padStart(6)
+  ].join('').trimEnd();
+  const idOf = (player) => player.playerId || player.id;
+  const ranked = (player) => Boolean(ranks[idOf(player)] && !ranks[idOf(player)].placing);
+  const players = [...(team.players || [])].sort((a, b) => Number(ranked(b)) - Number(ranked(a))
+    || (ratings[idOf(b)] ?? 0) - (ratings[idOf(a)] ?? 0)
+    || (records[idOf(b)]?.played || 0) - (records[idOf(a)]?.played || 0));
+  const lines = players.map((player) => {
+    const id = idOf(player);
+    const record = records[id];
+    return row(
+      `${player.nickname || player.n}${team.captain && team.captain === id ? ' (C)' : ''}`,
+      ranked(player) ? String(ranks[id].label).replace(/\s*👑/u, '') : (ranks[id]?.label || `Placing 0/${placementGames}`),
+      ranked(player) ? ratings[id] : '-',
+      record?.played || '-',
+      record?.played ? `${Math.round(record.winRate * 100)}%` : '-',
+      record?.withStats ? record.kd.toFixed(2) : '-',
+      record?.withStats ? Math.round(record.adr) : '-',
+      record?.hr ? record.hr.toFixed(2) : '-'
+    );
+  });
+  if (!lines.length) return empty;
+  return ['```', row('Player', 'Rank', 'CFR', 'GP', 'Win%', 'K/D', 'ADR', 'Rtg'), ...lines, '```'].join('\n');
+}
+
+// One team's scoreboard on the finished match card (a code block, so the columns line up):
+// most kills first, with each player's CF rating change at the end of the row.
+//   "Player            K   D   A  ADR   Rtg  CFR"
+//   "A_nick1 (C)      20  10   2   98  1.41  +16 > 1201"
+function scoreboard(team, { result = null, placementGames = 5 } = {}) {
+  const text = (value) => String(value ?? '').replace(/`/g, "'");
+  const row = (name, k, d, a, adr, hr, change) => `${text(name).slice(0, 15).padEnd(15)}${text(k).padStart(4)}${text(d).padStart(4)}${text(a).padStart(4)}${text(adr).padStart(5)}${text(hr).padStart(6)}  ${text(change)}`.trimEnd();
+  const lines = [...(team.players || [])].sort((a, b) => (b.k || 0) - (a.k || 0) || (a.d || 0) - (b.d || 0)).map((player) => {
+    const rated = result?.players?.[player.id] || null;
+    const played = Boolean(player.k || player.d);
+    const change = !rated
+      ? ''
+      : rated.placement && rated.gameNumber < placementGames
+        ? `Placing ${rated.gameNumber}/${placementGames}`
+        : `${signed(rated.change)} > ${rated.after}${['50', '75', 'short'].includes(rated.protection) ? ' *' : ''}`;
+    return row(
+      `${player.n}${team.captain && team.captain === player.id ? ' (C)' : ''}`,
+      played ? player.k : '-',
+      played ? player.d : '-',
+      played ? player.a : '-',
+      played && player.adr ? Math.round(player.adr) : '-',
+      player.hr ? player.hr.toFixed(2) : '-',
+      change
+    );
+  });
+  return ['```', row('Player', 'K', 'D', 'A', 'ADR', 'Rtg', 'CFR'), ...lines, '```'].join('\n');
 }
 
 // A match card (embed data).
@@ -357,19 +406,11 @@ function playerLine(name, { rank = null, rating = null, rated = null, captain = 
 //   stage 'finished':  { game, result } result = the replay's entry for this game (may be null: stats still to come)
 //   stage 'cancelled'
 // ranks: { [playerId]: { label, placing } }   ratings: { [playerId]: rating }   links: { [playerId]: { discordId } }
-export function matchCard({ stage, number: gameNumber, teams = [], map = null, server = null, url = null, status = null, game = null, result = null, teamAvg = null, expected = null, ranks = {}, ratings = {}, links = {}, placementGames = 5, pending = false }) {
+export function matchCard({ stage, number: gameNumber, teams = [], map = null, server = null, url = null, status = null, game = null, result = null, teamAvg = null, expected = null, ranks = {}, ratings = {}, links = {}, records = {}, placementGames = 5, pending = false }) {
   const title = `Arena ${gameNumber ?? ''}`.trim();
   const names = teams.map((team) => team.label).join(' vs ');
   const idOf = (player) => player.playerId || player.id;
   const nameOf = (player) => player.nickname || player.n;
-  const roster = (team, rated) => (team.players || []).map((player) => playerLine(nameOf(player), {
-    rank: ranks[idOf(player)],
-    rating: ratings[idOf(player)],
-    rated: rated ? (result?.players?.[idOf(player)] || null) : null,
-    captain: team.captain && team.captain === idOf(player),
-    discordId: links[idOf(player)]?.discordId || null,
-    placementGames
-  })).join('\n') || 'No players';
   const marker = (index) => (index === 0 ? '🔵' : '🔴');
 
   if (stage === 'finished' && game) {
@@ -378,13 +419,13 @@ export function matchCard({ stage, number: gameNumber, teams = [], map = null, s
       title: `🏁 ${title}: ${game.teams[game.winner].label} win ${game.score[game.winner]}-${game.score[1 - game.winner]}`.slice(0, 256),
       description: [
         `**${esc(names)}**`,
-        [game.map ? `**Map:** ${game.map}` : null, game.server ? `**Server:** ${game.server}` : null, game.url ? `[FACEIT match room](${game.url})` : null].filter(Boolean).join(' · '),
+        [game.map ? `**Map:** ${game.map}` : null, game.url ? `[FACEIT match room](${game.url})` : null].filter(Boolean).join(' · '),
         fragger ? `**Top fragger:** ${esc(fragger.n)} · ${fragger.k}/${fragger.d}/${fragger.a}` : null,
-        pending ? '_Rating changes show here once FACEIT has the match stats._' : null
+        pending ? '_Rating changes show here once FACEIT has the match stats._' : (Object.values(result?.players || {}).some((entry) => ['50', '75', 'short'].includes(entry.protection)) ? '-# CFR is the CF rating change. * loss protected' : '-# CFR is the CF rating change.')
       ].filter(Boolean).join('\n'),
       fields: teams.map((team, index) => ({
         name: `${marker(index)} ${team.label} · ${game.score[index]}${game.winner === index ? ' 🏆' : ''}`.slice(0, 256),
-        value: roster(team, !pending).slice(0, 1024),
+        value: (pending ? lineupTable(team, { ranks, ratings, records, placementGames }) : scoreboard(team, { result, placementGames })).slice(0, 1024),
         inline: false
       })),
       color: 0x2ecc71
@@ -398,16 +439,45 @@ export function matchCard({ stage, number: gameNumber, teams = [], map = null, s
       color: 0x95a5a6
     };
   }
-  const details = [map ? `**Map:** ${map}` : null, server ? `**Server:** ${server}` : null, url ? `[FACEIT match room](${url})` : null].filter(Boolean).join(' · ');
+  const details = [map ? `**Map:** ${map}` : null, url ? `[FACEIT match room](${url})` : null].filter(Boolean).join(' · ');
   return {
     title: `🔴 ${title}: live`.slice(0, 256),
-    description: [`**${esc(names)}**`, details || null, status ? `FACEIT: ${String(status).toLowerCase().replace(/_/g, ' ')}` : null].filter(Boolean).join('\n'),
+    description: [`**${esc(names)}**`, details || null, status ? `FACEIT: ${String(status).toLowerCase().replace(/_/g, ' ')}` : null, '-# CFR is CF rating. GP, Win% and Rtg (Rating) are from all Arena games.'].filter(Boolean).join('\n'),
     fields: teams.map((team, index) => ({
       name: `${marker(index)} ${team.label}${teamAvg ? ` · avg ${teamAvg[index]}` : ''}${expected ? ` · ${Math.round(expected[index] * 100)}% to win` : ''}`.slice(0, 256),
-      value: roster(team, false).slice(0, 1024),
+      value: lineupTable(team, { ranks, ratings, records, placementGames }).slice(0, 1024),
       inline: false
     })),
     color: 0xff5500
+  };
+}
+
+// The card posted when a game pops and the captains are picking (embed data), laid out like
+// the live and finished cards: a table of the players not picked yet, then one per team so
+// far, with everyone's CF rating and Arena stats. It is edited as players are picked, and
+// becomes the live match card when the draft is done.
+//   teams: [{ label, captain, players: [{ playerId, nickname }] }]   (who FACEIT lists so far)
+//   pool: [{ playerId, nickname }] the players nobody has picked yet
+//   records: { [playerId]: playerRecord(...) }   ranks / ratings: as for matchCard
+export function draftCard({ teams = [], pool = [], url = null, ranks = {}, ratings = {}, records = {}, teamSize = 5, placementGames = 5 }) {
+  const marker = (index) => (index === 0 ? '🔵' : '🔴');
+  const table = (team, empty) => lineupTable(team, { ranks, ratings, records, placementGames, wide: true, empty }).slice(0, 1024);
+  return {
+    title: '🟡 New Arena game: captains are picking',
+    description: [
+      `**${esc(teams.map((team) => team.label).join(' vs '))}**`,
+      url ? `[FACEIT match room](${url})` : null,
+      '-# CFR is CF rating. GP, Win%, K/D, ADR and Rtg (Rating) are from all Arena games.'
+    ].filter(Boolean).join('\n'),
+    fields: [
+      ...(pool.length ? [{ name: `⚪ Not picked yet · ${pool.length}`, value: table({ players: pool }, 'Nobody'), inline: false }] : []),
+      ...teams.map((team, index) => ({
+        name: `${marker(index)} ${team.label} · ${(team.players || []).length}/${teamSize}`.slice(0, 256),
+        value: table(team, 'Nobody yet'),
+        inline: false
+      }))
+    ],
+    color: 0xf1c40f
   };
 }
 
@@ -459,19 +529,34 @@ export function leaderboardText({ name, items = [], ranks = {}, ratings = {}, ba
   }).slice(0, limit);
   const rows = shown.map((row, index) => {
     const id = row.player.user_id;
-    return `**#${index + 1}**  ${esc(row.player.nickname || '?')}  ${ranks[id].label} · ${ratings[id]}  (${row.won}–${row.lost})`;
+    return boardRow(index + 1, row.player.nickname || '?', ranks[id].label, ratings[id] ?? '-', row.won, row.lost);
   });
   const build = (list) => [
     `${LEADERBOARD_HEADING} · ${name}${running ? '' : ' (final)'}`,
-    ...(list.length ? list : ['Nobody is ranked this season yet.']),
-    '',
+    ...(list.length ? ['```', BOARD_COLUMNS, ...list, '```'] : ['Nobody is ranked this season yet.', '']),
     url ? `**Full standings:** <${url}>` : null,
-    '-# Season standings from FACEIT; CF rating and rank are permanent.'
+    '-# Season standings from FACEIT (W-L is this season); CFR is CF rating, which is permanent.'
   ].filter((line) => line !== null).join('\n');
   let list = rows;
   while (list.length > 3 && build(list).length > 2000) list = list.slice(0, -1);
   return build(list).slice(0, 2000);
 }
+
+// One row of a leaderboard table (inside a code block, so the columns line up).
+const tableCell = (text, width) => String(text ?? '').replace(/`/g, "'").slice(0, width).padEnd(width);
+const tableNum = (text, width) => String(text ?? '').padStart(width);
+function boardCells(place, nickname, rank, rating, record, win) {
+
+
+  // The crown would push the columns out of line; #1 already says it.
+  return `${tableNum(place, 2)}  ${tableCell(nickname, 16)}  ${tableCell(String(rank || '').replace(/\s*👑/u, ''), 11)}${tableNum(rating, 5)}${tableNum(record, 9)}${tableNum(win, 6)}`;
+}
+function boardRow(place, nickname, rank, rating, won, lost) {
+  const wins = Number(won) || 0;
+  const played = wins + (Number(lost) || 0);
+  return boardCells(place, nickname, rank, rating, `${wins}-${Number(lost) || 0}`, played ? `${Math.round((wins / played) * 100)}%` : '-');
+}
+const BOARD_COLUMNS = boardCells(' #', 'Player', 'Rank', 'CFR', 'W-L', 'Win%');
 
 // The pinned CF Rating leaderboard (plain text): the highest ratings of all time, whatever the
 // season. Placement and banned players are left out.
@@ -481,12 +566,11 @@ export function ratingBoardText({ players = [], ranks = {}, banned = new Set(), 
     .filter((player) => !banned.has(player.id) && ranks[player.id] && !ranks[player.id].placing)
     .sort((a, b) => b.rating - a.rating || (b.wins || 0) - (a.wins || 0) || (b.games || 0) - (a.games || 0) || String(a.id).localeCompare(String(b.id)))
     .slice(0, limit);
-  const rows = shown.map((player, index) => `**#${index + 1}**  ${esc(player.nickname || '?')}  ${ranks[player.id].label} · ${player.rating}  (${player.wins}–${player.losses})`);
+  const rows = shown.map((player, index) => boardRow(index + 1, player.nickname || '?', ranks[player.id].label, player.rating, player.wins, player.losses));
   const build = (list) => [
     `${RATING_BOARD_HEADING} · top ${limit}`,
-    ...(list.length ? list : ['Nobody is ranked yet.']),
-    '',
-    '-# CF rating is permanent and does not reset with seasons. Wins and losses are all time.'
+    ...(list.length ? ['```', BOARD_COLUMNS, ...list, '```'] : ['Nobody is ranked yet.', '']),
+    '-# CFR is CF rating: permanent, it does not reset with seasons. W-L is all time.'
   ].join('\n');
   let list = rows;
   while (list.length > 3 && build(list).length > 2000) list = list.slice(0, -1);

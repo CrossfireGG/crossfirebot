@@ -42,6 +42,27 @@ export function arenaTeamLabel(name, index = 0) {
   return text.replace(/^team[_\s-]+/i, 'Team ');
 }
 
+// The players in a game who are not on a team yet (the captain draft is still going): anyone
+// FACEIT lists anywhere on the match with a player id and a nickname who is on neither roster.
+// It looks through the whole match, so it does not depend on what FACEIT calls that list.
+export function arenaDraftPool(match) {
+  const onTeam = new Set(arenaTeams(match).flatMap((team) => team.players.map((player) => player.playerId)));
+  const pool = new Map();
+  const walk = (value, depth) => {
+    if (!value || typeof value !== 'object' || depth > 6) return;
+    if (Array.isArray(value)) {
+      for (const entry of value) walk(entry, depth + 1);
+      return;
+    }
+    const playerId = String(value.player_id || '').trim();
+    const nickname = String(value.nickname || value.game_player_name || '').trim();
+    if (playerId && nickname && !onTeam.has(playerId) && !pool.has(playerId)) pool.set(playerId, { playerId, nickname });
+    for (const entry of Object.values(value)) walk(entry, depth + 1);
+  };
+  walk(match, 0);
+  return [...pool.values()];
+}
+
 // Teams are final (the captain draft on FACEIT is done) and both sides are full.
 export function arenaTeamsLocked(match, teamSize = 5) {
   const status = String(match?.status || '').toUpperCase();

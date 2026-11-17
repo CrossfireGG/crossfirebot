@@ -999,7 +999,7 @@ export async function saveArenaHubState(patch) {
       for (const [id, value] of Object.entries(merged)) if (value === null || value === undefined) delete merged[id];
       return merged;
     };
-    db.arenaHub = { ...current, ...patch, cards: merge('cards'), pending: merge('pending') };
+    db.arenaHub = { ...current, ...patch, cards: merge('cards'), pending: merge('pending'), drafts: merge('drafts') };
     return { ...db.arenaHub };
   });
 }

@@ -275,6 +275,8 @@ export function getConfig() {
     // The pinned queue status in arena-games. Off: FACEIT's API does not return who is waiting
     // in the hub queue. true shows who is in the Queue voice channel instead.
     arenaQueueStatus: /^(true|1|on|yes)$/i.test(process.env.ARENA_QUEUE_STATUS || ''),
+    // The card posted in arena-games while the captains are picking. ARENA_DRAFT_CARD=false turns it off.
+    arenaDraftCard: !/^(false|0|off|no)$/i.test(process.env.ARENA_DRAFT_CARD || ''),
     arenaDataChannelId: process.env.ARENA_DATA_CHANNEL_ID || '1571982492439683143',
     // Rank-ups ("X just reached Ember") go to Arena chat, one message per game. Empty = the
     // channel named "arena-chat" (found by name); none found = arena-data.

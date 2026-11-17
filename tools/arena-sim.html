@@ -61,6 +61,7 @@
   <div class="stage" id="stage"></div>
   <div class="stack">
     <button class="primary" id="newMatch">1. A match appears on FACEIT (captain draft)</button>
+    <button id="pick">1b. A captain picks a player</button>
     <button class="primary" id="draftDone">2. Draft finished</button>
     <button id="mapPicked">3. Map and server picked, game live</button>
     <label class="check"><input type="checkbox" id="carry" checked> A player on the losing team carries (loss protection)</label>
@@ -199,6 +200,7 @@ function render() {
   $('stage').innerHTML = stages[state.stage] || '';
   $('clock').innerHTML = 'Bot clock: <b>' + esc(new Date(state.clock).toLocaleString('en-US', { timeZone: 'America/Chicago', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + '</b> (Chicago)';
   $('newMatch').disabled = !(state.stage === 'none' || state.stage === 'done');
+  $('pick').disabled = state.stage !== 'drafting';
   $('draftDone').disabled = state.stage !== 'drafting';
   $('mapPicked').disabled = state.stage !== 'live';
   $('winA').disabled = $('winB').disabled = state.stage !== 'live';
@@ -241,6 +243,7 @@ function render() {
 }
 
 $('newMatch').onclick = function () { act({ action: 'newMatch' }, 'games'); };
+$('pick').onclick = function () { act({ action: 'pick' }, 'games'); };
 $('draftDone').onclick = function () { act({ action: 'draftDone' }, 'games'); };
 $('mapPicked').onclick = function () { act({ action: 'mapPicked' }, 'games'); };
 $('winA').onclick = function () { act({ action: 'finish', winner: 0, carry: $('carry').checked, statsLater: $('statsLater').checked }, 'games'); };

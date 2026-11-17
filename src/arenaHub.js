@@ -29,6 +29,7 @@ import {
   createGameStore,
   createRatingStore,
   currentSeason,
+  draftCard,
   historyPageText,
   hubSeasons,
   isFinished,
@@ -46,7 +47,7 @@ import {
   weeklyRecap,
   withStats
 } from './arenaGames.js';
-import { arenaFaceitUrl, arenaMatchOver, arenaTeams, arenaTeamsLocked, parseFaceitNickname } from './arenaLogic.js';
+import { arenaDraftPool, arenaFaceitUrl, arenaMatchOver, arenaTeams, arenaTeamsLocked, parseFaceitNickname } from './arenaLogic.js';
 import { RANKS, RATING_DEFAULTS, assignRanks, decayStatus, expectedWin, rankLevel, rankName, ratingSummary, ratingSummaryText, replayRatings } from './arenaRating.js';
 import { prettyMapName } from './matchResult.js';
 import { getArenaHubState, listArenaLinks, listArenaMatches, saveArenaHubState } from './store.js';
@@ -100,6 +101,7 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
   // The rating, as last replayed: { players, history, games, ranks, banned }.
   let rating = null;
   const cardSignatures = new Map();
+  const draftLogged = new Set();
   const positionCache = new Map();
   const lastShared = new Map();
   const warned = new Set();
@@ -333,7 +335,15 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
     return channel ? channel.messages.fetch(messageId).catch(() => null) : null;
   }
 
-  function liveCard(record, match, links) {
+  // Each listed player's all-time Arena record, for the tables on the cards.
+  async function recordsFor(teams) {
+    const all = await games.all();
+    const records = {};
+    for (const team of teams || []) for (const player of team.players || []) records[player.playerId || player.id] = playerRecord(all, player.playerId || player.id);
+    return records;
+  }
+
+  function liveCard(record, match, links, records = {}) {
     const teams = match
       ? arenaTeams(match).map((team) => ({ ...team, captain: match.teams?.[team.faction]?.leader || null }))
       : (record.teams || []);
@@ -352,6 +362,7 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
       teamAvg,
       expected: [expectedWin(teamAvg[0], teamAvg[1]), expectedWin(teamAvg[1], teamAvg[0])],
       links,
+      records,
       placementGames: settings.placementGames,
       ...ratingMaps()
     });
@@ -363,7 +374,7 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
     if (!enabled() || !config.arenaGamesChannelId) return;
     if (!rating) await recompute();
     const links = await listArenaLinks();
-    const card = liveCard(record, match, links);
+    const card = liveCard(record, match, links, await recordsFor(match ? arenaTeams(match) : record.teams));
     const signature = JSON.stringify(card);
     const state = await getArenaHubState();
     if (!state.cards?.[record.id]) {
@@ -376,9 +387,13 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
       return;
     }
     if (cardSignatures.get(record.id) === signature) return;
+    // The message is still the draft card (posted while the captains were picking): it always
+    // becomes the live card now.
+    const wasDraft = Boolean(state.drafts?.[record.id]);
+    if (wasDraft) await saveArenaHubState({ drafts: { [record.id]: null } });
     const first = !cardSignatures.has(record.id);
     cardSignatures.set(record.id, signature);
-    if (first) return; // the bot restarted: nothing new to show yet
+    if (first && !wasDraft) return; // the bot restarted: nothing new to show yet
     const message = await cardMessage(record.id);
     await message?.edit(cardPayload(card)).catch(() => null);
     scheduleBoard();
@@ -430,7 +445,7 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
     if (waiting) {
       // Show the result now; the rating waits for the stats (ADR decides loss protection).
       const message = await cardMessage(matchId);
-      await message?.edit(cardPayload(matchCard({ stage: 'finished', number: game.number, teams: game.teams, game, links, pending: true, placementGames: settings.placementGames, ...ratingMaps() }))).catch(() => null);
+      await message?.edit(cardPayload(matchCard({ stage: 'finished', number: game.number, teams: game.teams, game, links, records: await recordsFor(game.teams), pending: true, placementGames: settings.placementGames, ...ratingMaps() }))).catch(() => null);
       await saveArenaHubState({ pending: { [matchId]: { since: new Date(since).toISOString(), number, voice } } });
       return true;
     }
@@ -463,13 +478,65 @@ export function createArenaHub({ client, faceit, config, games = createGameStore
 
   // Every match FACEIT lists as ongoing, each FACEIT check (src/arena.js): the ones still in
   // the captain draft go on the board as "drafting".
-  function onPoll(ongoing = []) {
-    const next = ongoing
-      .filter((match) => match?.match_id && !arenaMatchOver(match.status) && !arenaTeamsLocked(match, config.arenaTeamSize || 5))
-      .map((match) => ({ id: match.match_id, teams: arenaTeams(match).map((team) => ({ label: team.label })), url: arenaFaceitUrl(match) }));
+  async function onPoll(ongoing = []) {
+    const inDraft = ongoing.filter((match) => match?.match_id && !arenaMatchOver(match.status) && !arenaTeamsLocked(match, config.arenaTeamSize || 5));
+    const next = inDraft.map((match) => ({ id: match.match_id, teams: arenaTeams(match).map((team) => ({ label: team.label })), url: arenaFaceitUrl(match) }));
     if (JSON.stringify(next) !== JSON.stringify(drafting)) {
       drafting = next;
       scheduleBoard();
+    }
+    await syncDraftCards(inDraft, new Set(ongoing.map((match) => match?.match_id).filter(Boolean)))
+      .catch((error) => warnOnce('draft', `the draft card failed: ${error.message}`));
+  }
+
+  // The game has popped and the captains are picking: a card in arena-games with every listed
+  // player's CF rating and Arena stats, edited as players are picked. When the draft is done
+  // the same message becomes the live match card (onGameSync). No pings.
+  async function syncDraftCards(inDraft, ongoingIds) {
+    if (!enabled() || !config.arenaGamesChannelId || config.arenaDraftCard === false) return;
+    const state = await getArenaHubState();
+    if (!inDraft.length && !Object.keys(state.drafts || {}).length) return;
+    const tracked = new Set((await listArenaMatches()).map((record) => record.id));
+    if (inDraft.length && !rating) await recompute();
+    const all = inDraft.length ? await games.all() : [];
+    for (const listed of inDraft) {
+      if (tracked.has(listed.match_id)) continue;
+      // The match by itself can say more than the hub's list does (the players not picked yet).
+      const full = await faceit.getMatchRaw(listed.match_id).catch(() => null);
+      const match = full?.match_id === listed.match_id ? full : listed;
+      const teams = arenaTeams(match).map((team) => ({ ...team, captain: match.teams?.[team.faction]?.leader || null }));
+      const found = new Map([...arenaDraftPool(listed), ...arenaDraftPool(match)].map((player) => [player.playerId, player]));
+      for (const team of teams) for (const player of team.players) found.delete(player.playerId);
+      const pool = [...found.values()];
+      if (!draftLogged.has(match.match_id)) {
+        // Once per game, for the log: what FACEIT sends during the draft.
+        draftLogged.add(match.match_id);
+        console.log(`[Arena] draft ${match.match_id}: ${teams.map((team) => `${team.label} ${team.players.length}`).join(', ')}, not picked yet ${pool.length}. FACEIT sent: ${JSON.stringify(match).slice(0, 3000)}`);
+      }
+      const records = {};
+      for (const player of [...teams.flatMap((team) => team.players), ...pool]) records[player.playerId] = playerRecord(all, player.playerId);
+      const card = draftCard({ teams, pool, url: arenaFaceitUrl(match), records, teamSize: config.arenaTeamSize || 5, placementGames: settings.placementGames, ...ratingMaps() });
+      const signature = JSON.stringify(card);
+      if (!state.cards?.[match.match_id]) {
+        const channel = await textChannel(config.arenaGamesChannelId);
+        if (!channel) return;
+        const message = await channel.send(cardPayload(card));
+        await saveArenaHubState({ cards: { [match.match_id]: message.id }, drafts: { [match.match_id]: true } });
+        cardSignatures.set(match.match_id, signature);
+        continue;
+      }
+      if (!state.drafts?.[match.match_id] || cardSignatures.get(match.match_id) === signature) continue;
+      cardSignatures.set(match.match_id, signature);
+      const message = await cardMessage(match.match_id);
+      await message?.edit(cardPayload(card)).catch(() => null);
+    }
+    // A draft that never finished (FACEIT cancelled it): its card says so.
+    for (const matchId of Object.keys(state.drafts || {})) {
+      if (ongoingIds.has(matchId) || tracked.has(matchId)) continue;
+      const message = await cardMessage(matchId);
+      await message?.edit(cardPayload({ title: '⚪ Arena game cancelled during the draft', description: 'No rating change.', fields: [], color: 0x95a5a6 })).catch(() => null);
+      cardSignatures.delete(matchId);
+      await saveArenaHubState({ cards: { [matchId]: null }, drafts: { [matchId]: null } });
     }
   }
 

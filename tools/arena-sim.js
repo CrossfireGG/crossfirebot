@@ -201,6 +201,12 @@ function matchObject(id, players, status, extra = {}) {
   };
 }
 
+// A match in the captain draft: the first `picked` players are on teams, the rest wait.
+function draftObject(id, players, picked) {
+  const waiting = players.slice(picked).map((player) => ({ player_id: player.id, nickname: player.nickname, game_player_id: '' }));
+  return matchObject(id, players.slice(0, picked), 'CAPTAIN_PICK', { unpicked: waiting });
+}
+
 function simStats(match, winner, carry) {
   const seed = (text) => [...text].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 9973, 7);
   const line = (player, won, boost) => {
@@ -231,8 +237,18 @@ const actions = {
     simCount += 1;
     const players = pickPlayers();
     await linkSome(players);
-    sim = { players, match: matchObject(`sim-match-${simCount}`, players.slice(0, 4), 'CAPTAIN_PICK'), record: null, stats: null, statsReady: false, over: false, stage: 'drafting' };
-    hub.hooks.onPoll([sim.match]);
+    // The game pops with the two captains; each "pick" adds the next player.
+    // The other eight are the pool (this assumes FACEIT lists them on the match during the draft).
+    sim = { players, picked: 2, match: draftObject(`sim-match-${simCount}`, players, 2), record: null, stats: null, statsReady: false, over: false, stage: 'drafting' };
+    await hub.hooks.onPoll([sim.match]);
+    await hub.refreshBoard();
+  },
+  async pick() {
+    if (!sim || sim.stage !== 'drafting') throw new Error('Start a match first.');
+    if (sim.picked >= sim.players.length) throw new Error('Everyone is picked. Press 2.');
+    sim.picked += 1;
+    sim.match = draftObject(sim.match.match_id, sim.players, sim.picked);
+    await hub.hooks.onPoll([sim.match]);
     await hub.refreshBoard();
   },
   async draftDone() {
@@ -245,7 +261,7 @@ const actions = {
       voice: {}
     });
     sim.stage = 'live';
-    hub.hooks.onPoll([sim.match]);
+    await hub.hooks.onPoll([sim.match]);
     await hub.hooks.onSync(sim.record, sim.match);
     await hub.refreshBoard();
   },
@@ -275,7 +291,7 @@ const actions = {
     for (const id of ['voiceA', 'voiceB']) {
       messages.push({ id: `${id}-${messages.length + 1}`, channelId: id, payload: { content: `🏁 Game over. This channel closes <t:${Math.floor((now() + 30_000) / 1000)}:R> and everyone in it is moved back to <#queue>.` }, edits: 0, pinned: false, at: now() });
     }
-    hub.hooks.onPoll([]);
+    await hub.hooks.onPoll([]);
     await hub.hooks.onEnd(sim.record, 'FINISHED');
     await store.deleteArenaMatch(sim.match.match_id);
     sim.stage = sim.statsReady ? 'done' : 'waiting';
@@ -292,7 +308,7 @@ const actions = {
   async cancel() {
     if (!sim || !['drafting', 'live'].includes(sim.stage)) throw new Error('There is no match to cancel.');
     sim.match = { ...sim.match, status: 'CANCELLED' };
-    hub.hooks.onPoll([]);
+    await hub.hooks.onPoll([]);
     if (sim.record) {
       await hub.hooks.onEnd(sim.record, 'CANCELLED');
       await store.deleteArenaMatch(sim.match.match_id);
