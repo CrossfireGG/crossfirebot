@@ -185,7 +185,7 @@ export function createArenaPolls({ client, config, isStaff = () => false, now = 
       return;
     }
     if (!enabled()) {
-      await interaction.reply({ content: 'Arena votes need the Gladiator role, which is switched off (ARENA_GLADIATORS).', ephemeral: true });
+      await interaction.reply({ content: 'Arena votes need the Gladiator role, which is switched off (ARENA_GLADIATORS=false).', ephemeral: true });
       return;
     }
     const sub = interaction.options.getSubcommand();

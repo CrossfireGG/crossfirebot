@@ -275,9 +275,9 @@ export function getConfig() {
     // The pinned queue status in arena-games. Off: FACEIT's API does not return who is waiting
     // in the hub queue. true shows who is in the Queue voice channel instead.
     arenaQueueStatus: /^(true|1|on|yes)$/i.test(process.env.ARENA_QUEUE_STATUS || ''),
-    // Gladiator, the role for active Arena players: off until ARENA_GLADIATORS=true. The role is
+    // Gladiator, the role for active Arena players: on; ARENA_GLADIATORS=false turns it off. The role is
     // found by name or made; ARENA_GLADIATOR_ROLE_ID names it instead.
-    arenaGladiators: /^(true|1|on|yes)$/i.test(process.env.ARENA_GLADIATORS || ''),
+    arenaGladiators: !/^(false|0|off|no)$/i.test(process.env.ARENA_GLADIATORS || ''),
     // The DMs that warn a holder their timer is running: parked, off unless ARENA_GLADIATOR_DMS=true.
     arenaGladiatorDms: /^(true|1|on|yes)$/i.test(process.env.ARENA_GLADIATOR_DMS || ''),
     arenaGladiatorRoleId: /^[0-9]{15,25}$/.test(process.env.ARENA_GLADIATOR_ROLE_ID || '') ? process.env.ARENA_GLADIATOR_ROLE_ID : '',
