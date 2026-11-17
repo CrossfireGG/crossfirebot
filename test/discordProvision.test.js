@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { makeMatchChannelName } from '../src/matchChannelName.js';
-import { updateMatchChannelName } from '../src/discordProvision.js';
+import { updateMatchChannelName, updateMatchChannelTopic } from '../src/discordProvision.js';
 
 const baseMatch = {
   teamA: 'Team One',
@@ -64,4 +64,28 @@ test('channel rename helper returns the updated channel name', async () => {
   assert.equal(result.changed, true);
   assert.equal(result.name, '🟡-a-team-one-vs-team-two');
   assert.equal(channel.name, '🟡-a-team-one-vs-team-two');
+});
+
+test('topic refresh includes status and result while preserving a pending schedule', async () => {
+  const channel = {
+    topic: 'Round: old | Pending schedule: Nov 17, 2026 8:00 PM EST',
+    async setTopic(topic) {
+      this.topic = topic;
+      return this;
+    }
+  };
+
+  await updateMatchChannelTopic(channel, {
+    ...baseMatch,
+    round: 'Upper Bracket - Round 1',
+    status: 'FINISHED',
+    resultScore: '2-1',
+    scheduledAt: 'Nov 16, 2026 8:00 PM EST',
+    faceitUrl: 'https://www.faceit.com/en/cs2/room/example'
+  });
+
+  assert.match(channel.topic, /Round: Upper Bracket - Round 1/);
+  assert.match(channel.topic, /Status: FINISHED/);
+  assert.match(channel.topic, /Result: 2-1/);
+  assert.match(channel.topic, /Pending schedule: Nov 17, 2026 8:00 PM EST/);
 });

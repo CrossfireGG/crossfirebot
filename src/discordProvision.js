@@ -82,7 +82,7 @@ export async function repairMatchChannel(guild, config, channel, match) {
       makeMatchPermissionOverwrites(everyoneRole, teamARole, teamBRole, privilegedRoles)
     );
   }
-  await updateChannelTopic(channel, match);
+  await updateMatchChannelTopic(channel, match);
 
   return {
     categoryId: category.id,
@@ -259,7 +259,7 @@ async function findOrCreateTextChannel(guild, config, category, name, permission
     if (mappedExisting.parentId !== category.id) {
       await mappedExisting.setParent(category.id, { lockPermissions: false });
     }
-    await updateChannelTopic(mappedExisting, match);
+    await updateMatchChannelTopic(mappedExisting, match);
     return mappedExisting;
   }
 
@@ -273,7 +273,7 @@ async function findOrCreateTextChannel(guild, config, category, name, permission
       await existing.setParent(category.id, { lockPermissions: false });
     }
     await existing.permissionOverwrites.set(permissionOverwrites);
-    await updateChannelTopic(existing, match);
+    await updateMatchChannelTopic(existing, match);
     return existing;
   }
 
@@ -339,8 +339,12 @@ function matchPairKey(teamA, teamB) {
   return [normalizeTeamKey(teamA), normalizeTeamKey(teamB)].sort().join('|');
 }
 
-async function updateChannelTopic(channel, match) {
-  const topic = makeChannelTopic(match);
+export async function updateMatchChannelTopic(channel, match) {
+  const pendingSchedule = String(channel.topic || '')
+    .split('|')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith('Pending schedule:'));
+  const topic = [makeChannelTopic(match), pendingSchedule].filter(Boolean).join(' | ').slice(0, 1024);
   if (channel.topic !== topic) {
     await channel.setTopic(topic).catch(() => null);
   }
@@ -349,6 +353,8 @@ async function updateChannelTopic(channel, match) {
 function makeChannelTopic(match) {
   return [
     `Round: ${match.round}`,
+    match.status ? `Status: ${String(match.status).toUpperCase()}` : null,
+    match.resultScore ? `Result: ${match.resultScore}` : null,
     match.scheduledAt ? `FACEIT schedule: ${match.scheduledAt}` : 'FACEIT schedule: not set',
     match.faceitUrl ? `Room: ${match.faceitUrl}` : null
   ].filter(Boolean).join(' | ').slice(0, 1024);

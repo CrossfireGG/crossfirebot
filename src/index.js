@@ -31,7 +31,7 @@ import { createReactionRoles, parseMessageLink } from './reactionRoles.js';
 import { FaceitClient } from './faceit.js';
 import { SclClient } from './scl.js';
 import { findUniqueSclMatchChannel } from './sclChannelResolver.js';
-import { makeMatchChannelName, provisionMatchChannel, repairMatchChannel, resolveTeamRole, updateMatchChannelName } from './discordProvision.js';
+import { makeMatchChannelName, provisionMatchChannel, repairMatchChannel, resolveTeamRole, updateMatchChannelName, updateMatchChannelTopic } from './discordProvision.js';
 import {
   acceptScheduleProposal,
   appendAuditLog,
@@ -331,7 +331,10 @@ const playoffSeedCache = new Map();
 let webhookServer = null;
 let operationsTimer = null;
 let prepTimer = null;
+let matchStatusRefreshPromise = null;
+let lastMatchStatusRefreshAt = 0;
 const fireCrownMayPost = createFireCrownThrottle(config.fireCrownCooldownSeconds * 1000);
+const MATCH_STATUS_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 const PENDING_SCHEDULE_TOPIC_PREFIX = 'Pending schedule:';
 const EMBED_COLORS = {
@@ -1961,6 +1964,7 @@ async function markMatchChannelFinishedFromScl(channel, stored, sclMatch) {
   } else if (renameResult.changed) {
     console.log(`[SCL] marked Discord channel green match_id=${stored.match.id} channel_id=${channel.id} name=${renameResult.name}`);
   }
+  await updateMatchChannelTopic(channel, finishedMatch);
 
   await saveMatch({
     ...finishedMatch,
@@ -2207,6 +2211,11 @@ async function reorderExistingPlayoffMatchChannels() {
 async function handleRefreshMatchStatuses(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
+  const result = await refreshMatchStatuses();
+  await interaction.editReply(formatMatchStatusRefreshResult(result));
+}
+
+async function refreshMatchStatuses() {
   const guild = await client.guilds.fetch(config.discordGuildId);
   await guild.channels.fetch();
 
@@ -2267,6 +2276,7 @@ async function handleRefreshMatchStatuses(interaction) {
         result.renamed += 1;
         console.log(`[FACEIT status] channel renamed match_id=${match.id} from=${previousName} to=${renameResult.name || nextName}`);
       }
+      await updateMatchChannelTopic(channel, matchForStatus);
 
       const status = String(matchForStatus.status || '').toLowerCase();
       if (['finished', 'done', 'completed', 'cancelled'].some((value) => status.includes(value))) {
@@ -2287,13 +2297,33 @@ async function handleRefreshMatchStatuses(interaction) {
     }
   }
 
+  return result;
+}
+
+function formatMatchStatusRefreshResult(result) {
   const failureLines = result.failures.slice(0, 5).map((failure) => `- ${truncateText(failure, 180)}`);
-  await interaction.editReply(truncateDiscordMessage([
+  return truncateDiscordMessage([
     `Checked ${result.checked} FACEIT match(es) and found ${result.found} Discord channel(s).`,
     `Renamed: ${result.renamed}. Finished/green: ${result.finished}. Scheduled/yellow: ${result.scheduled}. Missing channels: ${result.missing}. Failures: ${result.failures.length}.`,
     failureLines.length ? ['Failures:', ...failureLines].join('\n') : null,
     result.failures.length > failureLines.length ? `...and ${result.failures.length - failureLines.length} more failure(s).` : null
-  ].filter(Boolean).join('\n')));
+  ].filter(Boolean).join('\n'));
+}
+
+async function refreshMatchStatusesIfDue(now = Date.now()) {
+  if (matchStatusRefreshPromise) return matchStatusRefreshPromise;
+  if (now - lastMatchStatusRefreshAt < MATCH_STATUS_REFRESH_INTERVAL_MS) return null;
+
+  lastMatchStatusRefreshAt = now;
+  matchStatusRefreshPromise = refreshMatchStatuses()
+    .then((result) => {
+      console.log(`[FACEIT status] automatic refresh checked=${result.checked} found=${result.found} renamed=${result.renamed} finished=${result.finished} missing=${result.missing} failures=${result.failures.length}`);
+      return result;
+    })
+    .finally(() => {
+      matchStatusRefreshPromise = null;
+    });
+  return matchStatusRefreshPromise;
 }
 
 async function handleAuditMatches(interaction) {
@@ -10477,6 +10507,7 @@ function makeProposalId() {
 
 async function runOperationsTick() {
   const now = Date.now();
+  await refreshMatchStatusesIfDue(now).catch((error) => console.error('Automatic FACEIT status refresh failed:', error));
   await runStreamOperationsTick(now);
   await recoverVetoTimers().catch((error) => console.error('Veto timer recovery failed:', error));
   // Playoff vetoes: teams are pinged VETO_NOTICE_MINUTES (60) before match time that the veto
