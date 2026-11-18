@@ -1,591 +1,419 @@
-// Local veto simulator: click through a playoff veto in the browser, no Discord and no bot.
+// Local veto simulator: run a playoff map veto in the browser, with no Discord and no bot.
 //   node tools/veto-sim.js        then open http://localhost:3210
-// It runs the real rules from src/vetoEngine.js and shows the same message and buttons the bot
-// posts in a match room (the text comes from the same functions; the layout is copied from
-// vetoMessagePayload in src/index.js).
-// Nothing is saved and nothing is sent anywhere.
+// It runs the bot's real veto code (src/veto.js, src/vetoEngine.js, src/store.js) against a
+// pretend Discord: a match room, the veto staff channel, a captain and a player on each team, a
+// staff member and someone on neither team. Click the veto buttons as any of them, run /cf veto,
+// and move the clock forward to see the reminders before the match and the veto starting on its
+// own. Every message, edit, delete and ping is exactly what the bot would do, so a change to the
+// veto shows up here as soon as the simulator is restarted.
+// Nothing is posted to Discord and the bot's real data file is never touched.
 
+import fs from 'node:fs';
 import http from 'node:http';
-
-import 'dotenv/config';
-
-import { FaceitClient } from '../src/faceit.js';
-import { derivePlayoffSeedMap } from '../src/playoffSeeds.js';
-
-import { applyServerBan, applyVetoAction, chooseFirstAction, chooseSide, createVeto, expectedVetoAction, markTurnTimedOut, undoVeto, vetoCanUndo, pauseVeto, resumeVeto, turnLengthText, vetoActionLines, vetoFinalLines, vetoInProgress, vetoServerLines, vetoTurnAction, vetoTurnExpired, vetoTurnText } from '../src/vetoEngine.js';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const PORT = Number(process.env.VETO_SIM_PORT || 3210);
-// A page left open from before a restart reloads itself instead of running old buttons.
-const BUILD = String(Date.now());
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const DIR = process.env.VETO_SIM_DIR || path.join(os.tmpdir(), 'crossfire-veto-sim');
+fs.mkdirSync(DIR, { recursive: true });
+// The simulator's own data file. Set before src/store.js is loaded.
+const DATA_PATH = path.join(DIR, 'bot-data.json');
+process.env.BOT_DATA_PATH = DATA_PATH;
+
+// The simulator's clock. "Skip ahead" moves Date.now forward for everything the veto code reads,
+// so the reminders, the automatic start and the turn clock all agree.
+let clockOffset = 0;
+const realNow = Date.now.bind(Date);
+Date.now = () => realNow() + clockOffset;
+
+const store = await import('../src/store.js');
+const { createVetoBot } = await import('../src/veto.js');
+const { vetoInProgress } = await import('../src/vetoEngine.js');
+
 const DEFAULTS = {
-  teamA: 'EMPIRE',
-  teamB: 'Old Meta',
-  seedA: 9,
-  seedB: 24,
+  teamA: 'Alpha',
+  teamB: 'Bravo',
+  seedA: 1,
+  seedB: 4,
   format: 'bo3',
   advantageTeam: 'teamA',
   mapPool: 'Dust2, Mirage, Nuke, Ancient, Inferno, Anubis, Cache',
-  // The bot no longer has a server step; fill this in to try the old one.
-  serverPool: '',
-  captainOnly: true,
-  turnSeconds: 120
+  turnSeconds: 120,
+  captainOnly: false,
+  startsIn: 65
 };
 
-// The real playoff matches, read from FACEIT with the bot's own key (FACEIT_API_KEY in .env), so
-// a match can be picked from a list and its match room link shows on the veto like it does live.
-const CHAMPIONSHIP = process.env.VETO_SIM_CHAMPIONSHIP || '946a3da3-c605-4b4c-a192-8806e63688f9';
-let matchCache = { at: 0, items: [], error: null };
-// Seeds worked out from the bracket the same way the bot does it (src/playoffSeeds.js).
-let seedsByTeam = {};
-const teamKey = (name) => String(name || '').toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, ' ').trim();
-let faceitUrl = null;
+// ---------- the pretend Discord ----------
 
-async function faceitMatches() {
-  if (Date.now() - matchCache.at < 60_000) return matchCache.items;
-  const key = process.env.FACEIT_API_KEY;
-  if (!key) {
-    matchCache = { at: Date.now(), items: [], error: 'FACEIT_API_KEY is not set in .env, so the match list is empty.' };
-    return [];
-  }
-  const items = [];
-  try {
-    for (let offset = 0; offset < 300; offset += 100) {
-      const response = await fetch(`https://open.faceit.com/data/v4/championships/${CHAMPIONSHIP}/matches?type=all&offset=${offset}&limit=100`, {
-        headers: { Authorization: `Bearer ${key}` },
-        signal: AbortSignal.timeout(15_000)
-      });
-      if (!response.ok) throw new Error(`FACEIT answered HTTP ${response.status}`);
-      const page = (await response.json()).items || [];
-      for (const match of page) {
-        const teamA = match.teams?.faction1?.name;
-        const teamB = match.teams?.faction2?.name;
-        if (!teamA || !teamB || /^(tbd|bye)$/i.test(teamA) || /^(tbd|bye)$/i.test(teamB)) continue;
-        items.push({
-          teamA,
-          teamB,
-          url: String(match.faceit_url || '').replace('{lang}', 'en'),
-          status: match.status,
-          scheduledAt: match.scheduled_at ? match.scheduled_at * 1000 : null,
-          bestOf: match.best_of || null
-        });
-      }
-      if (page.length < 100) break;
-    }
-    const source = { type: 'championship', id: CHAMPIONSHIP, name: 'Playoff Stage' };
-    const derived = derivePlayoffSeedMap(await new FaceitClient(key, [source]).getMatchesForSource(source));
-    seedsByTeam = {};
-    for (const match of items) {
-      for (const team of [match.teamA, match.teamB]) {
-        const seed = derived.get(teamKey(team));
-        if (seed) seedsByTeam[team.toLowerCase()] = seed;
-      }
-    }
-    items.sort((a, b) => (a.status === 'FINISHED') - (b.status === 'FINISHED') || (a.scheduledAt || Infinity) - (b.scheduledAt || Infinity));
-    matchCache = { at: Date.now(), items, error: null };
-  } catch (error) {
-    matchCache = { at: Date.now(), items: matchCache.items, error: `Could not read FACEIT: ${error.message}` };
-  }
-  return matchCache.items;
+const messages = []; // every message in every channel, in order (deleted ones are flagged)
+let messageCount = 0;
+let reply = null; // the last "only you can see this" reply: { who, label, payload, at }
+let setup = { ...DEFAULTS };
+let matchId = null;
+let matchCount = 0;
+let bot = null;
+
+const unknownMessage = () => Object.assign(new Error('Unknown Message'), { code: 10008 });
+const normalize = (payload) => (typeof payload === 'string' ? { content: payload } : { ...(payload || {}) });
+
+// Who a new message actually pings: mentions in the text that allowedMentions lets through.
+function pingsOf(payload) {
+  const content = String(payload.content || '');
+  const allowed = payload.allowedMentions;
+  const roles = [...content.matchAll(/<@&(\w+)>/g)].map((match) => match[1])
+    .filter((id) => !allowed || allowed.parse?.includes('roles') || allowed.roles?.includes(id));
+  const users = [...content.matchAll(/<@!?(\w+)>/g)].map((match) => match[1])
+    .filter((id) => !allowed || allowed.parse?.includes('users') || allowed.users?.includes(id));
+  return [...new Set([...roles.map((id) => `role:${id}`), ...users.map((id) => `user:${id}`)])];
 }
 
-function faceitUrlFor(teamA, teamB) {
-  const key = (name) => String(name || '').trim().toLowerCase();
-  const pair = [key(teamA), key(teamB)].sort().join('|');
-  return matchCache.items.find((match) => [key(match.teamA), key(match.teamB)].sort().join('|') === pair)?.url || null;
-}
+const guild = { id: 'guild', roles: { cache: { find: () => null } } };
 
-let veto = null;
-let version = 0;
-let log = [];
-let lastSettings = {};
-
-function start(options) {
-  const settings = { ...DEFAULTS, ...options };
-  lastSettings = options || {};
-  const next = createVeto({
-    match: { id: 'sim', teamA: String(settings.teamA).trim() || 'Team A', teamB: String(settings.teamB).trim() || 'Team B' },
-    mapPool: String(settings.mapPool).split(',').map((map) => map.trim()).filter(Boolean),
-    seeds: { teamA: Number(settings.seedA), teamB: Number(settings.seedB), source: 'simulator' },
-    format: settings.format,
-    advantageTeam: settings.format === 'bo5_advantage' ? settings.advantageTeam : null,
-    captainOnly: Boolean(settings.captainOnly),
-    turnSeconds: Math.max(5, Number(settings.turnSeconds) || 120),
-    serverPool: String(settings.serverPool || '').split(',').map((server) => server.trim()).filter(Boolean)
-  });
-  veto = next;
-  faceitUrl = faceitUrlFor(veto.teamA, veto.teamB);
-  version += 1;
-  // Log lines are text, or { only: 'before' | 'after', text } where the two layouts differ.
-  const reminder = `1 hour before match time: 📢 @${veto.teamA} @${veto.teamB} Map veto reminder: the veto happens here in this channel, starting 20 minutes before match time. Team captains make the choices. Each turn has ${turnLengthText(veto)}.`;
-  log = [
-    { only: 'before', text: reminder },
-    { only: 'after', text: `${reminder} Sides: when a team picks a map, the other team chooses its starting side; decider maps are a knife round.` },
-    `Veto started (${settings.format === 'bo3' ? 'BO3' : 'Grand Final BO5'}). Both teams are pinged; each turn has ${turnLengthText(veto)}.`,
-    { only: 'before', text: turnPing() }
-  ];
-}
-
-// The "you're up" ping the bot posts each turn (and replaces on the next one).
-function turnPing() {
-  return `👉 @${nameOf(veto.currentTeam)} ${vetoTurnAction(veto).replace(/\*\*/g, '')}`;
-}
-
-// The bot's turn timer: when the time is up it pings the team and staff; nothing is chosen.
-function tick() {
-  if (!veto || !vetoTurnExpired(veto)) return;
-  veto = markTurnTimedOut(veto);
-  version += 1;
-  log.push(`⏰ Time is up for ${nameOf(veto.currentTeam)} (${turnLengthText(veto)}). The team is pinged in the match room and staff are pinged in the staff channel.`);
-}
-
-function afterTurn() {
-  version += 1;
-  if (vetoInProgress(veto) && !veto.pausedAt) log.push(turnPing());
-  if (veto.status === 'complete') log.push('Veto complete. The result is posted in the staff channel, in the match room (pinging both teams) and, for a main stream match, on the Schedule post (pinging the crew).');
-}
-
-// actor: 'teamA:captain' | 'teamA:player' | 'teamB:captain' | 'teamB:player' | 'staff' | 'none'
-// Same checks, same wording as getVetoActorTeam + assertVetoActorEligible in the bot.
-function actorTeam(actor) {
-  const [team, rank] = String(actor || '').split(':');
-  if (!['teamA', 'teamB'].includes(team)) throw new Error('You are not mapped to either team in this match.');
-  // A stand-in (named by staff with /cf veto action:standin) acts like the captain.
-  if (veto.captainOnly && !['captain', 'standin'].includes(rank)) throw new Error('Only the mapped captain for your team may act in this veto.');
-  return team;
-}
-
-// Who the click counts for. Staff are asked to confirm in the page first (body.confirmed), then
-// the choice is made for the team whose turn it is and their name is recorded.
-function clicker(body, label) {
-  if (body.actor !== 'staff') return { team: actorTeam(body.actor), staff: false };
-  if (!vetoInProgress(veto) || veto.pausedAt) throw new Error('You are not mapped to either team in this match.');
-  const team = veto.currentTeam;
-  if (!body.confirmed) {
-    const error = new Error(`Make this choice for ${nameOf(team)}? ${label(team)}`);
-    error.confirm = true;
-    throw error;
-  }
-  return { team, staff: true, label: label(team) };
-}
-
-function recordStaff(who) {
-  if (!who.staff) return;
-  veto = { ...veto, staffActions: [...(veto.staffActions || []), { staffId: 'Staff', team: who.team, label: who.label }] };
-  log.push(`Staff made that choice for ${nameOf(who.team)} (named on the veto and in the audit log).`);
-}
-
-function nameOf(team) {
-  return team === 'teamA' ? veto.teamA : veto.teamB;
-}
-
-function message() {
-  if (!veto) return null;
-  const actionLines = veto.actions.length ? vetoActionLines(veto).join('\n') : 'No map actions yet.';
-  const final = veto.final ? vetoFinalLines(veto).join('\n') : null;
-  const buttons = [];
-  const staff = [];
-  if (vetoInProgress(veto)) {
-    staff.push(veto.pausedAt
-      ? { kind: 'staff', value: 'resume', label: '▶️ Staff: Resume', style: 'success' }
-      : { kind: 'staff', value: 'pause', label: '⏸️ Staff: Pause', style: 'secondary' });
-  }
-  if (vetoCanUndo(veto)) staff.push({ kind: 'staff', value: 'undo', label: '↩️ Staff: Undo last step', style: 'secondary' });
-  if (vetoInProgress(veto)) staff.push({ kind: 'staff', value: 'reset', label: '🔄 Staff: Reset', style: 'secondary' });
-  if (veto.pausedAt) {
-    // Paused: nobody can choose, so only the staff row is shown.
-  } else if (veto.status === 'choosing_first_action') {
-    buttons.push({ kind: 'first', value: 'self', label: 'Our team acts first', style: 'primary' });
-    buttons.push({ kind: 'first', value: 'opponent', label: 'Opponent acts first', style: 'secondary' });
-  } else if (expectedVetoAction(veto) === 'server') {
-    for (const server of veto.availableServers) buttons.push({ kind: 'server', value: server, label: `Ban ${server}`, style: 'danger' });
-  } else if (veto.status === 'active' && veto.pendingSide) {
-    buttons.push({ kind: 'side', value: 'CT', label: `Start CT on ${veto.pendingSide.map}`, style: 'primary' });
-    buttons.push({ kind: 'side', value: 'T', label: `Start T on ${veto.pendingSide.map}`, style: 'secondary' });
-  } else if (veto.status === 'active') {
-    const banning = expectedVetoAction(veto) === 'ban';
-    for (const map of veto.mapPool) {
-      if (veto.availableMaps.includes(map)) buttons.push({ kind: 'map', value: map, label: `${banning ? 'Ban' : 'Pick'} ${map}`, style: banning ? 'danger' : 'success' });
-    }
-  }
-  const fields = [
-      { name: 'Map Pool Snapshot', value: veto.mapPool.join(', ') },
-      { name: 'Seeds', value: `${veto.teamA}: #${veto.teamASeed}\n${veto.teamB}: #${veto.teamBSeed}\nSource: ${veto.seedSource}` },
-      { name: 'Actions', value: actionLines },
-      ...(veto.serverPool.length ? [{ name: `Server Location (${veto.serverPool.join(', ')})`, value: vetoServerLines(veto).join('\n') }] : []),
-      final ? { name: 'Final Result', value: final, turn: true } : { name: 'Current Turn', value: vetoTurnText(veto), turn: true },
-      { name: 'Side Policy', value: veto.sidePolicy },
-      ...(veto.staffActions?.length ? [{ name: 'Chosen by staff', value: veto.staffActions.map((entry) => `@${entry.staffId} for **${nameOf(entry.team)}**: ${entry.label}`).join('\n') }] : []),
-      { name: 'FACEIT', value: faceitUrl || 'Not linked' }
-  ];
-  // The proposed trimmed layout: no Side Policy, no "Source:" line. (Map Pool Snapshot stays.)
-  const fieldsAfter = fields
-    .filter((field) => field.name !== 'Side Policy')
-    .map((field) => (field.name === 'Seeds' ? { ...field, value: `${veto.teamA}: #${veto.teamASeed}\n${veto.teamB}: #${veto.teamBSeed}` } : field));
+function makeChannel(id) {
   return {
-    version,
-    status: veto.status,
-    currentTeam: veto.currentTeam,
-    higherSeedTeam: veto.higherSeedTeam,
-    teamA: veto.teamA,
-    teamB: veto.teamB,
-    captainOnly: veto.captainOnly,
-    complete: veto.status === 'complete',
-    paused: Boolean(veto.pausedAt),
-    title: veto.status === 'complete' ? 'Discord Veto Complete' : veto.pausedAt ? 'CROSSFIRE Playoff Veto (paused)' : 'CROSSFIRE Playoff Veto',
-    description: `**${veto.teamA} vs ${veto.teamB}**`,
-    fields,
-    fieldsAfter,
-    footer: 'Discord veto only. Staff must enter the result into FACEIT.',
-    buttons,
-    staff,
-    log
+    id,
+    guild,
+    isTextBased: () => true,
+    send: async (payload) => {
+      const body = normalize(payload);
+      messageCount += 1;
+      const message = { id: `m${messageCount}`, channelId: id, payload: body, at: Date.now(), edits: 0, deleted: false, pinged: pingsOf(body) };
+      // An edit never pings again, in Discord or here.
+      message.edit = async (next) => {
+        if (message.deleted) throw unknownMessage();
+        message.payload = { ...message.payload, ...normalize(next) };
+        message.edits += 1;
+        return message;
+      };
+      message.delete = async () => {
+        if (message.deleted) throw unknownMessage();
+        message.deleted = true;
+      };
+      messages.push(message);
+      return message;
+    },
+    messages: {
+      fetch: async (messageId) => messages.find((message) => message.id === messageId && !message.deleted) || Promise.reject(unknownMessage())
+    }
+  };
+}
+const channels = { room: makeChannel('room'), staff: makeChannel('staff') };
+const client = { user: { id: 'bot' }, channels: { fetch: async (id) => channels[id] || null } };
+
+// The people you can click as.
+function people() {
+  return {
+    capA: { name: `${setup.teamA} captain`, roles: ['roleA'] },
+    playerA: { name: `${setup.teamA} player`, roles: ['roleA'] },
+    capB: { name: `${setup.teamB} captain`, roles: ['roleB'] },
+    playerB: { name: `${setup.teamB} player`, roles: ['roleB'] },
+    staff: { name: 'Staff member', roles: ['staffRole'], staff: true },
+    outsider: { name: 'Someone on neither team', roles: [] }
   };
 }
 
-const routes = {
-  'POST /api/start': async (body) => {
-    await faceitMatches();
-    start(body);
+function member(id) {
+  const person = people()[id];
+  if (!person) return null;
+  return {
+    id,
+    user: { id, username: person.name, globalName: person.name, bot: false },
+    displayName: person.name,
+    staff: Boolean(person.staff),
+    roles: { cache: { has: (roleId) => person.roles.includes(roleId) } }
+  };
+}
+
+// ---------- the bot's settings and the helpers src/index.js gives the veto ----------
+
+// Copied from src/index.js (normalizeTeamKey, discordTimestamp, EMBED_COLORS).
+const teamKey = (value) => String(value || '').toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
+const deps = {
+  EMBED_COLORS: { proposed: 0xf1c40f, accepted: 0x2ecc71, declined: 0xe74c3c, admin: 0x3498db, warning: 0xe67e22 },
+  canUseBotAdminCommand: (who) => Boolean(who?.staff),
+  discordTimestamp: (isoValue, style = 'F') => {
+    const date = new Date(isoValue);
+    return Number.isNaN(date.getTime()) ? null : `<t:${Math.floor(date.getTime() / 1000)}:${style}>`;
   },
-  // The playoff matches to choose from, and the seed of every team.
-  'GET /api/matches': async () => ({
-    matches: await faceitMatches(),
-    matchesError: matchCache.error,
-    seeds: seedsByTeam
-  }),
-  'POST /api/first': (body) => {
-    const who = clicker(body, (side) => `${nameOf(body.choice === 'self' ? side : side === 'teamA' ? 'teamB' : 'teamA')} acts first`);
-    const team = who.team;
-    veto = chooseFirstAction(veto, team, body.choice);
-    log.push(`${nameOf(team)} chose: ${body.choice === 'self' ? 'we act first' : 'opponent acts first'}.`);
-    recordStaff(who);
-    afterTurn();
-  },
-  'POST /api/map': (body) => {
-    const action = expectedVetoAction(veto);
-    const who = clicker(body, () => `${action === 'pick' ? 'Pick' : 'Ban'} ${body.map}`);
-    const team = who.team;
-    veto = applyVetoAction(veto, team, body.map);
-    log.push(`${nameOf(team)} ${action === 'ban' ? 'banned' : 'picked'} ${body.map}.`);
-    recordStaff(who);
-    afterTurn();
-  },
-  'POST /api/server': (body) => {
-    const who = clicker(body, () => `Ban the ${body.server} server`);
-    const team = who.team;
-    veto = applyServerBan(veto, team, body.server);
-    log.push(`${nameOf(team)} banned the ${body.server} server.${veto.server ? ` The match is played on ${veto.server}; the match info message now shows it.` : ''}`);
-    recordStaff(who);
-    afterTurn();
-  },
-  'POST /api/side': (body) => {
-    const map = veto.pendingSide?.map;
-    const who = clicker(body, () => `Start ${body.side} on ${map}`);
-    const team = who.team;
-    veto = chooseSide(veto, team, body.side);
-    log.push(`${nameOf(team)} chose to start ${body.side} on ${map}.`);
-    recordStaff(who);
-    afterTurn();
-  },
-  // The staff row: pause, resume, reset. Same refusal as the bot for anyone who isn't staff.
-  'POST /api/staff': (body) => {
-    if (body.actor !== 'staff') throw new Error('Only staff can use the staff buttons on the veto.');
-    if (body.action === 'reset') {
-      start(lastSettings);
-      log.unshift('Staff reset the veto.');
-      return;
-    }
-    if (body.action === 'undo') {
-      veto = undoVeto(veto);
-      log.push('Staff took back the last step.');
-      afterTurn();
-      return;
-    }
-    veto = body.action === 'pause' ? pauseVeto(veto) : resumeVeto(veto);
-    log.push(body.action === 'pause' ? 'Staff paused the veto. The clock is stopped.' : `Staff resumed the veto. ${nameOf(veto.currentTeam)} has the full ${turnLengthText(veto)} again.`);
-    afterTurn();
-  },
-  'GET /api/state': () => null
+  getAdminAllowedMentions: () => ({ parse: [], roles: ['staffRole'] }),
+  getStaffMentions: () => '<@&staffRole>',
+  getStoredMatchForChannel: (channel) => store.getStoredMatchByChannel(channel.id),
+  isPlayoffMatch: () => true,
+  normalizeConfiguredMatch: (match) => match,
+  normalizeRoundCategory: (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(),
+  normalizeTeamKey: teamKey,
+  teamMappingScope: () => 'sim',
+  truncateDiscordMessage: (value) => String(value).slice(0, 1900),
+  upsertMatchIntroMessage: async () => {}
 };
 
-const server = http.createServer(async (request, response) => {
-  const key = `${request.method} ${request.url.split('?')[0]}`;
-  if (key === 'GET /') {
+function makeConfig(settings) {
+  return {
+    faceitSources: [],
+    vetoMapPool: settings.mapPool,
+    vetoSeeds: new Map([[teamKey(settings.teamA), settings.seedA], [teamKey(settings.teamB), settings.seedB]]),
+    vetoCaptainOnly: settings.captainOnly,
+    vetoTurnSeconds: settings.turnSeconds,
+    vetoNoticeMinutes: 60,
+    vetoStartMinutes: 20,
+    vetoSoonMinutes: 5,
+    vetoAdvantageTeam: settings.format === 'bo5_advantage' ? (settings.advantageTeam === 'teamB' ? settings.teamB : settings.teamA) : '',
+    vetoSidePolicy: undefined,
+    vetoStaffChannelId: 'staff'
+  };
+}
+
+// ---------- what the page can do ----------
+
+async function currentVeto() {
+  return matchId ? store.getVeto(matchId) : null;
+}
+
+async function schedule() {
+  return matchId ? store.getSchedule(matchId) : null;
+}
+
+// One interaction, the way src/index.js hands it to src/veto.js. body.as is who clicks;
+// body.messageId is the channel message the button is on; body.onReply means the button is on
+// the "only you can see this" reply.
+function interactionFor(body, label) {
+  const who = people()[body.as] ? body.as : 'staff';
+  const options = body.options || {};
+  const source = body.messageId ? messages.find((message) => message.id === body.messageId) : null;
+  const showReply = (payload) => { reply = { who, label, payload: normalize(payload), at: Date.now() }; };
+  const state = { deferredUpdate: false };
+  const interaction = {
+    customId: body.customId || null,
+    deferred: false,
+    replied: false,
+    user: { id: who, username: people()[who].name, globalName: people()[who].name },
+    member: member(who),
+    channel: channels.room,
+    channelId: 'room',
+    guild,
+    options: {
+      getString: (name) => (options[name] === undefined || options[name] === '' || options[name] === null ? null : String(options[name])),
+      getInteger: (name) => (options[name] === undefined || options[name] === '' || options[name] === null ? null : Number(options[name])),
+      getMember: (name) => (options[name] ? member(options[name]) : null),
+      getChannel: () => null
+    },
+    deferReply: async () => { interaction.deferred = true; },
+    deferUpdate: async () => { interaction.deferred = true; state.deferredUpdate = true; },
+    reply: async (payload) => {
+      interaction.replied = true;
+      const message = normalize(payload);
+      if (message.ephemeral) showReply(message);
+      else await channels.room.send(message);
+    },
+    followUp: async (payload) => showReply(payload),
+    // After deferUpdate, editReply edits the message the button is on; otherwise it is the reply.
+    editReply: async (payload) => (state.deferredUpdate ? interaction.update(payload) : showReply(payload)),
+    update: async (payload) => {
+      interaction.replied = true;
+      if (body.onReply && reply) reply = { ...reply, payload: { ...reply.payload, ...normalize(payload) } };
+      else if (source) await source.edit(payload);
+    }
+  };
+  return interaction;
+}
+
+async function run(interaction, handler) {
+  try {
+    await handler(interaction);
+  } catch (error) {
+    // What src/index.js answers when a handler throws (safelyRespondToInteraction).
+    await (interaction.deferred || interaction.replied ? interaction.followUp : interaction.reply)({ content: `Something failed: ${error.message}`, ephemeral: true });
+  }
+}
+
+// Clicks, commands and the clock checks run one at a time, like events in the live bot.
+let queue = Promise.resolve();
+const serial = (task) => {
+  const next = queue.then(task, task);
+  queue = next.catch(() => null);
+  return next;
+};
+
+const actions = {
+  async setup(body) {
+    const pool = String(body.mapPool ?? DEFAULTS.mapPool).split(/[\s,;]+/).map((map) => map.trim()).filter(Boolean);
+    setup = {
+      teamA: String(body.teamA || '').trim() || DEFAULTS.teamA,
+      teamB: String(body.teamB || '').trim() || DEFAULTS.teamB,
+      seedA: Math.max(1, Number(body.seedA) || DEFAULTS.seedA),
+      seedB: Math.max(1, Number(body.seedB) || DEFAULTS.seedB),
+      format: body.format === 'bo5_advantage' ? 'bo5_advantage' : 'bo3',
+      advantageTeam: body.advantageTeam === 'teamB' ? 'teamB' : 'teamA',
+      mapPool: pool,
+      turnSeconds: Math.max(10, Number(body.turnSeconds) || DEFAULTS.turnSeconds),
+      captainOnly: Boolean(body.captainOnly),
+      startsIn: Math.max(1, Number(body.startsIn) || DEFAULTS.startsIn)
+    };
+    if (teamKey(setup.teamA) === teamKey(setup.teamB)) throw new Error('The two teams need different names.');
+    // A fresh start: new data file, new match, a new copy of the veto code (its timers and pings
+    // for the old match are left behind and find nothing).
+    fs.rmSync(DATA_PATH, { force: true });
+    clockOffset = 0;
+    messages.length = 0;
+    reply = null;
+    matchCount += 1;
+    matchId = `sim-match-${matchCount}`;
+    bot = createVetoBot({ client, config: makeConfig(setup), faceit: null, deps });
+    await store.saveMatch({
+      id: matchId,
+      teamA: setup.teamA,
+      teamB: setup.teamB,
+      round: setup.format === 'bo5_advantage' ? 'Grand Final' : 'Upper Bracket Round 2',
+      status: 'READY',
+      source: { id: 'sim-playoffs', name: 'Playoffs' },
+      faceitUrl: `https://www.faceit.com/en/cs2/room/${matchId}`
+    }, { channelId: 'room', teamARoleId: 'roleA', teamBRoleId: 'roleB' });
+    await store.saveTeamMapping('sim', { identity: 'sim-team-a', teamName: setup.teamA, captainDiscordIds: ['capA'] });
+    await store.saveTeamMapping('sim', { identity: 'sim-team-b', teamName: setup.teamB, captainDiscordIds: ['capB'] });
+    await store.saveSchedule(matchId, { matchId, adminApproved: true, scheduledAtIso: new Date(Date.now() + setup.startsIn * 60_000).toISOString() });
+    await bot.tick(Date.now());
+  },
+  // Moves the clock forward a minute at a time, running the bot's once-a-minute check at each one
+  // (as the live bot does), so the reminders go out in order. Stops when the veto starts.
+  async skip(body) {
+    if (!bot) throw new Error('Set up a match first.');
+    if (vetoInProgress(await currentVeto())) throw new Error('The veto is running, and its turn clock runs in real time. To see a turn run out, set up the match again with fewer seconds per turn.');
+    let minutes = Math.max(1, Math.min(24 * 60, Math.round(Number(body.minutes) || 1)));
+    if (body.toStart) {
+      const start = Date.parse((await schedule())?.scheduledAtIso || '');
+      minutes = Math.ceil((start - 20 * 60_000 - Date.now()) / 60_000);
+      if (!(minutes > 0)) throw new Error('It is already past the time the veto starts.');
+    }
+    for (let step = 0; step < minutes; step += 1) {
+      clockOffset += 60_000;
+      await bot.tick(Date.now());
+      if (vetoInProgress(await currentVeto())) break;
+    }
+  },
+  // A button on a message (or on the "only you can see this" reply), routed like src/index.js does.
+  async click(body) {
+    if (!bot) throw new Error('Set up a match first.');
+    const id = String(body.customId || '');
+    const interaction = interactionFor(body, `${people()[body.as]?.name || 'Staff member'} clicked "${body.label || id}"`);
+    if (/^veto_(first|server|map|side):/.test(id)) await run(interaction, (it) => bot.handleChoice(it, id.slice(5, id.indexOf(':'))));
+    else if (id.startsWith('veto_as:')) await run(interaction, (it) => bot.handleStaffChoice(it));
+    else if (id.startsWith('veto_staff:')) await run(interaction, (it) => bot.handleStaffButton(it));
+    else throw new Error('That button is not one of the veto buttons.');
+  },
+  // /cf veto action:... (staff only: Discord hides /cf from everyone else).
+  async command(body) {
+    if (!bot) throw new Error('Set up a match first.');
+    const options = body.options || {};
+    const label = `/cf veto action:${options.action}${options.user ? ` user:@${people()[options.user]?.name}` : ''}${options.maps ? ` maps:${options.maps}` : ''}${options.team_a_seed ? ` team_a_seed:${options.team_a_seed} team_b_seed:${options.team_b_seed}` : ''}`;
+    const interaction = interactionFor(body, label);
+    if (!interaction.member.staff) {
+      reply = { who: body.as, label, payload: { content: 'Only staff can use /cf. (In Discord, players do not see the command at all.)' }, at: Date.now() };
+      return;
+    }
+    await run(interaction, (it) => bot.handleAdmin(it));
+  },
+  // /crossfire veto: the status anyone in the match room can check.
+  async status(body) {
+    if (!bot) throw new Error('Set up a match first.');
+    const veto = await currentVeto();
+    const interaction = interactionFor(body, '/crossfire veto');
+    await interaction.reply({ content: veto ? bot.formatStatus(veto) : 'No veto has started for this match.', ephemeral: true });
+  },
+  async closeReply() {
+    reply = null;
+  }
+};
+
+// ---------- the page ----------
+
+function plain(message) {
+  const embed = message.payload.embeds?.[0]?.data || message.payload.embeds?.[0] || null;
+  return {
+    id: message.id,
+    channelId: message.channelId,
+    at: message.at,
+    edits: message.edits || 0,
+    deleted: Boolean(message.deleted),
+    pinged: message.pinged || [],
+    content: message.payload.content || '',
+    embed: embed ? { title: embed.title, description: embed.description || '', fields: embed.fields || [], color: embed.color, footer: embed.footer?.text || '' } : null,
+    rows: (message.payload.components || []).map((row) => (row.components || []).map((button) => {
+      const data = button.data || button;
+      return { label: data.label, customId: data.custom_id, style: data.style, emoji: data.emoji?.name || '', disabled: Boolean(data.disabled) };
+    }))
+  };
+}
+
+async function view() {
+  const veto = await currentVeto();
+  const plan = await schedule();
+  const startMs = Date.parse(plan?.scheduledAtIso || '');
+  return {
+    clock: Date.now(),
+    setup: { ...setup, mapPool: setup.mapPool.join ? setup.mapPool.join(', ') : setup.mapPool },
+    ready: Boolean(bot),
+    matchAt: Number.isFinite(startMs) ? startMs : null,
+    vetoStatus: veto?.status || null,
+    paused: Boolean(veto?.pausedAt),
+    people: Object.entries(people()).map(([id, person]) => ({ id, name: person.name })),
+    names: {
+      users: Object.fromEntries(Object.entries(people()).map(([id, person]) => [id, person.name])),
+      roles: { roleA: setup.teamA, roleB: setup.teamB, staffRole: 'Staff' },
+      channels: { room: `${teamKey(setup.teamA).replace(/ /g, '-')}-vs-${teamKey(setup.teamB).replace(/ /g, '-')}`, staff: 'veto-staff' }
+    },
+    messages: messages.map(plain),
+    reply: reply ? { who: reply.who, label: reply.label, at: reply.at, ...plain({ id: 'reply', channelId: 'reply', payload: reply.payload, at: reply.at }) } : null,
+    audit: matchId ? (await store.listAuditLog({ matchId })).slice(-40).reverse() : []
+  };
+}
+
+async function handleRequest(request, response) {
+  const url = new URL(request.url, 'http://localhost');
+  if (request.method === 'GET' && url.pathname === '/') {
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    response.end(PAGE.replace('__DEFAULTS__', JSON.stringify(DEFAULTS)).replace('__BUILD__', BUILD));
+    response.end(fs.readFileSync(path.join(HERE, 'veto-sim.html'), 'utf8'));
     return;
   }
-  const handler = routes[key];
-  if (!handler) {
+  if (url.pathname !== '/api') {
     response.writeHead(404).end('Not found');
     return;
   }
   let raw = '';
   for await (const chunk of request) raw += chunk;
   let error = null;
-  let confirmText = null;
-  let extra = null;
   try {
     const body = raw ? JSON.parse(raw) : {};
-    if (!['POST /api/start', 'GET /api/state', 'GET /api/matches'].includes(key) && !veto) throw new Error('Start a veto first.');
-    tick();
-    extra = await handler(body);
+    if (body.action) {
+      const action = actions[body.action];
+      if (!action) throw new Error('Unknown action.');
+      await serial(() => action(body));
+    }
   } catch (caught) {
     error = caught.message;
-    if (caught.confirm) confirmText = caught.message;
   }
   response.writeHead(200, { 'Content-Type': 'application/json' });
-  response.end(JSON.stringify({ build: BUILD, error: confirmText ? null : error, confirm: confirmText, message: message(), ...(extra || {}) }));
+  response.end(JSON.stringify({ error, ...(await view()) }));
+}
+
+// The live bot checks once a minute; here it checks every few seconds so nothing waits.
+setInterval(() => {
+  if (bot) serial(() => bot.tick(Date.now())).catch((error) => console.error('Veto tick failed:', error.message));
+}, 5_000).unref();
+
+// Take the port before setup wipes the data file, so a second copy can't reset a running one.
+// Windows answers "localhost" with ::1 before 127.0.0.1, so listen on both (this computer only).
+await new Promise((resolve) => {
+  http.createServer(handleRequest)
+    .on('error', (error) => {
+      console.error(error.code === 'EADDRINUSE'
+        ? `Port ${PORT} is already in use. Is the simulator already running in another terminal? Close it, or set VETO_SIM_PORT to another port.`
+        : `Could not start the simulator: ${error.message}`);
+      process.exit(1);
+    })
+    .listen(PORT, '127.0.0.1', resolve);
 });
-
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`Veto simulator: http://localhost:${PORT}  (Ctrl+C to stop)`);
-});
-
-const PAGE = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Veto simulator</title>
-<style>
-  :root { --bg:#313338; --side:#2b2d31; --card:#2b2d31; --text:#dbdee1; --muted:#949ba4; --line:#3f4147; --blurple:#5865f2; --grey:#4e5058; --green:#2ecc71; --red:#f23f43; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.4 "gg sans","Segoe UI",system-ui,sans-serif; display:flex; min-height:100vh; }
-  aside { width:310px; flex:none; background:var(--side); padding:16px; border-right:1px solid var(--line); }
-  main { flex:1; padding:20px 24px; min-width:0; }
-  h1 { font-size:16px; margin:0 0 4px; }
-  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:18px 0 8px; }
-  p.note { color:var(--muted); font-size:13px; margin:0 0 8px; }
-  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }
-  input[type=text], input[type=number], select { width:100%; background:#1e1f22; color:var(--text); border:1px solid var(--line); border-radius:4px; padding:7px 8px; font:inherit; }
-  .row { display:flex; gap:8px; } .row > div { flex:1; min-width:0; }
-  .check { display:flex; align-items:center; gap:8px; margin-top:10px; font-size:14px; color:var(--text); }
-  button { font:inherit; font-weight:500; color:#fff; border:0; border-radius:4px; padding:8px 14px; cursor:pointer; }
-  button.primary { background:var(--blurple); } button.secondary { background:var(--grey); }
-  button.danger { background:#da373c; } button.success { background:#248046; }
-  button:hover { filter:brightness(1.1); }
-  #start { width:100%; margin-top:14px; }
-  .actors { display:grid; gap:6px; }
-  .actors button { text-align:left; background:#1e1f22; border:1px solid var(--line); color:var(--text); }
-  .actors button.on { border-color:var(--blurple); background:#3c4270; color:#fff; }
-  .actors button.turn::after { content:"  ← their turn"; color:var(--green); font-size:12px; }
-  .channel { color:var(--muted); font-size:13px; margin-bottom:14px; }
-  .msg { display:flex; gap:14px; max-width:720px; }
-  .avatar { width:40px; height:40px; border-radius:50%; background:#ff5500; flex:none; display:grid; place-items:center; font-weight:700; color:#fff; }
-  .who { font-weight:600; } .tag { background:var(--blurple); color:#fff; font-size:10px; border-radius:3px; padding:1px 5px; margin-left:6px; vertical-align:middle; }
-  .embed { margin-top:6px; background:var(--card); border-left:4px solid var(--blurple); border-radius:4px; padding:12px 16px; }
-  .embed.done { border-left-color:var(--green); }
-  .embed .title { font-weight:700; font-size:16px; margin-bottom:6px; }
-  .field { margin-top:10px; } .field .name { font-weight:700; font-size:14px; } .field .value { white-space:pre-wrap; font-size:14px; }
-  .footer { margin-top:12px; font-size:12px; color:var(--muted); }
-  .buttons { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; max-width:520px; }
-  .embed.paused { border-left-color:#f1c40f; }
-  .clock { font-weight:700; background:#1e1f22; border-radius:3px; padding:0 4px; }
-  .clock.low { color:#f23f43; }
-  .eph { margin-top:12px; max-width:720px; background:#3a2a2c; border-left:4px solid var(--red); border-radius:4px; padding:8px 12px; font-size:14px; }
-  .eph small { display:block; color:var(--muted); margin-top:2px; }
-  .log { margin-top:22px; color:var(--muted); font-size:13px; max-width:720px; } .log div { padding:2px 0; }
-  .empty { color:var(--muted); }
-  .cols { display:grid; grid-template-columns:1fr 1fr; gap:28px; align-items:start; }
-  .col > h3 { margin:0 0 10px; font-size:12px; letter-spacing:.05em; text-transform:uppercase; padding:4px 8px; border-radius:4px; display:inline-block; }
-  .col.before > h3 { background:#4e5058; color:#fff; } .col.after > h3 { background:#248046; color:#fff; }
-  .diffs { margin-top:26px; max-width:980px; border-top:1px solid var(--line); padding-top:14px; font-size:14px; }
-  .diffs table { border-collapse:collapse; width:100%; } .diffs td, .diffs th { text-align:left; vertical-align:top; padding:6px 10px 6px 0; border-bottom:1px solid var(--line); }
-  .diffs th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
-  .pill { font-size:11px; border-radius:3px; padding:1px 6px; background:#1e1f22; color:var(--muted); white-space:nowrap; }
-  @media (max-width: 1150px) { .cols { grid-template-columns:1fr; } }
-  @media (max-width: 760px) { body { flex-direction:column; } aside { width:auto; border-right:0; border-bottom:1px solid var(--line); } }
-</style>
-</head>
-<body>
-<aside>
-  <h1>Veto simulator</h1>
-  <p class="note">Runs the bot's real veto rules. Nothing is posted to Discord.</p>
-
-  <h2>Match</h2>
-  <label>Playoff match from FACEIT</label>
-  <select id="matchPick"><option value="">Loading matches…</option></select>
-  <p class="note" id="matchNote" style="margin-top:6px"></p>
-  <div class="row">
-    <div><label>Team A</label><input type="text" id="teamA"></div>
-    <div style="flex:0 0 70px"><label>Seed</label><input type="number" id="seedA" min="1"></div>
-  </div>
-  <div class="row">
-    <div><label>Team B</label><input type="text" id="teamB"></div>
-    <div style="flex:0 0 70px"><label>Seed</label><input type="number" id="seedB" min="1"></div>
-  </div>
-  <label>Format</label>
-  <select id="format">
-    <option value="bo3">BO3 (ban ban pick pick ban ban)</option>
-    <option value="bo5_advantage">Grand Final BO5 (upper-bracket advantage)</option>
-  </select>
-  <div id="advWrap"><label>Upper-bracket winner</label>
-    <select id="advantageTeam"><option value="teamA">Team A</option><option value="teamB">Team B</option></select></div>
-  <label>Map pool (exactly 7, comma separated)</label>
-  <input type="text" id="mapPool">
-  <label>Server locations (comma separated, empty = none)</label>
-  <input type="text" id="serverPool">
-  <label>Seconds per turn (live: 120)</label>
-  <input type="number" id="turnSeconds" min="5">
-  <label class="check"><input type="checkbox" id="captainOnly"> Captains only</label>
-  <button class="primary" id="start">Start / reset veto</button>
-
-  <h2>You are clicking as</h2>
-  <div class="actors" id="actors"></div>
-</aside>
-<main>
-  <div class="channel"># sample-match-room · the same veto shown two ways; buttons in either column do the same thing</div>
-  <div id="empty" class="empty">Press <b>Start / reset veto</b> to post the veto message.</div>
-  <div class="cols" id="cols" style="display:none">
-    <div class="col before"><h3>Before (current)</h3><div id="view-before"></div><div class="log" id="log-before"></div></div>
-    <div class="col after"><h3>After (trimmed)</h3><div id="view-after"></div><div class="log" id="log-after"></div></div>
-  </div>
-  <div id="eph"></div>
-  <div class="diffs">
-    <h2>Differences</h2>
-    <table>
-      <tr><th>Change</th><th>Before</th><th>After</th><th>Where to see it</th></tr>
-      <tr><td>Side Policy field</td><td>The same sentence on every veto message</td><td>Removed from the message; the sentence is in the 1-hour reminder</td><td><span class="pill">message</span> <span class="pill">What happened</span></td></tr>
-      <tr><td>"Source:" line under Seeds</td><td>Seeds plus "Source: ..."</td><td>The two seed numbers only</td><td><span class="pill">message</span></td></tr>
-      <tr><td>Ping when the veto starts</td><td>Both teams pinged, then the first team pinged again a second later</td><td>Both teams pinged once; turn pings start from the second turn</td><td><span class="pill">What happened</span></td></tr>
-      <tr><td><code>/cf veto action:cancel</code></td><td>Ends the veto and blocks the automatic start</td><td>Removed; staff use pause or reset</td><td><span class="pill">command, not shown here</span></td></tr>
-      <tr><td><code>/cf veto action:inspect</code></td><td>Shows the veto status to staff</td><td>Removed; <code>/crossfire veto</code> shows the same</td><td><span class="pill">command, not shown here</span></td></tr>
-      <tr><td>Railway variables</td><td><code>VETO_SIDE_POLICY</code>, <code>VETO_ADVANTAGE_TEAM</code>, <code>VETO_SEEDS</code></td><td>Removed; built-in side rule, the seed list, and <code>/cf veto action:seeds</code> (also sets the Grand Final advantage team)</td><td><span class="pill">setting, not shown here</span></td></tr>
-    </table>
-  </div>
-</main>
-<script>
-const defaults = __DEFAULTS__;
-const $ = (id) => document.getElementById(id);
-let actor = 'teamA:captain';
-let current = null;
-
-for (const key of ['teamA', 'teamB', 'seedA', 'seedB', 'format', 'advantageTeam', 'mapPool', 'serverPool', 'turnSeconds']) $(key).value = defaults[key];
-$('captainOnly').checked = defaults.captainOnly;
-const showAdv = () => { $('advWrap').style.display = $('format').value === 'bo5_advantage' ? '' : 'none'; };
-$('format').onchange = showAdv; showAdv();
-
-function esc(text) { const d = document.createElement('div'); d.textContent = text; return d.innerHTML; }
-function md(text) {
-  return esc(text).replace(/\\*\\*(.+?)\\*\\*/g, '<b>$1</b>')
-    .replace(/&lt;t:(\\d+):R&gt;/g, '<span class="clock" data-t="$1"></span>')
-    .replace(new RegExp('(https:[^ <]+)', 'g'), '<a href="$1" target="_blank" rel="noopener" style="color:#00a8fc">$1</a>');
-}
-// Discord shows <t:...:R> as a live "in 2 minutes"; here it is a countdown.
-function paintClocks() {
-  for (const el of document.querySelectorAll('.clock')) {
-    const left = Math.ceil(Number(el.dataset.t) - Date.now() / 1000);
-    el.textContent = left > 0 ? 'in ' + Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0') : 'now';
-    el.className = 'clock' + (left <= 30 ? ' low' : '');
-  }
-}
-setInterval(paintClocks, 250);
-
-function renderActors() {
-  const a = current ? current.teamA : $('teamA').value, b = current ? current.teamB : $('teamB').value;
-  const list = [['teamA:captain', a + ' captain'], ['teamA:player', a + ' player (not captain)'], ['teamB:captain', b + ' captain'], ['teamB:player', b + ' player (not captain)'], ['teamA:standin', a + ' stand-in captain (named by staff)'], ['teamB:standin', b + ' stand-in captain (named by staff)'], ['staff', 'Staff / admin'], ['none', 'Someone not in the match']];
-  const turn = current && !current.complete && !current.paused ? current.currentTeam + ':captain' : null;
-  $('actors').innerHTML = '';
-  for (const [value, label] of list) {
-    const button = document.createElement('button');
-    button.textContent = label;
-    button.className = (value === actor ? 'on ' : '') + (value === turn ? 'turn' : '');
-    button.onclick = () => { actor = value; renderActors(); };
-    $('actors').appendChild(button);
-  }
-}
-
-function paint(which, message, fields) {
-  const view = $('view-' + which);
-  const html = fields.map((f) => '<div class="field"><div class="name">' + esc(f.name) + '</div><div class="value">' + md(f.value) + '</div></div>').join('');
-  view.innerHTML = '<div class="msg"><div class="avatar">CF</div><div style="min-width:0;flex:1"><span class="who">CROSSFIRE Bot</span><span class="tag">APP</span>'
-    + '<div class="embed' + (message.complete ? ' done' : message.paused ? ' paused' : '') + '"><div class="title">' + esc(message.title) + '</div><div>' + md(message.description) + '</div>' + html
-    + '<div class="footer">' + esc(message.footer) + '</div></div><div class="buttons"></div><div class="buttons"></div></div></div>';
-  const [teamRow, staffRow] = view.querySelectorAll('.buttons');
-  for (const b of message.buttons) {
-    const button = document.createElement('button');
-    button.className = b.style;
-    button.textContent = b.label;
-    button.onclick = () => call('/api/' + b.kind, b.kind === 'first' ? { actor, choice: b.value } : b.kind === 'side' ? { actor, side: b.value } : b.kind === 'server' ? { actor, server: b.value } : { actor, map: b.value });
-    teamRow.appendChild(button);
-  }
-  for (const b of message.staff) {
-    const button = document.createElement('button');
-    button.className = b.style;
-    button.textContent = b.label;
-    button.onclick = () => {
-      if (b.value === 'reset' && actor === 'staff' && !confirm('Reset the veto? Everything chosen so far is cleared and the veto starts again.')) return;
-      call('/api/staff', { actor, action: b.value });
-    };
-    staffRow.appendChild(button);
-  }
-  const lines = message.log.filter((line) => typeof line === 'string' || line.only === which).map((line) => (typeof line === 'string' ? line : line.text));
-  $('log-' + which).innerHTML = '<h2>What happened</h2>' + lines.map((line) => '<div>' + esc(line) + '</div>').join('');
-}
-
-function render(message) {
-  current = message;
-  renderActors();
-  if (!message) return;
-  $('empty').style.display = 'none';
-  $('cols').style.display = '';
-  paint('before', message, message.fields);
-  paint('after', message, message.fieldsAfter);
-  paintClocks();
-}
-
-async function call(path, body) {
-  const response = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
-  const data = await response.json();
-  if (data.build !== '__BUILD__') { location.reload(); return; }
-  // Staff clicking a team button: the bot asks first, then makes the choice for that team.
-  if (data.confirm) {
-    if (confirm(data.confirm + ' Only do this on the word of the team. Your name goes on the veto.')) return call(path, { ...body, confirmed: true });
-    render(data.message);
-    return;
-  }
-  $('eph').innerHTML = data.error ? '<div class="eph">' + esc(data.error) + '<small>Only you can see this</small></div>' : '';
-  render(data.message);
-}
-// The time-up ping arrives on its own, like in Discord.
-setInterval(async () => {
-  if (!current || current.complete || current.paused) return;
-  const data = await (await fetch('/api/state')).json();
-  if (data.build !== '__BUILD__') { location.reload(); return; }
-  if (data.message && data.message.version !== current.version) render(data.message);
-}, 1000);
-
-$('start').onclick = () => call('/api/start', {
-  teamA: $('teamA').value, teamB: $('teamB').value, seedA: $('seedA').value, seedB: $('seedB').value,
-  format: $('format').value, advantageTeam: $('advantageTeam').value, mapPool: $('mapPool').value, serverPool: $('serverPool').value, captainOnly: $('captainOnly').checked, turnSeconds: $('turnSeconds').value
-});
-call('/api/state');
-
-// The real playoff matches: choosing one fills in the teams and their seeds, and the veto then
-// shows that match's FACEIT room link.
-(async () => {
-  const data = await (await fetch('/api/matches')).json();
-  const pick = $('matchPick');
-  const when = (ms) => ms ? new Date(ms).toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', minute: '2-digit' }) + ' ET' : 'no time yet';
-  pick.innerHTML = '';
-  pick.add(new Option(data.matches.length ? 'Choose a match…' : 'No matches found', ''));
-  data.matches.forEach((match, index) => pick.add(new Option(match.teamA + ' vs ' + match.teamB + ' · ' + (match.status === 'FINISHED' ? 'finished' : when(match.scheduledAt)), String(index))));
-  $('matchNote').textContent = data.matchesError || '';
-  pick.onchange = () => {
-    const match = data.matches[Number(pick.value)];
-    if (!pick.value || !match) return;
-    $('teamA').value = match.teamA;
-    $('teamB').value = match.teamB;
-    const seedA = data.seeds[match.teamA.toLowerCase()], seedB = data.seeds[match.teamB.toLowerCase()];
-    if (seedA) $('seedA').value = seedA;
-    if (seedB) $('seedB').value = seedB;
-    $('format').value = match.bestOf === 5 ? 'bo5_advantage' : 'bo3';
-    showAdv();
-    renderActors();
-    $('matchNote').textContent = 'Press Start / reset veto to use this match.';
-  };
-})();
-</script>
-</body>
-</html>`;
+http.createServer(handleRequest).on('error', () => {}).listen(PORT, '::1');
+await actions.setup(DEFAULTS);
+console.log(`Veto simulator: http://localhost:${PORT}  (keep this terminal open; Ctrl+C to stop)`);

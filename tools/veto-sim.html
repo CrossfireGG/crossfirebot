@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Veto simulator</title>
+<style>
+  :root { --bg:#313338; --side:#2b2d31; --card:#2b2d31; --text:#dbdee1; --muted:#949ba4; --line:#3f4147; --blurple:#5865f2; --grey:#4e5058; --green:#248046; --red:#da373c; --input:#1e1f22; --link:#00a8fc; --ping:#f0b232; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.4 "gg sans","Segoe UI",system-ui,sans-serif; display:flex; min-height:100vh; }
+  aside { width:340px; flex:none; background:var(--side); padding:16px; border-right:1px solid var(--line); overflow:auto; max-height:100vh; position:sticky; top:0; }
+  main { flex:1; padding:18px 24px 80px; min-width:0; }
+  h1 { font-size:16px; margin:0 0 4px; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:18px 0 8px; }
+  p.note { color:var(--muted); font-size:13px; margin:0 0 8px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }
+  input[type=text], input[type=number], select { width:100%; background:var(--input); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:7px 8px; font:inherit; }
+  button { font:inherit; font-weight:500; color:#fff; border:0; border-radius:4px; padding:7px 12px; cursor:pointer; background:var(--grey); }
+  button.primary, button.s1 { background:var(--blurple); } button.danger, button.s4 { background:var(--red); } button.success, button.s3 { background:var(--green); } button.s2 { background:var(--grey); }
+  button:hover { filter:brightness(1.12); } button:disabled { opacity:.45; cursor:default; filter:none; }
+  .stack { display:grid; gap:6px; } .pair { display:grid; grid-template-columns:1fr 1fr; gap:6px; } .quad { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; } .quad button { padding:7px 4px; white-space:nowrap; }
+  .team { display:grid; grid-template-columns:1fr 70px; gap:6px; }
+  .check { display:flex; align-items:center; gap:8px; margin:8px 0; font-size:14px; color:var(--text); }
+  .tabs { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:14px; border-bottom:1px solid var(--line); padding-bottom:10px; }
+  .tabs button { background:none; color:var(--muted); } .tabs button.on { background:#404249; color:#fff; }
+  .tabs .count { font-size:11px; background:var(--input); border-radius:8px; padding:0 6px; margin-left:6px; color:var(--muted); }
+  .tabs .check { margin:0 0 0 auto; font-size:13px; color:var(--muted); }
+  .stage { background:var(--input); border:1px solid var(--line); border-radius:4px; padding:8px 10px; font-size:13px; margin-bottom:8px; }
+  .stage b { color:#fff; }
+  .msg { display:flex; gap:14px; max-width:820px; margin-bottom:16px; }
+  .msg.deleted { opacity:.4; }
+  .avatar { width:40px; height:40px; border-radius:50%; background:#ff5500; flex:none; display:grid; place-items:center; font-weight:700; color:#fff; font-size:13px; }
+  .who { font-weight:600; } .tag { background:var(--blurple); color:#fff; font-size:10px; border-radius:3px; padding:1px 5px; margin-left:6px; vertical-align:middle; }
+  .tag.gone { background:#80848e; }
+  .meta { color:var(--muted); font-size:12px; margin-left:8px; }
+  .pinged { color:var(--ping); font-size:12px; margin-left:8px; }
+  .body { white-space:pre-wrap; overflow-wrap:anywhere; }
+  .body code { background:var(--input); border-radius:3px; padding:0 4px; font-size:13px; }
+  a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
+  .embed { margin-top:6px; background:var(--card); border-left:4px solid var(--blurple); border-radius:4px; padding:12px 16px; max-width:620px; }
+  .embed .title { font-weight:700; font-size:16px; margin-bottom:6px; }
+  .embed .footer { margin-top:10px; font-size:12px; color:var(--muted); }
+  .field { margin-top:10px; } .field .name { font-weight:700; font-size:14px; } .field .value { white-space:pre-wrap; font-size:14px; overflow-wrap:anywhere; }
+  .mention { background:#3c4270; color:#c9cdfb; border-radius:3px; padding:0 2px; font-weight:500; }
+  .time { background:#3a3c42; border-radius:3px; padding:0 3px; }
+  .rowb { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  .reply { max-width:820px; background:#2a2f45; border-left:4px solid var(--blurple); border-radius:4px; padding:10px 14px; margin-bottom:16px; }
+  .reply .head { display:flex; justify-content:space-between; gap:10px; color:var(--muted); font-size:12px; margin-bottom:6px; }
+  .reply .head button { padding:2px 8px; font-size:12px; }
+  .bad { max-width:820px; background:#3a2a2c; border-left:4px solid #f23f43; border-radius:4px; padding:10px 14px; margin-bottom:16px; }
+  .empty { color:var(--muted); }
+  .log div { padding:4px 0; border-bottom:1px solid var(--line); font-size:14px; }
+  .log .t { color:var(--muted); font-size:12px; margin-right:8px; }
+  @media (max-width: 860px) { body { flex-direction:column; } aside { width:auto; max-height:none; position:static; border-right:0; border-bottom:1px solid var(--line); } main { padding:16px; } }
+</style>
+</head>
+<body>
+<aside>
+  <h1>Veto simulator</h1>
+  <p class="note">Runs the bot's real veto code against a pretend Discord. Nothing is posted anywhere. Restart it (<code>node tools/veto-sim.js</code>) after changing the bot's code.</p>
+
+  <h2>Click as</h2>
+  <select id="as"></select>
+  <p class="note" style="margin-top:6px">Every button you press is pressed by this person.</p>
+
+  <h2>Time</h2>
+  <div class="stage" id="clock"></div>
+  <div class="quad">
+    <button data-skip="1">+1 min</button><button data-skip="5">+5 min</button><button data-skip="15">+15 min</button><button data-skip="60">+1 hr</button>
+  </div>
+  <div class="stack" style="margin-top:6px"><button class="primary" id="toStart">Jump to the veto start</button></div>
+  <p class="note" style="margin-top:6px">The clock moves a minute at a time, so the 60-minute reminder and the 5-minute ping go out on the way. Once the veto runs, its turn clock is real time.</p>
+
+  <h2>/cf veto (staff)</h2>
+  <label>action</label>
+  <select id="cfAction">
+    <option value="start">start (or resume a paused veto)</option>
+    <option value="pause">pause</option>
+    <option value="resume">resume</option>
+    <option value="undo">undo (take back the last step)</option>
+    <option value="reset">reset (start over)</option>
+    <option value="standin">standin</option>
+    <option value="inspect">inspect</option>
+    <option value="cancel">cancel</option>
+    <option value="seeds">set seeds</option>
+    <option value="maps">maps</option>
+  </select>
+  <div id="cfUserWrap"><label>user</label><select id="cfUser"></select></div>
+  <div id="cfMapsWrap"><label>maps (empty = show the pool)</label><input type="text" id="cfMaps" placeholder="Dust2 Mirage Nuke Ancient Inferno Anubis Cache"></div>
+  <div id="cfSeedsWrap" class="pair"><div><label>team_a_seed</label><input type="number" id="cfSeedA" min="1"></div><div><label>team_b_seed</label><input type="number" id="cfSeedB" min="1"></div></div>
+  <div class="stack" style="margin-top:8px"><button class="primary" id="cfRun">Run /cf veto</button><button id="status">/crossfire veto (anyone)</button></div>
+
+  <h2>Match</h2>
+  <div class="team"><div><label>Team A</label><input type="text" id="teamA"></div><div><label>Seed</label><input type="number" id="seedA" min="1"></div></div>
+  <div class="team"><div><label>Team B</label><input type="text" id="teamB"></div><div><label>Seed</label><input type="number" id="seedB" min="1"></div></div>
+  <label>Format</label>
+  <select id="format"><option value="bo3">BO3 (ban, ban, pick, pick, ban, ban, decider)</option><option value="bo5_advantage">Grand Final (2 bans, 4 picks, 1-0 advantage)</option></select>
+  <div id="advWrap"><label>Upper-bracket winner</label><select id="advantageTeam"><option value="teamA">Team A</option><option value="teamB">Team B</option></select></div>
+  <label>Map pool (exactly 7)</label>
+  <input type="text" id="mapPool">
+  <div class="pair">
+    <div><label>Seconds per turn (live: 120)</label><input type="number" id="turnSeconds" min="10"></div>
+    <div><label>Match starts in (minutes)</label><input type="number" id="startsIn" min="1"></div>
+  </div>
+  <label class="check"><input type="checkbox" id="captainOnly"> Captains only (VETO_CAPTAIN_ONLY=true)</label>
+  <button class="primary" id="setup" style="width:100%">Set up the match (starts over)</button>
+</aside>
+<main>
+  <div class="tabs" id="tabs"></div>
+  <div id="notice"></div>
+  <div id="reply"></div>
+  <div id="view"></div>
+</main>
+<script>
+var $ = function (id) { return document.getElementById(id); };
+var state = null;
+var tab = 'room';
+var notice = null;
+var showDeleted = false;
+var lastKey = '';
+var busy = false;
+
+function esc(text) { var d = document.createElement('div'); d.textContent = text == null ? '' : String(text); return d.innerHTML; }
+
+function timeText(ms, style) {
+  if (style === 'R') {
+    var diff = Math.round((ms - (state ? state.clock : Date.now())) / 1000);
+    var abs = Math.abs(diff);
+    var text = abs < 60 ? abs + ' seconds' : abs < 3600 ? Math.round(abs / 60) + ' minutes' : abs < 86400 ? Math.round(abs / 3600) + ' hours' : Math.round(abs / 86400) + ' days';
+    return diff >= 0 ? 'in ' + text : text + ' ago';
+  }
+  var d = new Date(ms);
+  if (style === 't') return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  if (style === 'T') return d.toLocaleTimeString('en-US');
+  if (style === 'd' || style === 'D') return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return d.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+// Discord formatting: code, bold, italics, strikethrough, links, mentions, timestamps.
+function md(text) {
+  var html = esc(text);
+  html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  html = html.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  html = html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  html = html.replace(/\*\*([\s\S]+?)\*\*/g, '<b>$1</b>');
+  html = html.replace(/~~([\s\S]+?)~~/g, '<s>$1</s>');
+  html = html.replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,]|$)/gm, '$1<i>$2</i>');
+  html = html.replace(/&lt;@&amp;(\w+)&gt;/g, function (all, id) { return '<span class="mention">@' + esc(state.names.roles[id] || 'role') + '</span>'; });
+  html = html.replace(/&lt;@!?(\w+)&gt;/g, function (all, id) { return '<span class="mention">@' + esc(state.names.users[id] || 'member') + '</span>'; });
+  html = html.replace(/&lt;#(\w+)&gt;/g, function (all, id) { return '<span class="mention">#' + esc(state.names.channels[id] || 'channel') + '</span>'; });
+  html = html.replace(/&lt;t:(\d+)(?::([A-Za-z]))?&gt;/g, function (all, seconds, style) {
+    var ms = Number(seconds) * 1000;
+    return '<span class="time" data-ms="' + ms + '" data-style="' + (style || 'f') + '">' + esc(timeText(ms, style || 'f')) + '</span>';
+  });
+  return html.replace(/\\([\\*_~`|>])/g, '$1');
+}
+
+function pingName(key) {
+  var parts = key.split(':');
+  return '@' + (parts[0] === 'role' ? state.names.roles[parts[1]] : state.names.users[parts[1]]) ;
+}
+
+// One message, with working buttons. where: 'channel' (a message in a channel) or 'reply'.
+function messageEl(m, where) {
+  var wrap = document.createElement('div');
+  wrap.className = 'msg' + (m.deleted ? ' deleted' : '');
+  var html = '<div class="avatar">CF</div><div style="min-width:0;flex:1"><span class="who">CROSSFIRE Bot</span><span class="tag">APP</span>'
+    + (m.deleted ? '<span class="tag gone">deleted</span>' : '')
+    // Edits never ping again: an edited message only pinged when it was first posted.
+    + (m.pinged.length ? '<span class="pinged">🔔 pinged ' + esc(m.pinged.map(pingName).join(', ')) + (m.edits ? ' when it was posted' : '') + '</span>' : '')
+    + (m.edits ? '<span class="meta">(edited)</span>' : '');
+  if (m.content) html += '<div class="body">' + md(m.content) + '</div>';
+  if (m.embed) {
+    var color = '#' + ('000000' + Number(m.embed.color || 0x5865f2).toString(16)).slice(-6);
+    html += '<div class="embed" style="border-left-color:' + color + '"><div class="title">' + md(m.embed.title || '') + '</div><div class="body">' + md(m.embed.description || '') + '</div>'
+      + m.embed.fields.map(function (f) { return '<div class="field"><div class="name">' + md(f.name) + '</div><div class="value">' + md(f.value) + '</div></div>'; }).join('')
+      + (m.embed.footer ? '<div class="footer">' + esc(m.embed.footer) + '</div>' : '') + '</div>';
+  }
+  html += '<div class="rows"></div></div>';
+  wrap.innerHTML = html;
+  var rows = wrap.querySelector('.rows');
+  m.rows.forEach(function (row) {
+    var line = document.createElement('div');
+    line.className = 'rowb';
+    row.forEach(function (button) {
+      var b = document.createElement('button');
+      b.className = 's' + (button.style || 2);
+      b.textContent = (button.emoji ? button.emoji + ' ' : '') + (button.label || '');
+      b.disabled = button.disabled || m.deleted;
+      b.onclick = function () {
+        act({ action: 'click', as: $('as').value, customId: button.customId, label: b.textContent, messageId: where === 'channel' ? m.id : null, onReply: where === 'reply' });
+      };
+      line.appendChild(b);
+    });
+    rows.appendChild(line);
+  });
+  return wrap;
+}
+
+function api(body) {
+  return fetch('/api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
+    .then(function (response) { return response.json(); })
+    .then(function (data) {
+      var first = !state;
+      state = data;
+      if (body && body.action) notice = data.error || null;
+      if (first || (body && body.action === 'setup' && !data.error)) fillSetup();
+      render();
+      return data;
+    });
+}
+
+function act(body) {
+  busy = true;
+  document.body.style.cursor = 'progress';
+  return api(body).finally(function () { busy = false; document.body.style.cursor = ''; });
+}
+
+function fillSetup() {
+  var s = state.setup;
+  $('teamA').value = s.teamA; $('teamB').value = s.teamB; $('seedA').value = s.seedA; $('seedB').value = s.seedB;
+  $('format').value = s.format; $('advantageTeam').value = s.advantageTeam; $('mapPool').value = s.mapPool;
+  $('turnSeconds').value = s.turnSeconds; $('startsIn').value = s.startsIn; $('captainOnly').checked = s.captainOnly;
+  syncForm();
+}
+
+function syncForm() {
+  $('advWrap').style.display = $('format').value === 'bo5_advantage' ? '' : 'none';
+  var action = $('cfAction').value;
+  $('cfUserWrap').style.display = action === 'standin' ? '' : 'none';
+  $('cfMapsWrap').style.display = action === 'maps' ? '' : 'none';
+  $('cfSeedsWrap').style.display = action === 'seeds' ? '' : 'none';
+}
+
+function fillPeople() {
+  var key = state.people.map(function (p) { return p.id + p.name; }).join('|');
+  if ($('as').dataset.key === key) return;
+  var chosen = $('as').value || 'capA';
+  var chosenUser = $('cfUser').value || 'playerA';
+  $('as').innerHTML = state.people.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>'; }).join('');
+  $('cfUser').innerHTML = state.people.map(function (p) { return '<option value="' + esc(p.id) + '">@' + esc(p.name) + '</option>'; }).join('');
+  $('as').value = chosen; $('cfUser').value = chosenUser;
+  $('as').dataset.key = key;
+}
+
+function updateTimes() {
+  if (!state) return;
+  document.querySelectorAll('.time[data-ms]').forEach(function (el) { el.textContent = timeText(Number(el.dataset.ms), el.dataset.style); });
+  var lines = ['Bot clock: <b>' + esc(timeText(state.clock, 't')) + '</b>'];
+  if (state.matchAt) {
+    lines.push('Match at <b>' + esc(timeText(state.matchAt, 't')) + '</b> (' + esc(timeText(state.matchAt, 'R')) + ')');
+    var vetoAt = state.matchAt - 20 * 60000;
+    lines.push('Veto starts at <b>' + esc(timeText(vetoAt, 't')) + '</b>' + (vetoAt > state.clock ? ' (' + esc(timeText(vetoAt, 'R')) + ')' : ''));
+  }
+  var status = { scheduled: 'reminder sent, waiting to start', blocked: 'blocked (see the match room)', choosing_first_action: 'running: choosing who acts first', active: 'running', complete: 'complete', canceled: 'canceled', reset: 'reset' }[state.vetoStatus];
+  lines.push('Veto: <b>' + esc(state.vetoStatus ? (status || state.vetoStatus) + (state.paused ? ' (paused)' : '') : 'not started') + '</b>');
+  $('clock').innerHTML = lines.join('<br>');
+}
+
+function render() {
+  if (!state) return;
+  fillPeople();
+  var key = JSON.stringify([state.messages, state.reply, state.audit, notice, tab, showDeleted, state.setup]);
+  updateTimes();
+  if (key === lastKey) return;
+  lastKey = key;
+  var lists = {
+    room: state.messages.filter(function (m) { return m.channelId === 'room' && (showDeleted || !m.deleted); }),
+    staff: state.messages.filter(function (m) { return m.channelId === 'staff' && (showDeleted || !m.deleted); })
+  };
+  var tabs = [['room', '# ' + state.names.channels.room, lists.room.length], ['staff', '# ' + state.names.channels.staff, lists.staff.length], ['audit', 'Audit log', state.audit.length]];
+  $('tabs').innerHTML = '';
+  tabs.forEach(function (entry) {
+    var b = document.createElement('button');
+    b.className = entry[0] === tab ? 'on' : '';
+    b.innerHTML = esc(entry[1]) + '<span class="count">' + entry[2] + '</span>';
+    b.onclick = function () { tab = entry[0]; render(); };
+    $('tabs').appendChild(b);
+  });
+  var toggle = document.createElement('label');
+  toggle.className = 'check';
+  toggle.innerHTML = '<input type="checkbox"' + (showDeleted ? ' checked' : '') + '> Show deleted messages';
+  toggle.querySelector('input').onchange = function (event) { showDeleted = event.target.checked; render(); };
+  $('tabs').appendChild(toggle);
+
+  $('notice').innerHTML = notice ? '<div class="bad">' + esc(notice) + '</div>' : '';
+  $('reply').innerHTML = '';
+  if (state.reply) {
+    var box = document.createElement('div');
+    box.className = 'reply';
+    box.innerHTML = '<div class="head"><span>' + esc(state.reply.label) + ' · only ' + esc(state.names.users[state.reply.who] || 'you') + ' can see this</span><button>Dismiss</button></div>';
+    box.querySelector('button').onclick = function () { act({ action: 'closeReply' }); };
+    box.appendChild(messageEl(state.reply, 'reply'));
+    $('reply').appendChild(box);
+  }
+
+  var view = $('view');
+  view.innerHTML = '';
+  if (tab === 'audit') {
+    view.innerHTML = '<p class="note">What the bot writes to its audit log for this match (newest first).</p><div class="log">'
+      + (state.audit.length ? state.audit.map(function (entry) {
+        var rest = Object.keys(entry).filter(function (k) { return ['id', 'type', 'timestamp', 'matchId', 'actorId'].indexOf(k) < 0; })
+          .map(function (k) { return k + ': ' + (typeof entry[k] === 'object' ? JSON.stringify(entry[k]) : entry[k]); }).join(' · ');
+        return '<div><span class="t">' + esc(timeText(Date.parse(entry.timestamp), 'T')) + '</span><b>' + esc(entry.type) + '</b>'
+          + (entry.actorId ? ' by ' + esc(state.names.users[entry.actorId] || entry.actorId) : '') + (rest ? ' · ' + esc(rest) : '') + '</div>';
+      }).join('') : '<p class="empty">Nothing logged yet.</p>') + '</div>';
+    return;
+  }
+  var list = lists[tab];
+  if (!list.length) {
+    view.innerHTML = '<p class="empty">' + (tab === 'room' ? 'Nothing posted yet. Move the clock forward, or run /cf veto action:start as staff.' : 'Nothing posted yet. Staff hear about timeouts here, and get the result when the veto is done.') + '</p>';
+    return;
+  }
+  list.forEach(function (m) { view.appendChild(messageEl(m, 'channel')); });
+}
+
+document.querySelectorAll('[data-skip]').forEach(function (b) { b.onclick = function () { act({ action: 'skip', minutes: Number(b.dataset.skip) }); }; });
+$('toStart').onclick = function () { act({ action: 'skip', toStart: true }); };
+$('format').onchange = syncForm;
+$('cfAction').onchange = syncForm;
+$('cfRun').onclick = function () {
+  var action = $('cfAction').value;
+  var options = { action: action };
+  if (action === 'standin') options.user = $('cfUser').value;
+  if (action === 'maps') options.maps = $('cfMaps').value.trim();
+  if (action === 'seeds') { options.team_a_seed = $('cfSeedA').value; options.team_b_seed = $('cfSeedB').value; }
+  act({ action: 'command', as: $('as').value, options: options });
+};
+$('status').onclick = function () { act({ action: 'status', as: $('as').value }); };
+$('setup').onclick = function () {
+  tab = 'room';
+  act({ action: 'setup', teamA: $('teamA').value, teamB: $('teamB').value, seedA: $('seedA').value, seedB: $('seedB').value, format: $('format').value, advantageTeam: $('advantageTeam').value, mapPool: $('mapPool').value, turnSeconds: $('turnSeconds').value, startsIn: $('startsIn').value, captainOnly: $('captainOnly').checked });
+};
+syncForm();
+api();
+// Turn timeouts happen on their own, so keep the page fresh.
+setInterval(function () { if (!busy && !document.hidden) api(); }, 1000);
+</script>
+</body>
+</html>

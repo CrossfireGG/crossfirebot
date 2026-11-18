@@ -159,6 +159,10 @@ export function createVetoBot({ client, config, faceit, deps }) {
         await interaction.editReply({ content: `<@${member.id}> has neither team's role in this match, so they can't be a stand-in. Give them the team role first, or make the choices for the team yourself with the veto buttons.`, allowedMentions: { parse: [] } });
         return;
       }
+      if (!removing && !(veto?.captainOnly ?? config.vetoCaptainOnly)) {
+        await interaction.editReply({ content: `Anyone with a team's role can already make the veto choices in this match, so <@${member.id}> doesn't need to be a stand-in.`, allowedMentions: { parse: [] } });
+        return;
+      }
       if (removing) delete standIns[member.id];
       else standIns[member.id] = team;
       const saved = await saveVeto({
@@ -327,7 +331,11 @@ export function createVetoBot({ client, config, faceit, deps }) {
   // ---------- the turn clock: one timer per veto, and a ping for the team whose turn it is ----------
 
   const vetoTimers = new Map(); // matchId -> timeout
-  const vetoTurnPings = new Map(); // matchId -> the "you're up" message (replaced each turn)
+  // matchId -> { message, stepLine, actionCount }: the "you're up" ping (replaced each turn).
+  const vetoTurnPings = new Map();
+  // matchId -> [{ message, actionCount }]: the "Alpha banned Nuke." lines left in the match room.
+  // actionCount is how many bans/picks there were once that step was made.
+  const vetoStepMessages = new Map();
 
   function clearVetoTimer(matchId) {
     const timer = vetoTimers.get(matchId);
@@ -354,22 +362,56 @@ export function createVetoBot({ client, config, faceit, deps }) {
     }
   }
 
+  // "Alpha banned Nuke." / "Alpha picked Mirage." for the map ban or pick that turned `before` into
+  // `saved`; null for anything else (side choice, undo, pause...).
+  function vetoStepLine(before, saved) {
+    const actions = saved?.actions || [];
+    if (!before || actions.length <= (before.actions || []).length) return null;
+    const added = actions[actions.length - 1];
+    return `${added.team === 'teamA' ? saved.teamA : saved.teamB} ${added.action === 'ban' ? 'banned' : 'picked'} ${added.map}.`;
+  }
+
   // Call after every change to a veto: restarts the clock's timer and pings whoever is up now.
-  async function afterVetoChange(veto, stored) {
+  // stepLine (the ban or pick just made) goes above the ping. When the next ping goes out, the old
+  // one is cut down to its stepLine, so the match room keeps "Alpha banned Nuke.", "Bravo banned
+  // Cache." ... and only the newest message pings anyone. When the veto has just finished the
+  // stepLine is posted on its own, before the result. Lines for steps staff took back (undo, reset)
+  // are deleted.
+  async function afterVetoChange(veto, stored, stepLine = null) {
     armVetoTimer(veto);
+    const actionCount = (veto.actions || []).length;
+    const lines = vetoStepMessages.get(veto.matchId) || [];
     const previous = vetoTurnPings.get(veto.matchId);
     vetoTurnPings.delete(veto.matchId);
-    await previous?.delete().catch(() => null);
-    if (!vetoInProgress(veto) || veto.pausedAt || !veto.channelId) return;
+    if (previous?.stepLine && previous.actionCount <= actionCount) {
+      await previous.message.edit({ content: previous.stepLine, allowedMentions: { parse: [] } }).catch(() => null);
+      lines.push({ message: previous.message, actionCount: previous.actionCount });
+    } else {
+      await previous?.message.delete().catch(() => null);
+    }
+    const kept = [];
+    for (const line of lines) {
+      if (line.actionCount <= actionCount) kept.push(line);
+      else await line.message.delete().catch(() => null);
+    }
+    vetoStepMessages.set(veto.matchId, kept);
+    if (!veto.channelId) return;
+    const turnNext = vetoInProgress(veto) && !veto.pausedAt;
+    if (!turnNext && !stepLine) return;
     const channel = await client.channels.fetch(veto.channelId).catch(() => null);
     if (!channel?.isTextBased?.()) return;
+    if (!turnNext) {
+      const message = await channel.send({ content: stepLine, allowedMentions: { parse: [] } }).catch(() => null);
+      if (message) kept.push({ message, actionCount });
+      return;
+    }
     const roleId = veto.currentTeam === 'teamA' ? stored.discord?.teamARoleId : stored.discord?.teamBRoleId;
     const deadline = Date.parse(veto.turnDeadlineAt || '');
     const message = await channel.send({
-      content: `👉 ${roleId ? `<@&${roleId}> ` : ''}${vetoTurnAction(veto)}${Number.isFinite(deadline) ? ` Time runs out <t:${Math.floor(deadline / 1000)}:R>.` : ''}`,
+      content: `${stepLine ? `${stepLine}\n` : ''}👉 ${roleId ? `<@&${roleId}> ` : ''}${vetoTurnAction(veto)}${Number.isFinite(deadline) ? ` Time runs out <t:${Math.floor(deadline / 1000)}:R>.` : ''}`,
       allowedMentions: { parse: [], roles: roleId ? [roleId] : [] }
     }).catch(() => null);
-    if (message) vetoTurnPings.set(veto.matchId, message);
+    if (message) vetoTurnPings.set(veto.matchId, { message, stepLine, actionCount });
   }
 
   // A turn ran out of time: say so in the match room and tell staff. Nothing is chosen for the
@@ -431,7 +473,7 @@ export function createVetoBot({ client, config, faceit, deps }) {
 
   // After any step: clock and turn ping, the server in the match info, and the result posts.
   async function afterVetoStep(saved, stored, before) {
-    await afterVetoChange(saved, stored);
+    await afterVetoChange(saved, stored, vetoStepLine(before, saved));
     if ((saved.server || null) !== (before?.server || null)) await refreshMatchIntro(stored);
     if (saved.status === 'complete' && before?.status !== 'complete') await announceVetoResult(saved, stored);
   }

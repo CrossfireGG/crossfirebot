@@ -12,7 +12,7 @@ const IN_PROGRESS = ['choosing_first_action', 'active'];
 // What a step changes. Each step keeps the values from before it, so staff can undo it.
 const STEP_KEYS = ['status', 'firstActionTeam', 'currentTeam', 'stepIndex', 'availableMaps', 'actions', 'pendingSide', 'availableServers', 'serverActions', 'server', 'final', 'completedAt', 'staffActions'];
 
-export function createVeto({ match, mapPool, seeds, format, advantageTeam = null, captainOnly = true, sidePolicy = VETO_SIDE_POLICY, turnSeconds = VETO_TURN_SECONDS, serverPool = [], now = Date.now() }) {
+export function createVeto({ match, mapPool, seeds, format, advantageTeam = null, captainOnly = false, sidePolicy = VETO_SIDE_POLICY, turnSeconds = VETO_TURN_SECONDS, serverPool = [], now = Date.now() }) {
   validateVetoConfig(mapPool, format);
   if (new Set(serverPool).size !== serverPool.length) throw new Error('Veto server locations must all be different.');
   const teamASeed = Number(seeds?.teamA);

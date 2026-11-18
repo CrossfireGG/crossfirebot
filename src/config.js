@@ -220,7 +220,9 @@ export function getConfig() {
       .join(',')),
     vetoMapPool: parseCsvValue(process.env.VETO_MAP_POOL || ''),
     vetoSeeds: parseNamedNumbers(process.env.VETO_SEEDS || ''),
-    vetoCaptainOnly: process.env.VETO_CAPTAIN_ONLY !== 'false',
+    // Anyone with a team's role can make that team's veto choices; VETO_CAPTAIN_ONLY=true limits
+    // it to the mapped captain (and stand-ins named with /cf veto action:standin).
+    vetoCaptainOnly: process.env.VETO_CAPTAIN_ONLY === 'true',
     // Each veto turn (first-action choice, ban, pick, side) has this long; when it runs out the
     // team and staff are pinged. Teams are pinged VETO_NOTICE_MINUTES before match time that the
     // veto is in their match room; it starts VETO_START_MINUTES before match time.
