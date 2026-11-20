@@ -7198,7 +7198,23 @@ async function handleAdminScheduleDecision(interaction, approved) {
   const [, proposalId, channelId] = interaction.customId.split(':');
   const beforeDecision = proposalId ? await getScheduleProposal(proposalId) : null;
   if (beforeDecision?.adminApproved || beforeDecision?.adminDenied) {
-    await interaction.editReply(`This schedule request was already ${beforeDecision.adminApproved ? 'approved' : 'denied'}.`);
+    if (beforeDecision.adminApproved) {
+      await interaction.editReply('This schedule request was already approved. Retrying the Google Sheet sync now...');
+      const stored = await getStoredMatch(beforeDecision.matchId)
+        || await findStoredMatchFromAdminMessage(interaction.message, channelId);
+      const sheetWarning = stored
+        ? await logScheduleToSheet({
+            stored,
+            proposal: beforeDecision,
+            approvedBy: beforeDecision.approvedBy || interaction.user.id,
+            acceptedBy: beforeDecision.acceptedBy || null
+          })
+        : 'The Google Sheet was not updated because I could not find the saved match.';
+      const sheetNote = sheetWarning ? ` ${sheetWarning}` : ' The Google Sheet row was synced.';
+      await interaction.editReply(`This schedule request was already approved.${sheetNote}`);
+    } else {
+      await interaction.editReply('This schedule request was already denied.');
+    }
     return;
   }
   const proposal = approved
@@ -7256,18 +7272,20 @@ async function handleAdminScheduleDecision(interaction, approved) {
       newTime: proposal?.scheduledAt || null,
       reason: proposal?.overrideReason || null
     });
-    await runOperationsTick().catch((error) => console.error('Veto reminder update failed:', error));
     await interaction.message.react('✅').catch(() => null);
     const missingProposalNote = proposal ? '' : ' I could not find the saved schedule request, so I used the admin message/match channel fallback.';
     const missingChannelNote = matchChannel ? '' : ' I could not find the match channel to mark yellow.';
     const renameFailureNote = renameResult?.error
       ? ` Discord blocked the channel rename: ${renameResult.error.message}`
       : '';
+    const replyPrefix = `Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}${faceitNote}`;
+    await interaction.editReply(`${replyPrefix} Syncing the Google Sheet now...`);
     const sheetWarning = stored
       ? await logScheduleToSheet({ stored, proposal, approvedBy: interaction.user.id, acceptedBy: proposal?.acceptedBy || null })
-      : null;
+      : 'The Google Sheet was not updated because I could not find the saved match.';
     const sheetNote = sheetWarning ? ` ${sheetWarning}` : '';
-    await interaction.editReply(`Approved and reacted with a checkmark.${missingProposalNote}${missingChannelNote}${renameFailureNote}${faceitNote}${sheetNote}`);
+    await interaction.editReply(`${replyPrefix}${sheetNote}`);
+    void runOperationsTick().catch((error) => console.error('Post-approval operations update failed:', error));
   } else {
     if (matchChannel && stored && proposal) {
       await saveMatch({
