@@ -410,6 +410,8 @@ export function getConfig() {
     fireCrownCooldownSeconds: /^\d+$/.test(String(process.env.FIRECROWN_COOLDOWN_SECONDS || '').trim()) ? Number(process.env.FIRECROWN_COOLDOWN_SECONDS) : 60,
     // How many teams per group go through to the playoffs (for "a loss knocks them out").
     groupAdvanceCount: Math.max(1, Number(process.env.GROUP_ADVANCE_COUNT || 2) || 2),
+    // Pinged on a main stream change notice when the match has no Social Media person. Empty = no ping.
+    socialPingRoleId: /^\d{5,25}$/.test(String(process.env.SOCIAL_PING_ROLE_ID || '').trim()) ? String(process.env.SOCIAL_PING_ROLE_ID).trim() : null,
     socialCardLeadMinutes: Math.max(30, Number(process.env.SOCIAL_CARD_LEAD_MINUTES || 120) || 120),
     // The production team role: may use /cf prep and /crossfire teamnotes.
     prodRoleId: process.env.PROD_ROLE_ID || '1474117290600562920',

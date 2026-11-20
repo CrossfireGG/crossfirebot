@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeHandle, teamSocials, buildRoundup, buildSocialCard, buildSocialResultCard, matchTopPlayer } from '../src/socialInfo.js';
+import {
+  normalizeHandle, teamSocials, buildRoundup, buildSocialCard, buildSocialResultCard, matchTopPlayer,
+  mainStreamFacts, describeMainStreamChanges, communityFacts, describeCommunityChanges, buildChangeCard, buildAddedCard, buildRemovedCard
+} from '../src/socialInfo.js';
 import { parseTeamInfoRows, buildPrepPack } from '../src/prepPack.js';
 
 const NINE_30 = Date.UTC(2026, 10, 13, 2, 30); // Thu Nov 12, 9:30 PM ET
@@ -119,6 +122,45 @@ test('the after-game post is its own card: result, map scores, top player, tags,
   ].join('\n'));
   // No map scores or top player on file: just the result.
   assert.match(buildSocialResultCard({ teamA: 'A', teamB: 'B', result: 'A won 2-0' }).description, /^\*\*Final:\*\* A won 2-0\n\n\*\*X tags\*\*/);
+});
+
+test('change notices say what was and what is now', () => {
+  const crew = { casters: ['1', '2'], producer: '3', observer: null, admin: '5' };
+  const before = mainStreamFacts({ startMs: NINE_30, teamA: 'Alpha', teamB: 'Beta', streamUrl: 'https://twitch.tv/playcrossfire', crew });
+  // Nothing social-facing changed: same crew in another caster order, a new admin.
+  assert.deepEqual(describeMainStreamChanges(before, mainStreamFacts({
+    startMs: NINE_30, teamA: 'Alpha', teamB: 'Beta', streamUrl: 'https://twitch.tv/playcrossfire', crew: { ...crew, casters: ['2', '1'], admin: '9' }
+  })), []);
+  const after = mainStreamFacts({
+    startMs: EIGHT, teamA: 'Alpha', teamB: 'Beta', streamUrl: 'https://twitch.tv/playcrossfire2', crew: { casters: ['1', '7'], producer: '4', observer: '6' }
+  });
+  assert.deepEqual(describeMainStreamChanges(before, after), [
+    '**Time:** ~~Thu, Nov 12 · 9:30 PM ET~~ → Thu, Nov 12 · 8:00 PM ET',
+    '**Stream:** ~~twitch.tv/playcrossfire~~ → [twitch.tv/playcrossfire2](https://twitch.tv/playcrossfire2)',
+    '**Casters:** ~~<@1> & <@2>~~ → <@1> & <@7>',
+    '**Producer:** ~~<@3>~~ → <@4>',
+    '**Observer:** ~~none~~ → <@6>'
+  ]);
+  const card = buildChangeCard({ title: 'Alpha vs Beta', lines: ['**Producer:** ~~<@3>~~ → <@4>'] });
+  assert.equal(card.title, '🔄 Change · Alpha vs Beta');
+  assert.match(card.description, /^\*\*Producer:\*\* ~~<@3>~~ → <@4>\n\nThe posts in this channel are updated\. Check anything already posted or scheduled\.$/);
+  assert.match(buildRemovedCard({ startMs: NINE_30, teamA: 'Alpha', teamB: 'Beta' }).description, /^\*\*Was:\*\* Thu, Nov 12 · 9:30 PM ET \/ 8:30 PM CT\nThis match is no longer on the main stream\./);
+  assert.match(buildAddedCard({ startMs: NINE_30, teamA: 'Alpha', teamB: 'Beta', crew }).description, /🎙️ Casters: <@1> & <@2>\n🎬 Producer: <@3>/);
+});
+
+test('community cast changes after the roundup', () => {
+  const cast = (matchId, startMs, urls, teamA = 'NXG', teamB = 'Solar') => ({ matchId, startMs, teamA, teamB, casts: urls.map((url) => ({ url, userId: '9' })) });
+  const before = communityFacts([cast('m1', EIGHT, ['https://twitch.tv/b', 'https://twitch.tv/a']), cast('m2', EIGHT, ['https://twitch.tv/c'], 'Xenon', 'Yeti')]);
+  // The same casts read in another order are not a change.
+  assert.deepEqual(before, communityFacts([cast('m2', EIGHT, ['https://twitch.tv/c'], 'Xenon', 'Yeti'), cast('m1', EIGHT, ['https://twitch.tv/a', 'https://twitch.tv/b'])]));
+  assert.equal(JSON.stringify(before), JSON.stringify(JSON.parse(JSON.stringify(before))), 'survives being saved');
+  const after = communityFacts([cast('m1', NINE_30, ['https://twitch.tv/a']), cast('m3', EIGHT, ['https://twitch.tv/d'], 'Kilo', 'Lima')]);
+  assert.deepEqual(describeCommunityChanges(before, after), [
+    '✏️ **NXG vs Solar:** ~~8:00 PM ET~~ → 9:30 PM ET · ~~twitch.tv/a & twitch.tv/b~~ → [twitch.tv/a](https://twitch.tv/a)',
+    '➕ **Added:** Kilo vs Lima · 8:00 PM ET · [twitch.tv/d](https://twitch.tv/d)',
+    '➖ **No longer tonight:** Xenon vs Yeti (8:00 PM ET), cancelled or moved'
+  ]);
+  assert.deepEqual(describeCommunityChanges(before, before), []);
 });
 
 test('a match\'s top player', () => {

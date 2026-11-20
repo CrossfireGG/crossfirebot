@@ -106,6 +106,115 @@ export function buildRoundup({ dateMs, mainStream = [], community = [] }) {
   };
 }
 
+// ---------- change notices ----------
+// An edit to a post is silent, so when something already announced changes, a short notice says
+// what it was and what it is now.
+
+// The facts of a main stream match that a social post could have used.
+export function mainStreamFacts({ startMs = null, teamA, teamB, streamUrl = null, crew = {} } = {}) {
+  return {
+    startMs: Number.isFinite(startMs) ? startMs : null,
+    matchup: `${teamA} vs ${teamB}`,
+    streamUrl: streamUrl || null,
+    casters: (crew.casters || []).filter(Boolean),
+    producer: crew.producer || null,
+    observer: crew.observer || null
+  };
+}
+
+function whenLabel(ms) {
+  return Number.isFinite(ms) && ms ? `${dayLabel(ms)} · ${timeEt(ms)}` : 'TBD';
+}
+
+function peopleLabel(ids, none = 'TBD') {
+  const list = [].concat(ids || []).filter(Boolean);
+  return list.length ? list.map((id) => `<@${id}>`).join(' & ') : none;
+}
+
+// "**Producer:** ~~<@3>~~ → <@4>" for every fact that differs. Casters swapping order is not a change.
+export function describeMainStreamChanges(before, after) {
+  if (!before || !after) return [];
+  const sameCasters = [...(before.casters || [])].sort().join() === [...(after.casters || [])].sort().join();
+  const rows = [
+    ['Teams', before.matchup, after.matchup],
+    ['Time', whenLabel(before.startMs), whenLabel(after.startMs)],
+    ['Stream', streamLabel(before.streamUrl) || 'TBD', linkTo(after.streamUrl) || 'TBD', streamLabel(before.streamUrl) === streamLabel(after.streamUrl)],
+    ['Casters', peopleLabel(before.casters), peopleLabel(after.casters), sameCasters],
+    ['Producer', peopleLabel(before.producer), peopleLabel(after.producer)],
+    ['Observer', peopleLabel(before.observer, 'none'), peopleLabel(after.observer, 'none')]
+  ];
+  return rows
+    .filter(([, was, now, same = was === now]) => !same)
+    .map(([label, was, now]) => `**${label}:** ~~${was}~~ → ${now}`);
+}
+
+// Tonight's community casts by match, for comparing two readings.
+export function communityFacts(community = []) {
+  return Object.fromEntries(community
+    .map((match) => [String(match.matchId || `${match.teamA} vs ${match.teamB}`), {
+      startMs: match.startMs,
+      matchup: `${match.teamA} vs ${match.teamB}`,
+      casts: (match.casts || []).map((cast) => cast.url).sort()
+    }])
+    .sort(([a], [b]) => a.localeCompare(b)));
+}
+
+export function describeCommunityChanges(before = {}, after = {}) {
+  const lines = [];
+  const channels = (casts) => casts.map(linkTo).join(' & ');
+  for (const [key, now] of Object.entries(after)) {
+    const was = before[key];
+    if (!was) {
+      lines.push(`➕ **Added:** ${now.matchup} · ${timeEt(now.startMs)} · ${channels(now.casts)}`);
+      continue;
+    }
+    const parts = [];
+    if (timeEt(was.startMs) !== timeEt(now.startMs)) parts.push(`~~${timeEt(was.startMs)}~~ → ${timeEt(now.startMs)}`);
+    if (was.casts.join() !== now.casts.join()) parts.push(`~~${was.casts.map(streamLabel).join(' & ')}~~ → ${channels(now.casts)}`);
+    if (parts.length) lines.push(`✏️ **${now.matchup}:** ${parts.join(' · ')}`);
+  }
+  for (const [key, was] of Object.entries(before)) {
+    if (!after[key]) lines.push(`➖ **No longer tonight:** ${was.matchup} (${timeEt(was.startMs)}), cancelled or moved`);
+  }
+  return lines;
+}
+
+const CHECK_POSTS = 'Check anything already posted or scheduled.';
+
+export function buildChangeCard({ title, lines = [] }) {
+  return {
+    title: `🔄 Change · ${title}`,
+    description: [...lines, '', `The posts in this channel are updated. ${CHECK_POSTS}`].join('\n').slice(0, 4000)
+  };
+}
+
+// A match put on the main stream after that night's roundup went up.
+export function buildAddedCard({ startMs, teamA, teamB, streamUrl = null, crew = {} }) {
+  return {
+    title: `➕ Now on the main stream · ${teamA} vs ${teamB}`,
+    description: [
+      `**When:** ${dayLabel(startMs)} · ${timeEtCt(startMs)}`,
+      streamUrl ? `**Stream:** ${linkTo(streamUrl)}` : null,
+      ...crewLines(crew),
+      '',
+      'Added after tonight\'s roundup, which is updated.'
+    ].filter((line) => line !== null).join('\n')
+  };
+}
+
+// A match taken off the main stream.
+export function buildRemovedCard({ startMs = null, teamA, teamB }) {
+  return {
+    title: `❌ Off the main stream · ${teamA} vs ${teamB}`,
+    description: [
+      startMs ? `**Was:** ${dayLabel(startMs)} · ${timeEtCt(startMs)}` : null,
+      'This match is no longer on the main stream.',
+      '',
+      CHECK_POSTS
+    ].filter((line) => line !== null).join('\n')
+  };
+}
+
 // The most kills in a finished match (ties: higher ADR), with the player's team.
 export function matchTopPlayer(stats) {
   const players = new Map();

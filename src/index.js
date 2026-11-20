@@ -284,7 +284,10 @@ import {
   LEAGUE_TICKET_KINDS,
   leagueTicketKind
 } from './tickets.js';
-import { buildRoundup, buildSocialCard, buildSocialResultCard, matchTopPlayer, normalizeHandle, teamSocials } from './socialInfo.js';
+import {
+  buildAddedCard, buildChangeCard, buildRemovedCard, buildRoundup, buildSocialCard, buildSocialResultCard, communityFacts,
+  describeCommunityChanges, describeMainStreamChanges, mainStreamFacts, matchTopPlayer, normalizeHandle, teamSocials
+} from './socialInfo.js';
 import { buildPrepPack, compactBotVeto, compactFaceitVeto, compactMatchStats, faceitVetoUnderway, findTeamInfo, matchTimeMs as prepMatchTimeMs, parseTeamInfoRows, prepSignature, seasonSources, teamKey, vetoSummary } from './prepPack.js';
 import {
   STAT_ROLES,
@@ -5442,14 +5445,8 @@ async function dmRemovedCrewMembers(matchId, previousCrew) {
   ].filter(Boolean).join(' ');
 }
 
-// Posts the schedule message, or edits the one already posted for this match.
-async function publishMainStreamSchedulePost(coverage) {
-  const channelId = config.productionScheduleChannelId;
-  if (!channelId) return { ok: false, line: '⚠️ Crew saved, but no schedule channel is set (`PRODUCTION_SCHEDULE_CHANNEL_ID`).' };
-  const channel = await client.channels.fetch(channelId).catch(() => null);
-  if (!channel?.isTextBased?.()) return { ok: false, line: `⚠️ Crew saved, but I can't post in <#${channelId}>.` };
-  const scheduleIso = await approvedScheduleIso(coverage.matchId);
-  const content = buildMainStreamSchedulePost({
+function mainStreamSchedulePostContent(coverage, scheduleIso) {
+  return buildMainStreamSchedulePost({
     teamA: coverage.teamA,
     teamB: coverage.teamB,
     matchup: coverage.matchup,
@@ -5458,6 +5455,19 @@ async function publishMainStreamSchedulePost(coverage) {
     crew: coverage.crew,
     streamUrl: mainStreamUrlFor(coverage)
   });
+}
+
+// Posts the schedule message, or edits the one already posted for this match. `editOnly` (the
+// change watcher) never posts a new one: a post staff deleted by hand stays deleted.
+async function publishMainStreamSchedulePost(coverage, { editOnly = false } = {}) {
+  const channelId = config.productionScheduleChannelId;
+  if (!channelId) return { ok: false, line: '⚠️ Crew saved, but no schedule channel is set (`PRODUCTION_SCHEDULE_CHANNEL_ID`).' };
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return { ok: false, line: `⚠️ Crew saved, but I can't post in <#${channelId}>.` };
+  const scheduleIso = await approvedScheduleIso(coverage.matchId);
+  const content = mainStreamSchedulePostContent(coverage, scheduleIso);
+  // What the post says now, so the change watcher can tell when it has gone stale.
+  const posted = { schedulePostContent: content, schedulePostIso: scheduleIso || null };
   const pings = { parse: [], users: crewUserIds(coverage.crew) };
   try {
     const existing = coverage.scheduleMessageId && coverage.scheduleChannelId === channel.id
@@ -5474,14 +5484,18 @@ async function publishMainStreamSchedulePost(coverage) {
           allowedMentions: { parse: [], users: added }
         }).catch(() => null);
       }
-      const updated = await saveMainStreamCoverage(coverage.matchId, { schedulePingedUserIds: [...pinged, ...added] });
+      const updated = await saveMainStreamCoverage(coverage.matchId, { ...posted, schedulePingedUserIds: [...pinged, ...added] });
       const dmLine = await dmNewCrewMembers(updated, { postUrl: existing.url, scheduleIso });
-      return { ok: true, line: [`✏️ Updated the schedule post in <#${channel.id}>${added.length ? ' and pinged the new crew' : ''}: ${existing.url}`, dmLine].filter(Boolean).join('\n') };
+      return { ok: true, url: existing.url, line: [`✏️ Updated the schedule post in <#${channel.id}>${added.length ? ' and pinged the new crew' : ''}: ${existing.url}`, dmLine].filter(Boolean).join('\n') };
+    }
+    if (editOnly) {
+      await saveMainStreamCoverage(coverage.matchId, posted);
+      return { ok: false, line: 'The schedule post is gone, so it was not updated.' };
     }
     const message = await channel.send({ content, allowedMentions: pings });
-    const posted = await saveMainStreamCoverage(coverage.matchId, { scheduleChannelId: channel.id, scheduleMessageId: message.id, schedulePingedUserIds: crewUserIds(coverage.crew), crewDmedUserIds: coverage.crewDmedUserIds || [] });
-    const dmLine = await dmNewCrewMembers(posted, { postUrl: message.url, scheduleIso });
-    return { ok: true, line: [`📅 Posted the match in <#${channel.id}> and pinged the crew: ${message.url}`, dmLine].filter(Boolean).join('\n') };
+    const saved = await saveMainStreamCoverage(coverage.matchId, { ...posted, scheduleChannelId: channel.id, scheduleMessageId: message.id, schedulePingedUserIds: crewUserIds(coverage.crew), crewDmedUserIds: coverage.crewDmedUserIds || [] });
+    const dmLine = await dmNewCrewMembers(saved, { postUrl: message.url, scheduleIso });
+    return { ok: true, url: message.url, line: [`📅 Posted the match in <#${channel.id}> and pinged the crew: ${message.url}`, dmLine].filter(Boolean).join('\n') };
   } catch (error) {
     console.error(`Main stream schedule post failed for ${coverage.matchId}:`, error);
     return { ok: false, line: `⚠️ Crew saved, but posting failed: ${error?.message || error}` };
@@ -6195,6 +6209,9 @@ async function removeMainStreamCoverage(coverage, actorId) {
   const matchId = coverage.matchId;
   await deleteMainStreamCoverage(matchId);
   await appendAuditLog({ type: 'main_stream_removed', actorId, matchId }).catch(() => null);
+  if (await announceMainStreamRemoved(coverage).catch((error) => console.error('[Social] removal notice failed:', error.message || error))) {
+    lines.push(`Told the Social Media team in <#${config.socialChannelId}>.`);
+  }
   const communityCasters = (await listStreamRequests({ matchId })).filter((request) => STREAM_CONNECTION_STATUSES.includes(request.status)).length;
   const crewIds = crewUserIds(coverage.crew || {});
 
@@ -10001,6 +10018,7 @@ async function runStreamOperationsTick(now = Date.now()) {
   await runPrepPacks(now).catch((error) => console.error('Prep packs failed:', error));
   await syncTeamInfo(now).catch((error) => console.error('Team Info sync failed:', error));
   await runSocialInfo(now).catch((error) => console.error('Social info failed:', error.message || error));
+  await runScheduleChangeWatch(now).catch((error) => console.error('Schedule change watch failed:', error.message || error));
   await fillSeasonMatchStats().catch((error) => console.error('Season match stats fill failed:', error.message || error));
   await syncSheetResultsAndStats(now).catch((error) => console.error('Sheet results/stats sync failed:', error));
   await postNewCasterApplications(now).catch((error) => console.error('Caster applications failed:', error));
@@ -11933,4 +11951,143 @@ async function refreshSocialCards(now = Date.now()) {
       await saveMainStreamCoverage(coverage.matchId, { socialState: state, ...(state === 'done' && result ? { socialDone: true } : {}) });
     }
   }
+}
+
+// --- Change watch: keep the Schedule post and the Social Media team in step with the data ---
+// Every minute the saved data (crew, stream, approved time, on/off the main stream, tonight's
+// community casts) is compared with what was last announced, whatever changed it (a command, the
+// crew form, a crew member dropping out, a reschedule):
+// - the Schedule channel post is edited in place; on a new time the crew is pinged;
+// - the social roundup and match card are edited, and a "Change" notice is posted in
+//   SOCIAL_CHANNEL_ID saying what was and what is now, since an edit alone is silent. Main stream
+//   notices ping the match's Social Media person (else SOCIAL_PING_ROLE_ID).
+// A notice is only sent for facts that were already out: the Schedule post, the match card or
+// that night's roundup was up.
+
+const CHANGE_COLOR = 0xe67e22;
+const REMOVED_COLOR = 0x7f8c8d;
+
+function roundupPosted(sync, startMs) {
+  return Number.isFinite(startMs) && Boolean(sync[`social:roundup:${sheetSlotFor(startMs).dateKey}`]?.messageId);
+}
+
+function socialAnnounced(coverage, sync, startTimes) {
+  return Boolean(coverage.scheduleMessageId
+    || sync[`social:card:${coverage.matchId}`]?.messageId
+    || startTimes.some((startMs) => roundupPosted(sync, startMs)));
+}
+
+// The match card if it is up, else that night's roundup: what a notice replies to.
+function socialPostFor(sync, matchId, startMs) {
+  return sync[`social:card:${matchId}`]?.messageId
+    || (Number.isFinite(startMs) ? sync[`social:roundup:${sheetSlotFor(startMs).dateKey}`]?.messageId : null)
+    || null;
+}
+
+// `crew` (main stream notices only) pings the match's Social Media person, or the
+// SOCIAL_PING_ROLE_ID role when nobody is assigned. Community cast notices ping nobody.
+async function postSocialNotice(card, { color = CHANGE_COLOR, replyTo = null, crew = null } = {}) {
+  const channel = await socialChannel();
+  if (!channel) return null;
+  const userId = crew?.social || null;
+  const roleId = crew && !userId ? config.socialPingRoleId : null;
+  return channel.send({
+    content: userId ? `<@${userId}>` : roleId ? `<@&${roleId}>` : undefined,
+    embeds: [socialEmbed(card, color)],
+    reply: replyTo ? { messageReference: replyTo, failIfNotExists: false } : undefined,
+    allowedMentions: { parse: [], users: userId ? [userId] : [], roles: roleId ? [roleId] : [], repliedUser: false }
+  }).catch(() => null);
+}
+
+// Edits Schedule posts that no longer match the data (mostly a new approved time; crew and stream
+// changes made by commands have already edited it).
+async function refreshStaleSchedulePosts(now) {
+  for (const { coverage, startMs } of await crewBookings()) {
+    if (!coverage.scheduleMessageId || now > startMs + SOCIAL_CARD_UNTIL_MS) continue;
+    const scheduleIso = await approvedScheduleIso(coverage.matchId);
+    if (mainStreamSchedulePostContent(coverage, scheduleIso) === coverage.schedulePostContent) continue;
+    const timeChanged = coverage.schedulePostContent !== undefined && (coverage.schedulePostIso || null) !== (scheduleIso || null);
+    const result = await publishMainStreamSchedulePost(coverage, { editOnly: true });
+    if (!result.ok) continue;
+    await appendAuditLog({ type: 'main_stream_schedule_post_refreshed', matchId: coverage.matchId, timeChanged }).catch(() => null);
+    const crewIds = crewUserIds(coverage.crew || {});
+    if (!timeChanged || !scheduleIso || !crewIds.length) continue;
+    const channel = await client.channels.fetch(coverage.scheduleChannelId).catch(() => null);
+    await channel?.send?.({
+      content: `🕒 ${crewIds.map((id) => `<@${id}>`).join(' ')}: **${coverage.matchup}** has a new time: ${discordTimestamp(scheduleIso, 'F')}. ${result.url}`,
+      allowedMentions: { parse: [], users: crewIds }
+    }).catch(() => null);
+  }
+}
+
+async function runScheduleChangeWatch(now = Date.now()) {
+  await refreshStaleSchedulePosts(now).catch((error) => console.error('[Schedule] post refresh failed:', error.message || error));
+  if (!config.socialChannelId) return;
+  const sync = await getSheetSync();
+  // The first run only notes how things stand; nothing that happened before it is announced.
+  const firstRun = !sync['social:watch'];
+  const notices = [];
+
+  for (const { coverage, startMs } of await crewBookings()) {
+    if (coverage.socialDone || now > startMs + SOCIAL_CARD_UNTIL_MS) continue;
+    const [teamA, teamB] = teamsOf(coverage.matchup, coverage.teamA, coverage.teamB);
+    const crew = coverage.crew || {};
+    const streamUrl = mainStreamUrlFor(coverage);
+    const facts = mainStreamFacts({ startMs, teamA, teamB, streamUrl, crew });
+    const before = coverage.socialWatch || null;
+    const announced = socialAnnounced(coverage, sync, [before?.startMs, startMs]);
+    if (before && JSON.stringify(before) === JSON.stringify(facts) && coverage.socialWatchAnnounced === announced) continue;
+    if (before && coverage.socialWatchAnnounced) {
+      const changes = describeMainStreamChanges(before, facts);
+      if (changes.length) notices.push({ matchId: coverage.matchId, startMs, crew, changes, card: buildChangeCard({ title: `${teamA} vs ${teamB}`, lines: changes }) });
+    } else if (!before && !firstRun && roundupPosted(sync, startMs)) {
+      // Put on the main stream after that night's roundup went up.
+      notices.push({ matchId: coverage.matchId, startMs, crew, changes: ['added'], card: buildAddedCard({ startMs, teamA, teamB, streamUrl, crew }) });
+    }
+    // Not saved for a match taken off the main stream in the meantime (that would bring it back).
+    if (await getMainStreamCoverage(coverage.matchId)) {
+      await saveMainStreamCoverage(coverage.matchId, { socialWatch: facts, socialWatchAnnounced: announced });
+    }
+  }
+
+  // Tonight's community casts, once the roundup is up.
+  const { dateKey } = easternParts(now);
+  const roundupKey = `social:roundup:${dateKey}`;
+  const roundup = sync[roundupKey];
+  if (roundup?.messageId) {
+    const community = communityFacts((await streamedMatchesBetween(dateKey, dateKey)).community);
+    if (JSON.stringify(roundup.community || null) !== JSON.stringify(community)) {
+      const changes = roundup.community ? describeCommunityChanges(roundup.community, community) : [];
+      if (changes.length) notices.push({ matchId: null, replyTo: roundup.messageId, changes, card: buildChangeCard({ title: 'Tonight\'s community streams', lines: changes }) });
+      await updateSheetSync(roundupKey, { community });
+    }
+  }
+  if (firstRun) await updateSheetSync('social:watch', { startedAt: new Date(now).toISOString() });
+  if (!notices.length) return;
+
+  // Bring the roundup and the cards up to date first, then say what changed.
+  lastSocialRefreshAt = 0;
+  await runSocialInfo(now).catch((error) => console.error('Social info failed:', error.message || error));
+  const posts = await getSheetSync();
+  for (const notice of notices) {
+    const sent = await postSocialNotice(notice.card, { crew: notice.crew || null, replyTo: notice.replyTo || socialPostFor(posts, notice.matchId, notice.startMs) });
+    await appendAuditLog({ type: 'social_change_notice', matchId: notice.matchId, changes: notice.changes, posted: Boolean(sent) }).catch(() => null);
+  }
+}
+
+// A match taken off the main stream: the match card (if up) says so, the roundup drops it on the
+// next pass and a notice goes out. Returns true when the Social Media team was told.
+async function announceMainStreamRemoved(coverage) {
+  if (!config.socialChannelId || coverage.socialDone) return false;
+  const sync = await getSheetSync();
+  const startMs = coverage.socialWatch?.startMs ?? Date.parse(await approvedScheduleIso(coverage.matchId) || coverage.faceitScheduledAtIso || '');
+  if (Number.isFinite(startMs) && Date.now() > startMs + SOCIAL_CARD_UNTIL_MS) return false;
+  if (!socialAnnounced(coverage, sync, [startMs])) return false;
+  const [teamA, teamB] = teamsOf(coverage.matchup, coverage.teamA, coverage.teamB);
+  const card = buildRemovedCard({ startMs: Number.isFinite(startMs) ? startMs : null, teamA, teamB });
+  const replyTo = socialPostFor(sync, coverage.matchId, startMs);
+  const cardKey = `social:card:${coverage.matchId}`;
+  if (sync[cardKey]?.messageId) await postOrEditSocial(cardKey, card, { color: REMOVED_COLOR });
+  lastSocialRefreshAt = 0;
+  return Boolean(await postSocialNotice(card, { color: REMOVED_COLOR, replyTo, crew: coverage.crew || {} }));
 }
