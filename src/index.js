@@ -39,6 +39,7 @@ import {
   appendAuditLog,
   saveMainStreamCoverage,
   saveMatchConnection,
+  saveMainStreamConnection,
   approveScheduleProposal,
   cancelScheduleProposal,
   claimPostCastReminder,
@@ -59,6 +60,7 @@ import {
   getSclDiscordMessage,
   getMainStreamCoverage,
   getMatchConnection,
+  getMainStreamConnection,
   getStoredMatch,
   getStoredMatchByChannel,
   listStoredMatches,
@@ -167,6 +169,8 @@ import {
   requestRoomId,
   selectConnectionRecipients,
   STREAM_CONNECTION_STATUSES,
+  parseSendIpCommand,
+  sendIpTarget,
   buildRequestIpMessage,
   parseMainStreamCommand,
   buildLiveBoardNotice,
@@ -1545,7 +1549,7 @@ const COMMAND_HELP_LINES = [
   '`!cancel` - cancel your open proposal before it is accepted.',
   '`!admin reason here` or `!calladmin reason here` - alert admins with this match room and FACEIT link.',
   '`/request stream` - open the community stream request form (`!request` now points casters here).',
-  '`!sendip FACEIT_LINK MESSAGE` - staff immediately DM connection details to approved casters. Without a message it reposts the IP prompt.',
+  '`!sendip FACEIT_LINK MESSAGE` - staff immediately DM connection details to approved casters. `!sendip FACEIT_LINK main MESSAGE` sets the main stream\'s own IP instead. Without a message it reposts the IP prompt.',
   '`/cf mainstream match:<link> stream:<channel> caster1:@ producer:@ …` - staff put a match on the official stream, set its crew, or `remove:True` to take it off.',
   '',
   '**Public Slash Commands**',
@@ -1624,7 +1628,7 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (/^!resendip\b/i.test(content)) {
       await message.reply({
-        content: 'Use `!sendip FACEIT_LINK` with no message to repost the IP prompt.',
+        content: 'Use `!sendip FACEIT_LINK` with no message to repost the IP prompt (`!sendip FACEIT_LINK main` for the main stream\'s).',
         allowedMentions: { repliedUser: false }
       });
     }
@@ -5866,14 +5870,19 @@ async function sendStreamDeliveryPrompt(matchId, force = false) {
   if (!requests?.length) return false;
   const match = await faceit.getMatch(matchId).catch(() => null);
   const matchup = match ? `${match.teamA} vs ${match.teamB}` : requests[0].matchup;
+  // On a main stream match this is only the community casters' IP; the crew's has its own prompt.
+  const onMainStream = Boolean(await getMainStreamCoverage(matchId));
   let message;
   try {
     message = await channel.send({
     content: getStaffMentions(channel.guild),
     embeds: [new EmbedBuilder()
       .setColor(EMBED_COLORS.warning)
-      .setTitle('Caster Connection Needed')
-      .setDescription(`**${matchup}** is scheduled now. Submit either the FACEIT CSTV connect command or the official CROSSFIRE Twitch link. It will be DMed only to approved casters for this match.`)
+      .setTitle(onMainStream ? 'Caster Connection Needed (community casters)' : 'Caster Connection Needed')
+      .setDescription([
+        `**${matchup}** is scheduled now. Submit either the FACEIT CSTV connect command or the official CROSSFIRE Twitch link. It will be DMed only to approved casters for this match.`,
+        onMainStream ? 'This match is also on the main stream. Enter the **community casters\'** IP here; the main stream\'s IP goes in its own **Main Stream Connection Needed** prompt.' : null
+      ].filter(Boolean).join('\n\n'))
       .addFields({ name: 'FACEIT Matchroom', value: requests[0].faceitUrl || `Match ${matchId}` })
       .setTimestamp()],
     components: [new ActionRowBuilder().addComponents(
@@ -5899,20 +5908,22 @@ async function handleStreamDeliveryOpen(interaction) {
     await interaction.reply({ content: 'Only authorized staff can submit caster connection details.', ephemeral: true });
     return;
   }
-  const [, type, matchId] = interaction.customId.split(':');
-  const label = type === 'cstv' ? 'Server IP:PORT' : 'CROSSFIRE Twitch link';
+  const [, buttonType, matchId] = interaction.customId.split(':');
+  // Main stream prompts posted before the main stream had its own IP used the `cstv` button.
+  const type = buttonType === 'cstv' && interaction.message?.embeds?.[0]?.title === 'Main Stream Connection Needed' ? 'main' : buttonType;
+  const address = type === 'cstv' || type === 'main';
   const modal = new ModalBuilder()
     .setCustomId(`stream_delivery_submit:${type}:${matchId}`)
-    .setTitle(type === 'cstv' ? 'Submit CSTV Connect' : 'Submit Twitch Link')
+    .setTitle(type === 'main' ? 'Main Stream CSTV Connect' : address ? 'Submit CSTV Connect' : 'Submit Twitch Link')
     .addComponents(new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId('delivery')
-        .setLabel(label)
-        .setPlaceholder(type === 'cstv' ? '66.206.17.130:27035' : 'Example: https://twitch.tv/crossfire')
+        .setLabel(type === 'main' ? 'Main stream server IP:PORT' : address ? 'Server IP:PORT' : 'CROSSFIRE Twitch link')
+        .setPlaceholder(address ? '66.206.17.130:27035' : 'Example: https://twitch.tv/crossfire')
         .setStyle(TextInputStyle.Short)
         .setRequired(true)
     ));
-  if (type === 'cstv') {
+  if (address) {
     modal.addComponents(new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId('use_password')
@@ -5933,7 +5944,7 @@ async function handleStreamDeliverySubmit(interaction) {
   }
   const [, type, matchId] = interaction.customId.split(':');
   const raw = interaction.fields.getTextInputValue('delivery');
-  const delivery = type === 'cstv'
+  const delivery = type === 'cstv' || type === 'main'
     ? buildCstvConnect(raw, { password: activeSeason()?.cstvPassword || null, usePassword: wantsSeasonPassword(modalFieldValue(interaction, 'use_password') ?? 'Yes') })
     : validateStreamDelivery(type, raw);
   if (!delivery.valid) {
@@ -5941,6 +5952,12 @@ async function handleStreamDeliverySubmit(interaction) {
     return;
   }
   await interaction.deferReply({ ephemeral: true });
+  if (type === 'main') {
+    const result = await deliverMainStreamConnection(matchId, delivery.address ? 'cstv' : 'custom', delivery.value, interaction.user.id);
+    await interaction.message?.edit({ components: [] }).catch(() => null);
+    await interaction.editReply([mainStreamConnectionLine(result), cstvPasswordNote(delivery)].filter(Boolean).join(' '));
+    return;
+  }
   const result = await deliverStreamConnection(matchId, type, delivery.value, interaction.user.id);
   await interaction.message?.edit({ components: [] }).catch(() => null);
   await interaction.editReply([
@@ -5992,12 +6009,30 @@ async function deliverStreamConnection(matchId, type, value, actorId) {
   const failedCasterIds = [...deliveryByCaster].filter(([, sent]) => !sent).map(([casterId]) => casterId);
   await appendAuditLog({ type: 'stream_connection_delivered', actorId, matchId, delivered, requestCount: requests.length, failedCasterIds });
   // The official Twitch link is not connection details, so only CSTV/custom go to #request-ip.
+  // This is the community casters' IP only; the main stream's is entered separately.
   let requestIpPosted = false;
   if (type !== 'twitch') {
     await saveMatchConnection(matchId, { type, value, sentAt: new Date().toISOString(), sentBy: actorId });
     requestIpPosted = await postConnectionToRequestIp(matchId, { requests, delivered, casterCount: deliveryByCaster.size }).catch(() => false);
   }
   return { delivered, casterCount: deliveryByCaster.size, requests, requestIpPosted, failedCasterIds };
+}
+
+// Saves the main stream's own connection details and posts them in #request-ip for the crew. Never
+// DMed to community casters. Off the main stream they are kept and post when `/cf mainstream` is used.
+async function deliverMainStreamConnection(matchId, type, value, actorId) {
+  await saveMainStreamConnection(matchId, { type, value, sentAt: new Date().toISOString(), sentBy: actorId });
+  await appendAuditLog({ type: 'main_stream_connection_entered', actorId, matchId }).catch(() => null);
+  const coverage = await getMainStreamCoverage(matchId);
+  const requestIpPosted = coverage ? await postConnectionToRequestIp(matchId, { mainStream: true }).catch(() => false) : false;
+  return { onMainStream: Boolean(coverage), requestIpPosted };
+}
+
+function mainStreamConnectionLine({ onMainStream, requestIpPosted }) {
+  if (!onMainStream) return '📺 Saved as the main stream IP. That match is not on the main stream right now, so it will be posted for the crew when `/cf mainstream` is used for it. Community casters do not get it.';
+  return requestIpPosted
+    ? `📺 Posted the main stream IP in <#${config.requestIpChannelId}> for the crew. Community casters do not get it.`
+    : `📺 Saved the main stream IP, but could not post it in <#${config.requestIpChannelId}>; check that I can view and send messages there.`;
 }
 
 async function disableStreamDeliveryPrompts(requests) {
@@ -6013,12 +6048,13 @@ async function disableStreamDeliveryPrompts(requests) {
 // --- Main stream (official broadcast) ------------------------------------------
 // `/cf mainstream match:<link>` (or inside a match channel, no link) marks a match
 // as covered by the official broadcast. The bot cannot read the server IP from FACEIT,
-// so it forwards whatever staff enter through the usual connection prompt or !sendip:
-// already entered -> posted to REQUEST_IP_CHANNEL_ID now; not yet -> posted the moment
-// it is entered.
+// so it forwards what staff enter as the main stream's IP (its own prompt, or
+// `!sendip <link> main`): already entered -> posted to REQUEST_IP_CHANNEL_ID now; not yet ->
+// posted the moment it is entered. The community casters' IP is a different one and never
+// goes to the crew.
 
-// Puts a match on the main stream: teams' notice, sheet link and colour, and the IP in #request-ip
-// (now if entered, or as soon as it is). Returns the saved coverage and lines for the staff reply.
+// Puts a match on the main stream: teams' notice, sheet link and colour, and the main stream IP in
+// #request-ip (now if entered, or as soon as it is). Returns the saved coverage and lines for the staff reply.
 async function startMainStreamCoverage({ matchId, faceitUrl: givenUrl = null, stored = null, actorId }) {
   const match = stored?.match || await faceit.getMatch(matchId).catch(() => null);
   const matchup = match?.teamA && match?.teamB ? `${match.teamA} vs ${match.teamB}` : 'FACEIT match';
@@ -6034,19 +6070,19 @@ async function startMainStreamCoverage({ matchId, faceitUrl: givenUrl = null, st
   });
   await appendAuditLog({ type: 'main_stream_requested', actorId, matchId });
   const lines = [];
-  const connection = await getMatchConnection(matchId);
+  const connection = await getMainStreamConnection(matchId);
   if (connection?.value) {
-    const posted = await postConnectionToRequestIp(matchId);
+    const posted = await postConnectionToRequestIp(matchId, { mainStream: true });
     lines.push(posted
-      ? `📺 **${matchup}** is on the main stream. Posted the connection details in <#${config.requestIpChannelId}>.`
+      ? `📺 **${matchup}** is on the main stream. Posted the main stream IP in <#${config.requestIpChannelId}>.`
       : `📺 **${matchup}** is on the main stream. ⚠️ Could not post in <#${config.requestIpChannelId}>; check that I can view and send messages there.`);
   } else {
-    const casterCount = (await listStreamRequests({ matchId, status: 'approved' })).length;
-    lines.push(`📺 **${matchup}** is on the main stream. No IP has been entered for it yet.`);
-    lines.push(casterCount
-      ? 'Staff get the usual connection prompt at match time for the approved casters.'
-      : `Staff will be asked for it in <#${ipChannelId()}> at match time, like the caster prompt. To send it sooner: \`!sendip FACEIT_MATCHROOM_LINK connect IP:PORT\`.`);
+    lines.push(`📺 **${matchup}** is on the main stream. No main stream IP has been entered for it yet.`);
+    lines.push(`Staff will be asked for it in <#${ipChannelId()}> at match time. To send it sooner: \`!sendip FACEIT_MATCHROOM_LINK main IP:PORT\`.`);
     lines.push(`It will be posted in <#${config.requestIpChannelId}> as soon as it is entered.`);
+  }
+  if (selectConnectionRecipients(await listStreamRequests(), matchId).recipients.length) {
+    lines.push('🎙️ This match has approved community casters. They keep their own IP from the caster prompt; it is never posted for the crew.');
   }
   lines.push(await postMainStreamCoverageNotice(coverage, { stored }));
   return { coverage, lines };
@@ -6229,9 +6265,9 @@ async function handleMainStreamAutocomplete(interaction) {
     .catch(() => null);
 }
 
-// At match time (like the caster prompt), asks staff for the main stream's connection details,
-// once per match. Skipped when the details are already in, or when approved community casters
-// have the match (their prompt goes out instead and the details reach #request-ip from it).
+// At match time (like the caster prompt), asks staff for the main stream's own connection details,
+// once per match, skipped when they are already in. A match that also has approved community
+// casters gets both prompts: the casters' IP is a different one.
 const MAIN_STREAM_PROMPT_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 async function sendDueMainStreamPrompts(now = Date.now()) {
@@ -6240,8 +6276,7 @@ async function sendDueMainStreamPrompts(now = Date.now()) {
     const startIso = await approvedScheduleIso(coverage.matchId) || coverage.faceitScheduledAtIso || null;
     const startMs = Date.parse(startIso || '');
     if (!Number.isFinite(startMs) || startMs > now || now - startMs > MAIN_STREAM_PROMPT_WINDOW_MS) continue;
-    if ((await getMatchConnection(coverage.matchId))?.value) continue;
-    if ((await listStreamRequests({ matchId: coverage.matchId, status: 'approved' })).length) continue;
+    if ((await getMainStreamConnection(coverage.matchId))?.value) continue;
     const claimed = await claimMainStreamDeliveryPrompt(coverage.matchId);
     if (claimed) await sendMainStreamDeliveryPrompt(claimed);
   }
@@ -6257,11 +6292,11 @@ async function sendMainStreamDeliveryPrompt(coverage) {
     embeds: [new EmbedBuilder()
       .setColor(EMBED_COLORS.warning)
       .setTitle('Main Stream Connection Needed')
-      .setDescription(`The main stream is covering **${coverage.matchup}**. Submit the CSTV connect command or server IP when it is available. It will be posted in <#${config.requestIpChannelId}>.`)
+      .setDescription(`The main stream is covering **${coverage.matchup}**. Submit the **main stream's** CSTV connect command or server IP when it is available. It will be posted in <#${config.requestIpChannelId}> for the crew and is never sent to community casters.`)
       .addFields({ name: 'FACEIT Matchroom', value: coverage.faceitUrl })
       .setTimestamp()],
     components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`stream_delivery_open:cstv:${coverage.matchId}`).setLabel('Submit CSTV Connect').setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId(`stream_delivery_open:main:${coverage.matchId}`).setLabel('Submit Main Stream Connect').setStyle(ButtonStyle.Primary)
     )],
     allowedMentions: getAdminAllowedMentions(channel.guild)
   }).then(() => true).catch(() => false);
@@ -6273,13 +6308,15 @@ function ipChannelId() {
   return config.requestIpChannelId || config.streamRequestChannelId || null;
 }
 
-// Posts the match's latest connection details to #request-ip. Used for every IP
-// staff enter (any match) and when `/cf mainstream` finds one already entered.
-async function postConnectionToRequestIp(matchId, { requests = [], delivered = 0, casterCount = 0 } = {}) {
+// Posts one of the match's IPs to #request-ip: the community casters' (`mainStream` false; every
+// IP staff enter for casters on any match) or the main stream's (for the crew, pinging them). The
+// two are different IPs, so the casters' one never pings the crew or counts as the main stream's.
+async function postConnectionToRequestIp(matchId, { mainStream = false, requests = [], delivered = 0, casterCount = 0 } = {}) {
   if (!config.requestIpChannelId) return false;
-  const connection = await getMatchConnection(matchId);
+  const connection = mainStream ? await getMainStreamConnection(matchId) : await getMatchConnection(matchId);
   if (!connection?.value) return false;
   const coverage = await getMainStreamCoverage(matchId);
+  if (mainStream && !coverage) return false;
   const stored = coverage ? null : await getStoredMatch(matchId);
   const matchup = coverage?.matchup || requests[0]?.matchup
     || (stored?.match?.teamA && stored?.match?.teamB ? `${stored.match.teamA} vs ${stored.match.teamB}` : 'FACEIT match');
@@ -6287,16 +6324,16 @@ async function postConnectionToRequestIp(matchId, { requests = [], delivered = 0
   const channel = await client.channels.fetch(config.requestIpChannelId).catch(() => null);
   if (!channel?.isTextBased?.()) return false;
   // Main stream: ping the production crew so they see the connection details.
-  const crewIds = coverage?.crew ? crewUserIds(coverage.crew) : [];
+  const crewIds = mainStream && coverage?.crew ? crewUserIds(coverage.crew) : [];
   const message = await channel.send({
     content: buildRequestIpMessage({
       matchup, faceitUrl, value: connection.value, enteredBy: connection.sentBy,
-      mainStream: Boolean(coverage), casterCount, delivered, crewIds
+      mainStream, community: !mainStream && Boolean(coverage), casterCount, delivered, crewIds
     }),
     allowedMentions: { parse: [], users: crewIds }
   }).catch(() => null);
   if (!message) return false;
-  if (coverage) {
+  if (mainStream) {
     await saveMainStreamCoverage(matchId, {
       ipPostedAt: new Date().toISOString(),
       ipMessageId: message.id,
@@ -6305,7 +6342,7 @@ async function postConnectionToRequestIp(matchId, { requests = [], delivered = 0
     });
   }
   // The connection value itself is never written to the audit log.
-  await appendAuditLog({ type: 'request_ip_posted', matchId, messageId: message.id, mainStream: Boolean(coverage) }).catch(() => null);
+  await appendAuditLog({ type: 'request_ip_posted', matchId, messageId: message.id, mainStream, onMainStream: Boolean(coverage) }).catch(() => null);
   return true;
 }
 
@@ -6339,41 +6376,58 @@ async function handleSendIp(message, content) {
     await message.reply('Only authorized staff can send caster connection details.');
     return;
   }
-  const input = content.replace(/^!sendip\b/i, '').trim();
-  const separator = input.search(/\s/);
-  const faceitUrl = separator === -1 ? input : input.slice(0, separator);
-  const deliveryText = separator === -1 ? '' : input.slice(separator).trim();
-  const parsed = parseFaceitMatchRoomLink(faceitUrl);
-  if (parsed && !deliveryText) {
+  // `!sendip <link> [main|community] [IP:PORT or instructions]`. A match on the main stream with
+  // community casters has two different IPs; without `main` or `community` the bot picks (sendIpTarget).
+  const command = parseSendIpCommand(content);
+  const parsed = parseFaceitMatchRoomLink(command.faceitUrl);
+  const coverage = parsed ? await getMainStreamCoverage(parsed.matchId) : null;
+  const casterCount = parsed ? selectConnectionRecipients(await listStreamRequests(), parsed.matchId).recipients.length : 0;
+  const target = sendIpTarget({ requested: command.target, onMainStream: Boolean(coverage), casterCount });
+  if (parsed && !command.deliveryText) {
+    if (target === 'main') {
+      const claimed = coverage ? await claimMainStreamDeliveryPrompt(parsed.matchId, true) : null;
+      const sent = claimed ? await sendMainStreamDeliveryPrompt(claimed) : false;
+      await message.reply(sent
+        ? `Reposted the main stream IP prompt in <#${ipChannelId()}>.`
+        : coverage ? `⚠️ Could not post the main stream IP prompt in <#${ipChannelId()}>.` : 'That match is not on the main stream.');
+      return;
+    }
     const sent = await sendStreamDeliveryPrompt(parsed.matchId, true);
     await message.reply(sent
-      ? `Reposted the IP prompt${config.requestIpChannelId || config.streamRequestChannelId ? ` in <#${ipChannelId()}>` : ''}.`
+      ? `Reposted the community casters' IP prompt${config.requestIpChannelId || config.streamRequestChannelId ? ` in <#${ipChannelId()}>` : ''}.`
       : 'No approved caster requests were found for that FACEIT matchroom.');
     return;
   }
   // `nopw` at the end sends the address without the season password.
-  const noPassword = /(^|\s)nopw\s*$/i.test(deliveryText);
-  const delivery = buildCstvConnect(deliveryText.replace(/(^|\s+)nopw\s*$/i, ''), {
+  const noPassword = /(^|\s)nopw\s*$/i.test(command.deliveryText);
+  const delivery = buildCstvConnect(command.deliveryText.replace(/(^|\s+)nopw\s*$/i, ''), {
     password: activeSeason()?.cstvPassword || null,
     usePassword: !noPassword
   });
   if (!parsed || !delivery.valid) {
-    await message.reply(`Use \`!sendip FACEIT_MATCHROOM_LINK IP:PORT\` to send details now, for example \`!sendip https://www.faceit.com/en/cs2/room/1-... 123.45.67.89:27020\`. The season password is added; put \`nopw\` at the end to leave it off. \`!sendip FACEIT_MATCHROOM_LINK\` alone reposts the IP prompt.${parsed && !delivery.valid ? `\n${delivery.error}` : ''}`);
+    await message.reply(`Use \`!sendip FACEIT_MATCHROOM_LINK IP:PORT\` to send the community casters their details now, for example \`!sendip https://www.faceit.com/en/cs2/room/1-... 123.45.67.89:27020\`. Put \`main\` after the link for the main stream's own IP: \`!sendip FACEIT_MATCHROOM_LINK main IP:PORT\`. The season password is added; put \`nopw\` at the end to leave it off. \`!sendip FACEIT_MATCHROOM_LINK\` alone (or with \`main\`) reposts the IP prompt.${parsed && !delivery.valid ? `\n${delivery.error}` : ''}`);
     return;
   }
   await message.delete().catch(() => null);
-  const result = await deliverStreamConnection(parsed.matchId, delivery.address ? 'cstv' : 'custom', delivery.value, message.author.id);
   const passwordNote = cstvPasswordNote(delivery);
+  if (target === 'main') {
+    const result = await deliverMainStreamConnection(parsed.matchId, delivery.address ? 'cstv' : 'custom', delivery.value, message.author.id);
+    await message.channel.send({ content: [mainStreamConnectionLine(result), passwordNote].filter(Boolean).join(' '), allowedMentions: { parse: [] } }).catch(() => null);
+    return;
+  }
+  const result = await deliverStreamConnection(parsed.matchId, delivery.address ? 'cstv' : 'custom', delivery.value, message.author.id);
   const postedLine = `${result.requestIpPosted ? ` Posted in <#${config.requestIpChannelId}>.` : ''}${passwordNote ? ` ${passwordNote}` : ''}`;
+  const mainStreamLine = coverage ? 'This match is also on the main stream; its IP is separate: `!sendip FACEIT_MATCHROOM_LINK main IP:PORT`.' : null;
   if (!result.requests.length) {
-    await message.channel.send(result.requestIpPosted
-      ? `No approved casters for that FACEIT matchroom.${postedLine}`
-      : 'No approved caster requests were found for that FACEIT matchroom. The details were saved and will post if `/cf mainstream` is used for it.').catch(() => null);
+    await message.channel.send({
+      content: [`No approved caster requests were found for that FACEIT matchroom. Saved as the community casters' IP, so casters approved later get it.${postedLine}`, mainStreamLine].filter(Boolean).join(' '),
+      allowedMentions: { parse: [] }
+    }).catch(() => null);
     return;
   }
   await disableStreamDeliveryPrompts(result.requests);
   await message.channel.send({
-    content: [`Sent the connection details to ${result.delivered}/${result.casterCount} approved caster(s).${postedLine}`, failedDmLine(result.failedCasterIds)].filter(Boolean).join(' '),
+    content: [`Sent the community casters' connection details to ${result.delivered}/${result.casterCount} approved caster(s).${postedLine}`, failedDmLine(result.failedCasterIds), mainStreamLine].filter(Boolean).join(' '),
     allowedMentions: { parse: [] }
   }).catch(() => null);
 }

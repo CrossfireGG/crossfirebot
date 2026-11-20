@@ -751,16 +751,20 @@ export function parseMainStreamCommand(content) {
 
 // Plain-text post for #request-ip so whoever needs it can copy the command.
 // Every IP staff enter is posted; main-stream matches are flagged as such.
-export function buildRequestIpMessage({ matchup, faceitUrl, value, enteredBy = null, mainStream = false, casterCount = 0, delivered = 0, crewIds = [] }) {
+// A #request-ip post. `mainStream` is the main stream's own IP (for the crew); `community` is the
+// community casters' IP on a match that is also on the main stream (the two IPs are different).
+export function buildRequestIpMessage({ matchup, faceitUrl, value, enteredBy = null, mainStream = false, community = false, casterCount = 0, delivered = 0, crewIds = [] }) {
   const text = String(value || '').trim();
   const detail = /\n/.test(text) ? text : `\`${text.replace(/`/g, '')}\``;
   const label = String(matchup || 'FACEIT match').trim();
   const sentTo = [
     mainStream ? 'main stream' : null,
+    !mainStream && community ? 'community casters only, not the main stream' : null,
     casterCount > 0 ? `DMed to ${delivered}/${casterCount} approved caster(s)` : null
   ].filter(Boolean).join(' · ');
+  const heading = mainStream ? `📺 **MAIN STREAM: ${label}**` : community ? `🔌 **COMMUNITY: ${label}**` : `🔌 **IP: ${label}**`;
   return [
-    mainStream ? `📺 **MAIN STREAM: ${label}**` : `🔌 **IP: ${label}**`,
+    heading,
     detail,
     faceitUrl ? `FACEIT: <${faceitUrl}>` : null,
     [enteredBy ? `Entered by <@${enteredBy}>` : null, sentTo || null].filter(Boolean).join(' · ') || null,
@@ -776,6 +780,34 @@ export function buildCrewIpPing({ matchup, ipMessageUrl = null, crewIds = [] }) 
 }
 
 // --- Connection details (CSTV connect / IP) -------------------------------------
+// A match on the main stream and with community casters has two IPs: the community casters' one
+// (DMed to approved casters) and the main stream's one (posted for the crew in #request-ip).
+
+// `!sendip <FACEIT link> [main|community] [IP:PORT or instructions]`. `target` is 'main', 'community'
+// or null when neither word was given (see sendIpTarget). `deliveryText` keeps its line breaks.
+const SEND_IP_TARGET = /^(main(?:[\s-]*stream)?|community|casters?)(?=\s|$)/i;
+
+export function parseSendIpCommand(content) {
+  const input = String(content || '').replace(/^!sendip\b/i, '').trim();
+  const separator = input.search(/\s/);
+  const faceitUrl = separator === -1 ? input : input.slice(0, separator);
+  let rest = separator === -1 ? '' : input.slice(separator).trim();
+  let target = null;
+  const keyword = rest.match(SEND_IP_TARGET);
+  if (keyword) {
+    target = /^main/i.test(keyword[1]) ? 'main' : 'community';
+    rest = rest.slice(keyword[0].length).trim();
+  }
+  return { faceitUrl, target, deliveryText: rest };
+}
+
+// Which IP a `!sendip` sets when staff did not say: the main stream's when the match is only on the
+// main stream (no approved community casters), otherwise the community casters'.
+export function sendIpTarget({ requested = null, onMainStream = false, casterCount = 0 } = {}) {
+  if (requested === 'main' || requested === 'community') return requested;
+  return onMainStream && casterCount === 0 ? 'main' : 'community';
+}
+
 // Statuses whose caster gets the IP: approved by staff, even if the website publish
 // is still failing (that is a website problem, not a reason to leave a caster out).
 export const STREAM_CONNECTION_STATUSES = ['approved', 'publish_failed'];

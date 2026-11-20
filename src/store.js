@@ -35,6 +35,7 @@ function normalizeDb(db) {
     sclMessages: db.sclMessages || {},
     mainStreamCoverage: db.mainStreamCoverage || {},
     matchConnections: db.matchConnections || {},
+    mainStreamConnections: db.mainStreamConnections || legacyMainStreamConnections(db),
     seasons: Array.isArray(db.seasons) ? db.seasons : [],
     sheetSync: db.sheetSync || {},
     crewAvailability: db.crewAvailability || {},
@@ -701,11 +702,12 @@ export async function updateMainStreamForm(id, patch) {
   });
 }
 
-// Claims the match-time "Main Stream Connection Needed" prompt once per match.
-export async function claimMainStreamDeliveryPrompt(matchId) {
+// Claims the match-time "Main Stream Connection Needed" prompt once per match. `force` claims it
+// again (`!sendip <link> main` reposts the prompt).
+export async function claimMainStreamDeliveryPrompt(matchId, force = false) {
   return mutateDb((db) => {
     const coverage = db.mainStreamCoverage[matchId];
-    if (!coverage || coverage.deliveryPromptSentAt) return null;
+    if (!coverage || (!force && coverage.deliveryPromptSentAt)) return null;
     coverage.deliveryPromptSentAt = new Date().toISOString();
     return { ...coverage };
   });
@@ -736,8 +738,8 @@ export async function saveOpenMatchesDigest(patch) {
   });
 }
 
-// Last connection details staff entered for a match (CSTV connect / server IP),
-// so a later `/cf mainstream` can post them without asking staff again.
+// Last connection details staff entered for a match's community casters (CSTV connect / server IP),
+// so a caster approved later gets them without asking staff again. Never used for the main stream.
 export async function saveMatchConnection(matchId, connection) {
   return mutateDb((db) => {
     db.matchConnections[matchId] = { ...connection, matchId };
@@ -747,6 +749,30 @@ export async function saveMatchConnection(matchId, connection) {
 
 export async function getMatchConnection(matchId) {
   return (await snapshot()).matchConnections[matchId] || null;
+}
+
+// The main stream's own connection details for a match, posted for the crew in #request-ip and
+// never DMed to community casters. Kept when the match comes off the main stream, so putting it
+// back posts them again.
+export async function saveMainStreamConnection(matchId, connection) {
+  return mutateDb((db) => {
+    db.mainStreamConnections[matchId] = { ...connection, matchId };
+    return db.mainStreamConnections[matchId];
+  });
+}
+
+export async function getMainStreamConnection(matchId) {
+  return (await snapshot()).mainStreamConnections[matchId] || null;
+}
+
+// Before the main stream had its own IP, one IP per match went to the casters and the crew alike.
+// Main stream matches whose IP was already posted for the crew keep it as their main stream IP.
+function legacyMainStreamConnections(db) {
+  const connections = {};
+  for (const [matchId, connection] of Object.entries(db.matchConnections || {})) {
+    if (db.mainStreamCoverage?.[matchId]?.ipMessageId) connections[matchId] = { ...connection };
+  }
+  return connections;
 }
 
 // Seasons and their round windows (`/cf season`). See src/season.js for the rules.
